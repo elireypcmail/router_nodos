@@ -456,94 +456,11 @@ function Enable-OutboxTriggersWithPython {
 
     Write-Host "Validando conectividad MySQL (${mysqlHost}:${port} / $db / usuario $user) ..." -ForegroundColor Cyan
 
-    $pyCode = @'
-import os
-import mysql.connector
-from mysql.connector import errors
-
-def parse_sql_statements(text: str):
-    delim = ';'
-    buff = []
-    stmts = []
-    for raw in text.splitlines():
-        line = raw.rstrip('\r\n')
-        stripped = line.strip()
-        if stripped.upper().startswith('DELIMITER '):
-            delim = stripped.split(None, 1)[1].strip()
-            continue
-        buff.append(line)
-        joined = "\n".join(buff).strip()
-        if not joined:
-            buff = []
-            continue
-        if delim != ';':
-            if stripped.endswith(delim):
-                stmt = "\n".join(buff)
-                stmt = stmt.rsplit(delim, 1)[0].strip()
-                if stmt:
-                    stmts.append(stmt + ';')
-                buff = []
-        else:
-            if stripped.endswith(';'):
-                stmt = "\n".join(buff).strip()
-                if stmt:
-                    stmts.append(stmt)
-                buff = []
-    tail = "\n".join(buff).strip()
-    if tail:
-        stmts.append(tail)
-    return [s for s in stmts if s.strip()]
-
-host = os.environ['MS_MYSQL_HOST']
-user = os.environ['MS_MYSQL_USER']
-password = os.environ['MS_MYSQL_PASSWORD']
-database = os.environ['MS_MYSQL_DATABASE']
-port = int(os.environ.get('MS_MYSQL_PORT', '3306'))
-sql_path = os.environ['MS_SQL_FILE']
-
-def preflight():
-    try:
-        cn = mysql.connector.connect(host=host, port=port, user=user, password=password, autocommit=True)
-    except errors.Error as e:
-        raise RuntimeError(f"No se pudo conectar a MySQL en {host}:{port} con el usuario {user}: {e}")
-    try:
-        cur = cn.cursor()
-        cur.execute("SELECT 1")
-        cur.fetchall()
-        cur.execute("SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME=%s", (database,))
-        row = cur.fetchone()
-        if not row:
-            raise RuntimeError(f"La base de datos '{database}' no existe o el usuario no tiene permisos para verla")
-    finally:
-        try:
-            cn.close()
-        except Exception:
-            pass
-
-preflight()
-
-with open(sql_path, 'r', encoding='utf-8') as f:
-    sql_text = f.read()
-
-stmts = parse_sql_statements(sql_text)
-if not stmts:
-    raise RuntimeError('No se encontraron statements en el SQL')
-
-cn = mysql.connector.connect(host=host, port=port, user=user, password=password, database=database, autocommit=False)
-try:
-    cur = cn.cursor()
-    for stmt in stmts:
-        s = stmt.strip()
-        if not s:
-            continue
-        cur.execute(s)
-    cn.commit()
-finally:
-    try:
-        cn.close()
-    except Exception:
-        pass
-'@
+    $applyScript = Join-Path $NodoDirPath 'scripts\apply_mysql_outbox_triggers.py'
+    if (-not (Test-Path -LiteralPath $applyScript)) {
+        Write-Warning "No se encontró $applyScript. Omitiendo triggers/outbox fuera de Docker."
+        return
+    }
 
     $env:MS_MYSQL_HOST = $mysqlHost
     $env:MS_MYSQL_USER = $user
@@ -552,7 +469,10 @@ finally:
     $env:MS_MYSQL_PORT = $port
     $env:MS_SQL_FILE = $sqlFile
     Write-Host "Aplicando triggers/outbox ..." -ForegroundColor Cyan
-    & $VenvPython -c $pyCode
+    & $VenvPython $applyScript
+    if ($LASTEXITCODE -ne 0) {
+        throw "apply_mysql_outbox_triggers.py salió con código $LASTEXITCODE"
+    }
 }
 
 # --- inicio ---
