@@ -172,7 +172,7 @@ function Enable-VenvPowerShellExecutionPolicy {
         return
     }
 
-    Write-Host "Ajustando ExecutionPolicy $scope: $current -> $target (scripts en venv\Scripts, Activate.ps1, Huey) ..." -ForegroundColor Cyan
+    Write-Host "Ajustando ExecutionPolicy ${scope}: $current -> $target (scripts en venv\Scripts, Activate.ps1, Huey) ..." -ForegroundColor Cyan
     Set-ExecutionPolicy -ExecutionPolicy $target -Scope $scope -Force
     $after = Get-ExecutionPolicy -Scope $scope
     Write-Host "ExecutionPolicy $scope = $after" -ForegroundColor Green
@@ -237,7 +237,7 @@ function Install-WireGuardTunnel {
         try {
             Start-Service -Name $serviceName -ErrorAction Stop
         } catch {
-            Write-Warning "No se pudo iniciar $serviceName: $($_.Exception.Message)"
+            Write-Warning "No se pudo iniciar ${serviceName}: $($_.Exception.Message)"
         }
     }
     Write-Host "Tunel WireGuard activo: $serviceName" -ForegroundColor Green
@@ -442,19 +442,19 @@ function Enable-OutboxTriggersWithPython {
     }
 
     $envMap = Parse-EnvFile -Path $EnvFilePath
-    $host = $envMap["MYSQL_HOST"]
+    $mysqlHost = $envMap["MYSQL_HOST"]
     $user = $envMap["MYSQL_USER"]
     $pass = $envMap["MYSQL_PASSWORD"]
     $db = $envMap["MYSQL_DATABASE"]
     $port = $envMap["MYSQL_PORT"]
     if (-not $port) { $port = "3306" }
 
-    if (-not $host -or -not $user -or -not $pass -or -not $db) {
+    if (-not $mysqlHost -or -not $user -or -not $pass -or -not $db) {
         Write-Warning "Faltan MYSQL_* en .env (MYSQL_HOST/USER/PASSWORD/DATABASE). Omitiendo triggers/outbox fuera de Docker."
         return
     }
 
-    Write-Host "Validando conectividad MySQL ($host:$port / $db / usuario $user) ..." -ForegroundColor Cyan
+    Write-Host "Validando conectividad MySQL (${mysqlHost}:${port} / $db / usuario $user) ..." -ForegroundColor Cyan
 
     $pyCode = @'
 import os
@@ -545,7 +545,7 @@ finally:
         pass
 '
 
-    $env:MS_MYSQL_HOST = $host
+    $env:MS_MYSQL_HOST = $mysqlHost
     $env:MS_MYSQL_USER = $user
     $env:MS_MYSQL_PASSWORD = $pass
     $env:MS_MYSQL_DATABASE = $db
