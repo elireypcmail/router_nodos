@@ -1,0 +1,30 @@
+#python bytecode/cache
+__pycache__/
+*.py[cod]
+*.pyd
+
+#virtualenv
+venv/
+.venv/
+
+#archivos de entorno / secretos
+.env
+.env.*
+
+#data runtime
+data/
+*.sqlite 
+
+#Logs
+*.log
+logs/
+
+#OS / IDE
+.DS_Store
+.vscode/
+.idea/
+
+#WireGuard / provisioning
+#vpn/*.conf
+#vpn/wg0.conf
+#wg0.conf

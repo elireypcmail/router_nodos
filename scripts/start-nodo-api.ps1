@@ -1,0 +1,155 @@
+# Arranca la API del nodo en segundo plano (sin ventana).
+# Logs: C:\ProgramData\Multishop\ (preferido) o %LOCALAPPDATA%\Multishop\ si no hay permiso de escritura.
+
+$script:MultishopLogDir = $null
+
+function Test-MultishopLogDirWritable {
+    param([string]$Dir)
+    try {
+        if (-not (Test-Path $Dir)) {
+            New-Item -ItemType Directory -Path $Dir -Force | Out-Null
+        }
+        $testFile = Join-Path $Dir "nodo-api-start.log"
+        Add-Content -LiteralPath $testFile -Value "" -Encoding ASCII -ErrorAction Stop
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Get-MultishopConfigDir {
+  $programData = Join-Path $env:ProgramData "Multishop"
+  if (Test-Path $programData) {
+    return $programData
+  }
+  return $null
+}
+
+function Get-MultishopLogDir {
+    if ($script:MultishopLogDir) {
+        return $script:MultishopLogDir
+    }
+    $candidates = @(
+        (Join-Path $env:ProgramData "Multishop"),
+        (Join-Path $env:LOCALAPPDATA "Multishop")
+    )
+    foreach ($dir in $candidates) {
+        if (Test-MultishopLogDirWritable -Dir $dir) {
+            $script:MultishopLogDir = $dir
+            return $dir
+        }
+    }
+    throw "No se puede escribir logs en ProgramData ni LocalAppData\Multishop"
+}
+
+function Write-NodoApiLog {
+    param([string]$Message)
+    $logFile = Join-Path (Get-MultishopLogDir) "nodo-api-start.log"
+    $line = "{0} {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message
+    try {
+        Add-Content -LiteralPath $logFile -Value $line -Encoding ASCII -ErrorAction Stop
+    } catch {
+        $script:MultishopLogDir = $null
+        $fallback = Join-Path $env:LOCALAPPDATA "Multishop"
+        if (-not (Test-Path $fallback)) {
+            New-Item -ItemType Directory -Path $fallback -Force | Out-Null
+        }
+        $script:MultishopLogDir = $fallback
+        $logFile = Join-Path $fallback "nodo-api-start.log"
+        Add-Content -LiteralPath $logFile -Value $line -Encoding ASCII
+    }
+}
+
+function Get-MultishopNodoDir {
+    param([string]$NodoDirOverride = "")
+    if ($NodoDirOverride) {
+        return $NodoDirOverride
+    }
+    $configDir = Get-MultishopConfigDir
+    if ($configDir) {
+        $dirFile = Join-Path $configDir "nodo-dir.txt"
+        if (Test-Path $dirFile) {
+            return (Get-Content -LiteralPath $dirFile -Raw).Trim()
+        }
+    }
+    throw "Falta nodo-dir.txt en ProgramData\Multishop. Ejecute el instalador Windows como administrador."
+}
+
+function Test-NodoApiPortOpen {
+    param([int]$Port = 8443)
+    try {
+        $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+        return ($null -ne $conn)
+    } catch {
+        $netstat = netstat -ano 2>$null | Select-String ":$Port\s"
+        return ($null -ne $netstat)
+    }
+}
+
+function Start-MultishopNodoApi {
+    param(
+        [string]$NodoDirOverride = ""
+    )
+
+    $MultishopDir = Get-MultishopLogDir
+    $logOut = Join-Path $MultishopDir "nodo-api.out.log"
+    $logErr = Join-Path $MultishopDir "nodo-api.err.log"
+
+    try {
+        Write-NodoApiLog "=== arranque === user=$env:USERNAME session=$env:SESSIONNAME logdir=$MultishopDir"
+
+        $NodoDir = Get-MultishopNodoDir -NodoDirOverride $NodoDirOverride
+
+        if (-not (Test-Path $NodoDir)) {
+            throw "NodoDir no existe: $NodoDir"
+        }
+
+        if (-not (Test-Path (Join-Path $NodoDir ".env"))) {
+            throw "Falta .env en $NodoDir"
+        }
+
+        if (Test-NodoApiPortOpen) {
+            Write-NodoApiLog "API ya escucha en puerto 8443; no se inicia otra instancia."
+            return
+        }
+
+        $python = Join-Path $NodoDir "venv\Scripts\python.exe"
+        if (-not (Test-Path $python)) {
+            throw "No hay venv en $NodoDir (venv\Scripts\python.exe)"
+        }
+
+        Write-NodoApiLog "Iniciando API: $python main.py (cwd $NodoDir)"
+
+        $proc = Start-Process -FilePath $python `
+            -ArgumentList "main.py" `
+            -WorkingDirectory $NodoDir `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $logOut `
+            -RedirectStandardError $logErr `
+            -PassThru
+
+        Start-Sleep -Seconds 4
+
+        if ($proc.HasExited) {
+            $errTail = ""
+            if (Test-Path $logErr) {
+                $errTail = (Get-Content $logErr -Tail 20 -ErrorAction SilentlyContinue) -join " | "
+            }
+            throw "python salio con codigo $($proc.ExitCode). Revise $logErr. $errTail"
+        }
+
+        if (-not (Test-NodoApiPortOpen)) {
+            throw "python sigue vivo (PID $($proc.Id)) pero puerto 8443 no escucha. Revise $logErr y $logOut"
+        }
+
+        Write-NodoApiLog "API activa PID $($proc.Id) puerto 8443"
+    } catch {
+        Write-NodoApiLog "ERROR: $($_.Exception.Message)"
+        throw
+    }
+}
+
+if ($MyInvocation.InvocationName -ne '.') {
+    $ErrorActionPreference = "Stop"
+    Start-MultishopNodoApi
+}
