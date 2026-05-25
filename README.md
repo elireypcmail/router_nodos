@@ -171,6 +171,15 @@ Desinstalación:
 
 - `scripts/uninstall-windows.cmd` (Ejecutar como administrador)
 
+Verificar sintaxis PowerShell (antes de instalar en tienda):
+
+```powershell
+cd scripts
+powershell -NoProfile -ExecutionPolicy Bypass -File .\test-ps-syntax.ps1
+```
+
+Opcional (más reglas de estilo): módulo [PSScriptAnalyzer](https://github.com/PowerShell/PSScriptAnalyzer) — `Install-Module PSScriptAnalyzer` y `Invoke-ScriptAnalyzer -Path .\install-windows-full.ps1`.
+
 ### Linux
 
 1. En `Multishop-nodo-API/scripts/`:

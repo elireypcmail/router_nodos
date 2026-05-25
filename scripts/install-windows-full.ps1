@@ -543,7 +543,7 @@ finally:
         cn.close()
     except Exception:
         pass
-'
+'@
 
     $env:MS_MYSQL_HOST = $mysqlHost
     $env:MS_MYSQL_USER = $user
