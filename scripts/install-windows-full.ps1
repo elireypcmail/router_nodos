@@ -1,4 +1,4 @@
-# Instala/configura nodo en Windows: WireGuard (opcional), .env (opcional), venv, tareas resume VPN, API.
+# Instala/configura nodo en Windows (6 pasos): copia, WireGuard, .env, venv, ExecutionPolicy, outbox, tareas API/VPN.
 # Ejecutar como Administrador para instalación automática de servicio WireGuard y tareas.
 #
 # Si PowerShell bloquea scripts no firmados (ExecutionPolicy), use una de estas opciones:
@@ -10,6 +10,7 @@
 #   .\install-windows.ps1 -BundleDir "C:\bundle-provisioning"
 #   .\install-windows.ps1 -SkipWgResume
 #   .\install-windows.ps1 -SkipApiAutostart   # no tarea Multishop-Nodo-API
+#   .\install-windows.ps1 -SkipExecutionPolicy   # no cambiar ExecutionPolicy del usuario
 #   .\install-windows.ps1 -KeepVenv   # no borrar venv existente
 #   .\install-windows.ps1 -NoStart      # no arrancar API ahora (si hay tarea, igual se registra)
 #
@@ -25,6 +26,7 @@ param(
     [switch]$SkipProgramFilesCopy,
     [switch]$SkipWgResume,
     [switch]$SkipApiAutostart,
+    [switch]$SkipExecutionPolicy,
     [switch]$RegisterWgResume,
     [switch]$KeepVenv,
     [switch]$NoStart,
@@ -142,6 +144,38 @@ function Install-PythonAutomatically {
     if ($LASTEXITCODE -ne 0) {
         throw "winget no pudo instalar Python (codigo $LASTEXITCODE). Instale Python manualmente y vuelva a ejecutar."
     }
+}
+
+function Enable-VenvPowerShellExecutionPolicy {
+    $scope = "CurrentUser"
+    $target = "RemoteSigned"
+    try {
+        $current = Get-ExecutionPolicy -Scope $scope -ErrorAction Stop
+    } catch {
+        Write-Warning "No se pudo leer ExecutionPolicy ($scope): $($_.Exception.Message)"
+        return
+    }
+
+    $order = @{
+        Undefined     = 0
+        Restricted    = 1
+        AllSigned     = 2
+        RemoteSigned  = 3
+        Unrestricted  = 4
+        Bypass        = 5
+    }
+    $curRank = if ($order.ContainsKey($current.ToString())) { $order[$current.ToString()] } else { 0 }
+    $tgtRank = $order[$target]
+
+    if ($curRank -ge $tgtRank) {
+        Write-Host "ExecutionPolicy $scope ya es $current (>= $target); sin cambios." -ForegroundColor Green
+        return
+    }
+
+    Write-Host "Ajustando ExecutionPolicy $scope: $current -> $target (scripts en venv\Scripts, Activate.ps1, Huey) ..." -ForegroundColor Cyan
+    Set-ExecutionPolicy -ExecutionPolicy $target -Scope $scope -Force
+    $after = Get-ExecutionPolicy -Scope $scope
+    Write-Host "ExecutionPolicy $scope = $after" -ForegroundColor Green
 }
 
 function Ensure-PythonCompatible {
@@ -534,7 +568,7 @@ if ($BundleDir) {
 
 $InstallRoot = if ($SkipProgramFilesCopy) { $SourceNodoDir } elseif ($InstallRoot) { $InstallRoot } else { Get-DefaultInstallRoot }
 
-Write-Host "Paso 1/5 - Ubicacion del nodo ..."
+Write-Host "Paso 1/6 - Ubicacion del nodo ..."
 if (-not $SkipProgramFilesCopy) {
     $NodoDir = Install-NodoToProgramFiles -SourceDir $SourceNodoDir -DestDir $InstallRoot
     $NodoDir = Resolve-NodoProjectDir -InputPath $NodoDir
@@ -548,7 +582,7 @@ Write-Host "Raiz del nodo: $NodoDir"
 $searchDirs = Get-ProvisioningSearchDirs
 
 Write-Host ""
-Write-Host "Paso 2/5 - VPN (WireGuard) [opcional] ..."
+Write-Host "Paso 2/6 - VPN (WireGuard) [opcional] ..."
 
 $wgSource = $null
 if ($WgConfPath -and (Test-Path -LiteralPath $WgConfPath)) {
@@ -584,7 +618,7 @@ if ($wgSource) {
 }
 
 Write-Host ""
-Write-Host "Paso 3/5 - Config (.env) [opcional] ..."
+Write-Host "Paso 3/6 - Config (.env) [opcional] ..."
 
 $envSource = $null
 if ($EnvPath -and (Test-Path -LiteralPath $EnvPath)) {
@@ -601,7 +635,7 @@ if ($envSource) {
 }
 
 Write-Host ""
-Write-Host "Paso 4/5 - API Python (venv) ..."
+Write-Host "Paso 4/6 - API Python (venv) ..."
 
 $pythonInfo = Ensure-PythonCompatible
 
@@ -621,7 +655,21 @@ $venvPip = Join-Path $venvDir 'Scripts\\pip.exe'
 & $venvPip install -r (Join-Path $NodoDir 'requirements.txt')
 
 Write-Host ""
-Write-Host "Paso 5/5 - Triggers/outbox (Docker o local) [opcional] ..."
+Write-Host "Paso 5/6 - PowerShell (venv Scripts) ..."
+if ($SkipExecutionPolicy) {
+    Write-Host "Omitido (-SkipExecutionPolicy). Para Huey/Activate.ps1 manualmente:"
+    Write-Host '  Set-ExecutionPolicy RemoteSigned -Scope CurrentUser'
+} else {
+    try {
+        Enable-VenvPowerShellExecutionPolicy
+    } catch {
+        Write-Warning "No se pudo aplicar ExecutionPolicy RemoteSigned (CurrentUser): $($_.Exception.Message)"
+        Write-Host '  Ejecute manualmente: Set-ExecutionPolicy RemoteSigned -Scope CurrentUser' -ForegroundColor Yellow
+    }
+}
+
+Write-Host ""
+Write-Host "Paso 6/6 - Triggers/outbox (Docker o local) [opcional] ..."
 $triggersInDocker = Enable-OutboxTriggersIfDocker -NodoDirPath $NodoDir
 if (-not $triggersInDocker) {
     try {

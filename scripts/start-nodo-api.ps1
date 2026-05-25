@@ -1,5 +1,17 @@
 # Arranca la API del nodo en segundo plano (sin ventana).
 # Logs: C:\ProgramData\Multishop\ (preferido) o %LOCALAPPDATA%\Multishop\ si no hay permiso de escritura.
+# Puerto de escucha: NODO_PORT en .env (default 8443).
+
+$envHelper = Join-Path $PSScriptRoot "nodo-env.ps1"
+if (Test-Path -LiteralPath $envHelper) {
+    . $envHelper
+}
+if (-not (Get-Command Get-MultishopNodoApiPort -ErrorAction SilentlyContinue)) {
+    function Get-MultishopNodoApiPort {
+        param([string]$NodoDir, [int]$DefaultPort = 8443)
+        return $DefaultPort
+    }
+}
 
 $script:MultishopLogDir = $null
 
@@ -108,8 +120,10 @@ function Start-MultishopNodoApi {
             throw "Falta .env en $NodoDir"
         }
 
-        if (Test-NodoApiPortOpen) {
-            Write-NodoApiLog "API ya escucha en puerto 8443; no se inicia otra instancia."
+        $apiPort = Get-MultishopNodoApiPort -NodoDir $NodoDir
+
+        if (Test-NodoApiPortOpen -Port $apiPort) {
+            Write-NodoApiLog "API ya escucha en puerto $apiPort; no se inicia otra instancia."
             return
         }
 
@@ -138,11 +152,11 @@ function Start-MultishopNodoApi {
             throw "python salio con codigo $($proc.ExitCode). Revise $logErr. $errTail"
         }
 
-        if (-not (Test-NodoApiPortOpen)) {
-            throw "python sigue vivo (PID $($proc.Id)) pero puerto 8443 no escucha. Revise $logErr y $logOut"
+        if (-not (Test-NodoApiPortOpen -Port $apiPort)) {
+            throw "python sigue vivo (PID $($proc.Id)) pero puerto $apiPort no escucha. Revise $logErr y $logOut"
         }
 
-        Write-NodoApiLog "API activa PID $($proc.Id) puerto 8443"
+        Write-NodoApiLog "API activa PID $($proc.Id) puerto $apiPort"
     } catch {
         Write-NodoApiLog "ERROR: $($_.Exception.Message)"
         throw

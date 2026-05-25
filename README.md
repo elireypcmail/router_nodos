@@ -160,6 +160,7 @@ Recomendado: ejecutar como **Administrador**.
 3. El instalador:
    - verifica/instala Python 3.10+ (automático vía `winget` si falta)
    - crea `venv` e instala `requirements.txt`
+   - configura `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser` (scripts del venv, Huey, `Activate.ps1`)
    - WireGuard (opcional): si hay `wg0.conf`, instala/levanta túnel como servicio
    - triggers/outbox:
      - primero intenta Docker (`mysql56-app`)
@@ -261,7 +262,7 @@ Logs (Windows) normalmente en:
 ### Health
 
 ```bash
-curl http://127.0.0.1:8443/api/health -H "Authorization: Bearer <TOKEN>"
+curl http://127.0.0.1:<NODO_PORT>/api/health -H "Authorization: Bearer <TOKEN>"
 ```
 
 ### Si fallan triggers/outbox

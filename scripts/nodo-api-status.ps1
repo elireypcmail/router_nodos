@@ -1,25 +1,42 @@
-# Estado de la API nodo en background.
+# Estado de la API nodo en background (puerto segun NODO_PORT en .env).
+
+$envHelper = Join-Path $PSScriptRoot "nodo-env.ps1"
+if (Test-Path -LiteralPath $envHelper) {
+    . $envHelper
+}
+
 $DeployDir = Join-Path $env:ProgramData "Multishop"
 $logStart = Join-Path $DeployDir "nodo-api-start.log"
 $logStartLocal = Join-Path $env:LOCALAPPDATA "Multishop\nodo-api-start.log"
 $logOut = Join-Path $DeployDir "nodo-api.out.log"
 $logErr = Join-Path $DeployDir "nodo-api.err.log"
 
+$nodoDir = Get-MultishopNodoDirFromProgramData
+$apiPort = 8443
+if ($nodoDir) {
+    $apiPort = Get-MultishopNodoApiPort -NodoDir $nodoDir
+} else {
+    Write-Warning "No se encontro nodo-dir.txt; usando puerto por defecto $apiPort"
+}
+
 Write-Host "=== Multishop nodo API ==="
+if ($nodoDir) {
+    Write-Host "Nodo: $nodoDir"
+}
 Write-Host ""
 
 $portOpen = $false
 try {
-    $conn = Get-NetTCPConnection -LocalPort 8443 -State Listen -ErrorAction SilentlyContinue
+    $conn = Get-NetTCPConnection -LocalPort $apiPort -State Listen -ErrorAction SilentlyContinue
     $portOpen = ($null -ne $conn)
 } catch {
-    $portOpen = [bool](netstat -ano 2>$null | Select-String ":8443\s")
+    $portOpen = [bool](netstat -ano 2>$null | Select-String ":$apiPort\s")
 }
 
 if ($portOpen) {
-    Write-Host "Puerto 8443: ESCUCHANDO" -ForegroundColor Green
+    Write-Host "Puerto $apiPort (NODO_PORT): ESCUCHANDO" -ForegroundColor Green
 } else {
-    Write-Host "Puerto 8443: no activo" -ForegroundColor Yellow
+    Write-Host "Puerto $apiPort (NODO_PORT): no activo" -ForegroundColor Yellow
 }
 
 $procs = Get-Process python, pythonw -ErrorAction SilentlyContinue
@@ -55,7 +72,7 @@ if (Test-Path $logErr) {
 
 Write-Host ""
 Write-Host "Health:"
-Write-Host '  curl http://127.0.0.1:8443/api/health -H "Authorization: Bearer <TOKEN>"'
+Write-Host "  curl http://127.0.0.1:$apiPort/api/health -H `"Authorization: Bearer <TOKEN>`""
 Write-Host ""
 Write-Host "Arrancar:"
 Write-Host "  wscript.exe //nologo $DeployDir\start-nodo-api.vbs"

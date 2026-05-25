@@ -107,7 +107,9 @@ $DeployDir = Join-Path $env:ProgramData "Multishop"
 $DirFile = Join-Path $DeployDir "nodo-dir.txt"
 $TunnelFile = Join-Path $DeployDir "tunnel-name.txt"
 $SourceScript = Join-Path $PSScriptRoot "start-nodo-api.ps1"
+$SourceEnvHelper = Join-Path $PSScriptRoot "nodo-env.ps1"
 $DeployedScript = Join-Path $DeployDir "start-nodo-api.ps1"
+$DeployedEnvHelper = Join-Path $DeployDir "nodo-env.ps1"
 $DeployedVbs = Join-Path $DeployDir "start-nodo-api.vbs"
 
 if (-not (Test-Path $SourceScript)) {
@@ -176,6 +178,9 @@ function Deploy-NodoApiLauncher {
     Set-Content -LiteralPath $DirFile -Value $NodoDir -Encoding ASCII -NoNewline -Force
     Set-Content -LiteralPath $TunnelFile -Value $TunnelName -Encoding ASCII -NoNewline -Force
     Copy-Item $SourceScript $DeployedScript -Force
+    if (Test-Path -LiteralPath $SourceEnvHelper) {
+        Copy-Item $SourceEnvHelper $DeployedEnvHelper -Force
+    }
     $vbsLines = @(
         'Set sh = CreateObject("Wscript.Shell")'
         "sh.Run ""powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """"$DeployedScript"""""", 0, False"
@@ -285,6 +290,7 @@ if ($Uninstall) {
     Remove-NodoApiStartupFolder
     if (Test-Path $DeployedVbs) { Remove-Item $DeployedVbs -Force }
     if (Test-Path $DeployedScript) { Remove-Item $DeployedScript -Force }
+    if (Test-Path $DeployedEnvHelper) { Remove-Item $DeployedEnvHelper -Force }
     if (Test-Path $DirFile) { Remove-Item $DirFile -Force }
     if (Test-Path $TunnelFile) { Remove-Item $TunnelFile -Force }
     Write-Host "Autostart API eliminado (tareas + carpeta Inicio)."
@@ -309,7 +315,12 @@ Write-Host ""
 Write-Host "Probar ahora:"
 Write-Host "  wscript.exe //nologo `"$DeployedVbs`""
 Write-Host "  schtasks /Run /TN `"$TaskName`""
-Write-Host '  curl http://127.0.0.1:8443/api/health -H "Authorization: Bearer <TOKEN>"'
+$healthPort = 8443
+if (Test-Path -LiteralPath $SourceEnvHelper) {
+    . $SourceEnvHelper
+    $healthPort = Get-MultishopNodoApiPort -NodoDir $NodoDir
+}
+Write-Host "  curl http://127.0.0.1:$healthPort/api/health -H `"Authorization: Bearer <TOKEN>`""
 Write-Host ""
 Write-Host "Desinstalar:"
 Write-Host "  .\nodo-api-windows-install.ps1 -Uninstall"

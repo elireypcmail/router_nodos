@@ -27,6 +27,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+$envHelper = Join-Path $PSScriptRoot "nodo-env.ps1"
+if (Test-Path -LiteralPath $envHelper) {
+    . $envHelper
+}
+
 $WireGuardExe = Join-Path ${env:ProgramFiles} "WireGuard\wireguard.exe"
 $DefaultInstallRoot = Join-Path ${env:ProgramFiles} "Multishop\nodo"
 $ProgramDataDir = Join-Path $env:ProgramData "Multishop"
@@ -178,12 +183,16 @@ function Stop-NodoApiProcesses {
     $venvRoot = Join-Path $NodoDirPath "venv"
     $venvPy = Join-Path $venvRoot "Scripts\python.exe"
     $stopped = 0
+    $apiPort = 8443
+    if (Get-Command Get-MultishopNodoApiPort -ErrorAction SilentlyContinue) {
+        $apiPort = Get-MultishopNodoApiPort -NodoDir $NodoDirPath
+    }
 
     try {
-        $listeners = Get-NetTCPConnection -LocalPort 8443 -State Listen -ErrorAction SilentlyContinue
+        $listeners = Get-NetTCPConnection -LocalPort $apiPort -State Listen -ErrorAction SilentlyContinue
         foreach ($conn in $listeners) {
             if (-not $conn.OwningProcess) { continue }
-            Write-Host "Deteniendo PID $($conn.OwningProcess) (puerto 8443) ..."
+            Write-Host "Deteniendo PID $($conn.OwningProcess) (puerto $apiPort / NODO_PORT) ..."
             Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue
             $stopped++
         }
@@ -400,6 +409,7 @@ function Remove-MultishopDataDirs {
         Write-Host "Conservando logs (-KeepLogs)."
         $toRemove = @(
             (Join-Path $ProgramDataDir "start-nodo-api.ps1"),
+            (Join-Path $ProgramDataDir "nodo-env.ps1"),
             (Join-Path $ProgramDataDir "start-nodo-api.vbs"),
             (Join-Path $ProgramDataDir "wg-resume.ps1"),
             (Join-Path $ProgramDataDir "wg-resume.cmd"),
@@ -450,7 +460,7 @@ function Show-UninstallPlan {
     Write-Host "=== Multishop - desinstalacion nodo (Windows) ===" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "Se realizaran estas acciones:"
-    Write-Host "  1. Detener API Python (puerto 8443 y venv del nodo)"
+    Write-Host "  1. Detener API Python (puerto NODO_PORT en .env y venv del nodo)"
     Write-Host "  2. Quitar tareas: $($ApiTaskNames -join ', ')"
     Write-Host "  3. Quitar tareas: $($WgResumeTaskNames -join ', ')"
     Write-Host "  4. Quitar acceso directo en carpeta Inicio ($StartupVbsName)"

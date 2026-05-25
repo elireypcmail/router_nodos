@@ -1,5 +1,7 @@
 """API del nodo multishop — orquestada por Nest vía VPN hub."""
 
+from contextlib import asynccontextmanager
+
 import uvicorn
 from fastapi import FastAPI
 
@@ -14,18 +16,6 @@ from sync_apply import SyncApplier
 from sync_store import SyncStore
 from sync_worker import SyncWorker
 
-app = FastAPI(
-    title="Multishop Nodo",
-    description="API HTTPS del nodo en tienda (red privada hub-spoke)",
-    version="0.1.0",
-)
-
-app.include_router(health.router)
-app.include_router(inventario.router)
-app.include_router(proveedores.router)
-app.include_router(categorias.router)
-app.include_router(sync.router)
-
 sync_store: SyncStore | None = None
 sync_worker: SyncWorker | None = None
 outbox_repo: OutboxRepository | None = None
@@ -33,14 +23,10 @@ outbox_worker: OutboxWorker | None = None
 pull_worker: HubPullWorker | None = None
 
 
-@app.get("/")
-async def root():
-    return {"service": "multishop-nodo", "nodo_id": settings.nodo_id}
-
-
-@app.on_event("startup")
-async def on_startup():
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
     global sync_store, sync_worker, outbox_repo, outbox_worker, pull_worker
+
     sync_store = SyncStore(settings.sync_db_path)
     await sync_store.init()
 
@@ -83,18 +69,37 @@ async def on_startup():
         outbox_repo = OutboxRepository(mysql)
         outbox_repo.ensure_schema()
         import huey_tasks
+
         huey_tasks.enqueue_outbox()
 
+    try:
+        yield
+    finally:
+        if sync_worker:
+            await sync_worker.stop()
+        if outbox_worker:
+            await outbox_worker.stop()
+        if pull_worker:
+            await pull_worker.stop()
 
-@app.on_event("shutdown")
-async def on_shutdown():
-    global sync_worker, outbox_worker, pull_worker
-    if sync_worker:
-        await sync_worker.stop()
-    if outbox_worker:
-        await outbox_worker.stop()
-    if pull_worker:
-        await pull_worker.stop()
+
+app = FastAPI(
+    title="Multishop Nodo",
+    description="API HTTPS del nodo en tienda (red privada hub-spoke)",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+app.include_router(health.router)
+app.include_router(inventario.router)
+app.include_router(proveedores.router)
+app.include_router(categorias.router)
+app.include_router(sync.router)
+
+
+@app.get("/")
+async def root():
+    return {"service": "multishop-nodo", "nodo_id": settings.nodo_id}
 
 
 def run():
