@@ -1,9 +1,12 @@
 """API del nodo multishop — orquestada por Nest vía VPN hub."""
 
 from contextlib import asynccontextmanager
+import logging
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from config import settings
 from db_mysql import MySqlClient
@@ -21,6 +24,7 @@ sync_worker: SyncWorker | None = None
 outbox_repo: OutboxRepository | None = None
 outbox_worker: OutboxWorker | None = None
 pull_worker: HubPullWorker | None = None
+logger = logging.getLogger("multishop-nodo-api")
 
 
 @asynccontextmanager
@@ -95,6 +99,52 @@ app.include_router(inventario.router)
 app.include_router(proveedores.router)
 app.include_router(categorias.router)
 app.include_router(sync.router)
+
+
+def _error_message(exc: Exception) -> str:
+    message = str(exc).strip()
+    return message or exc.__class__.__name__
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(_request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": "validation_error",
+            "detail": "Payload inválido",
+            "errors": exc.errors(),
+        },
+    )
+
+
+@app.exception_handler(RuntimeError)
+async def runtime_exception_handler(request: Request, exc: RuntimeError):
+    message = _error_message(exc)
+    logger.error("RuntimeError en %s %s: %s", request.method, request.url.path, message)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "runtime_error",
+            "detail": message,
+            "path": request.url.path,
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    message = _error_message(exc)
+    logger.exception("Error no controlado en %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "internal_error",
+            "detail": message,
+            "path": request.url.path,
+            "type": exc.__class__.__name__,
+        },
+    )
 
 
 @app.get("/")
