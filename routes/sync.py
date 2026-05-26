@@ -72,6 +72,8 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
     if entity in {"inventory_category", "categorias", "categoria"}:
         ccate = str(payload.get("ccate") or "").strip()
         ncate = str(payload.get("ncate") or "").strip()
+        pganancia = payload.get("pganancia")
+        pdescu = payload.get("pdescu")
         if not ccate or not ncate:
             raise HTTPException(status_code=422, detail="categoria requiere ccate y ncate")
 
@@ -91,8 +93,8 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
                     (
                         ccate,
                         ncate,
-                        payload.get("pganancia"),
-                        payload.get("pdescu"),
+                        pganancia,
+                        pdescu,
                     ),
                 )
                 conn.commit()
@@ -146,27 +148,29 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
                     SET
                       nom_prv = %s,
                       rif_prv = %s,
-                      nit_prv = %s,
                       dir1_prv = %s,
+                      dir2_prv = %s,
+                      dir3_prv = %s,
                       tel_prv = %s,
                       email1_prv = %s,
-                      tipo_prv = %s,
-                      plazo1 = %s,
-                      plazo2 = %s,
-                      plazo3 = %s
+                      email2_prv = %s,
+                      rep_prv = %s,
+                      especial = %s,
+                      numcuenta = %s
                     WHERE cod_prv = %s
                     """,
                     (
                         row.get("nom_prv"),
                         row.get("rif_prv"),
-                        row.get("nit_prv"),
                         row.get("dir1_prv"),
+                        row.get("dir2_prv"),
+                        row.get("dir3_prv"),
                         row.get("tel_prv"),
                         row.get("email1_prv"),
-                        row.get("tipo_prv"),
-                        row.get("plazo1"),
-                        row.get("plazo2"),
-                        row.get("plazo3"),
+                        row.get("email2_prv"),
+                        row.get("rep_prv"),
+                        row.get("especial"),
+                        row.get("numcuenta"),
                         cod_prv,
                     ),
                 )
@@ -177,29 +181,31 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
                           cod_prv,
                           nom_prv,
                           rif_prv,
-                          nit_prv,
                           dir1_prv,
+                          dir2_prv,
+                          dir3_prv,
                           tel_prv,
                           email1_prv,
-                          tipo_prv,
-                          plazo1,
-                          plazo2,
-                          plazo3
+                          email2_prv,
+                          rep_prv,
+                          especial,
+                          numcuenta
                         )
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                         """,
                         (
                             cod_prv,
                             row.get("nom_prv"),
                             row.get("rif_prv"),
-                            row.get("nit_prv"),
                             row.get("dir1_prv"),
+                            row.get("dir2_prv"),
+                            row.get("dir3_prv"),
                             row.get("tel_prv"),
                             row.get("email1_prv"),
-                            row.get("tipo_prv"),
-                            row.get("plazo1"),
-                            row.get("plazo2"),
-                            row.get("plazo3"),
+                            row.get("email2_prv"),
+                            row.get("rep_prv"),
+                            row.get("especial"),
+                            row.get("numcuenta"),
                         ),
                     )
                 conn.commit()
@@ -235,26 +241,43 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
 
                 cur.execute(
                     """
-                    INSERT INTO sinv (codigo, descrip, barra, existencia, precio1, ccate, cod_prv, activo)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO sinv (
+                      codigo, descrip, ccate, cod_prv, precio1, pg1, barra, referencia,
+                      componente, stockmin, stockmax, recipe, cfrio, activo, existencia
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON DUPLICATE KEY UPDATE
                       descrip = VALUES(descrip),
-                      barra = VALUES(barra),
-                      existencia = VALUES(existencia),
-                      precio1 = VALUES(precio1),
                       ccate = VALUES(ccate),
                       cod_prv = VALUES(cod_prv),
-                      activo = VALUES(activo)
+                      precio1 = VALUES(precio1),
+                      pg1 = VALUES(pg1),
+                      barra = VALUES(barra),
+                      referencia = VALUES(referencia),
+                      componente = VALUES(componente),
+                      stockmin = VALUES(stockmin),
+                      stockmax = VALUES(stockmax),
+                      recipe = VALUES(recipe),
+                      cfrio = VALUES(cfrio),
+                      activo = VALUES(activo),
+                      existencia = VALUES(existencia)
                     """,
                     (
                         codigo,
                         row.get("descrip"),
-                        row.get("barra"),
-                        row.get("existencia"),
-                        row.get("precio1"),
                         row.get("ccate"),
                         row.get("cod_prv"),
+                        row.get("precio1"),
+                        row.get("pg1"),
+                        row.get("barra"),
+                        row.get("referencia"),
+                        row.get("componente"),
+                        row.get("stockmin"),
+                        row.get("stockmax"),
+                        row.get("recipe"),
+                        row.get("cfrio"),
                         row.get("activo"),
+                        row.get("existencia"),
                     ),
                 )
                 conn.commit()

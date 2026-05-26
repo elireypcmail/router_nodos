@@ -14,14 +14,15 @@ class ProveedorUpsertRequest(BaseModel):
     cod_prv: str
     nom_prv: str | None = None
     rif_prv: str | None = None
-    nit_prv: str | None = None
     dir1_prv: str | None = None
+    dir2_prv: str | None = None
+    dir3_prv: str | None = None
     tel_prv: str | None = None
     email1_prv: str | None = None
-    tipo_prv: str | None = None
-    plazo1: int | None = None
-    plazo2: int | None = None
-    plazo3: int | None = None
+    email2_prv: str | None = None
+    rep_prv: str | None = None
+    especial: str | None = None
+    numcuenta: str | None = None
 
 
 def _fetch_proveedores(search: str, limit: int) -> list[dict]:
@@ -41,13 +42,15 @@ def _fetch_proveedores(search: str, limit: int) -> list[dict]:
               cod_prv,
               nom_prv,
               rif_prv,
-              nit_prv,
+              dir1_prv,
+              dir2_prv,
+              dir3_prv,
               tel_prv,
               email1_prv,
-              tipo_prv,
-              plazo1,
-              plazo2,
-              plazo3
+              email2_prv,
+              rep_prv,
+              especial,
+              numcuenta
             FROM sprv
             WHERE (%s = '' OR cod_prv LIKE %s OR nom_prv LIKE %s OR rif_prv LIKE %s)
             ORDER BY nom_prv ASC
@@ -75,14 +78,15 @@ def _get_proveedor(cod_prv: str) -> dict | None:
               cod_prv,
               nom_prv,
               rif_prv,
-              nit_prv,
               dir1_prv,
+              dir2_prv,
+              dir3_prv,
               tel_prv,
               email1_prv,
-              tipo_prv,
-              plazo1,
-              plazo2,
-              plazo3
+              email2_prv,
+              rep_prv,
+              especial,
+              numcuenta
             FROM sprv
             WHERE cod_prv = %s
             LIMIT 1
@@ -126,27 +130,29 @@ def _upsert_proveedor(body: ProveedorUpsertRequest) -> None:
             SET
               nom_prv = %s,
               rif_prv = %s,
-              nit_prv = %s,
               dir1_prv = %s,
+              dir2_prv = %s,
+              dir3_prv = %s,
               tel_prv = %s,
               email1_prv = %s,
-              tipo_prv = %s,
-              plazo1 = %s,
-              plazo2 = %s,
-              plazo3 = %s
+              email2_prv = %s,
+              rep_prv = %s,
+              especial = %s,
+              numcuenta = %s
             WHERE cod_prv = %s
             """,
             (
                 body.nom_prv,
                 body.rif_prv,
-                body.nit_prv,
                 body.dir1_prv,
+                body.dir2_prv,
+                body.dir3_prv,
                 body.tel_prv,
                 body.email1_prv,
-                body.tipo_prv,
-                body.plazo1,
-                body.plazo2,
-                body.plazo3,
+                body.email2_prv,
+                body.rep_prv,
+                body.especial,
+                body.numcuenta,
                 cod_prv,
             ),
         )
@@ -157,29 +163,31 @@ def _upsert_proveedor(body: ProveedorUpsertRequest) -> None:
                   cod_prv,
                   nom_prv,
                   rif_prv,
-                  nit_prv,
                   dir1_prv,
+                  dir2_prv,
+                  dir3_prv,
                   tel_prv,
                   email1_prv,
-                  tipo_prv,
-                  plazo1,
-                  plazo2,
-                  plazo3
+                  email2_prv,
+                  rep_prv,
+                  especial,
+                  numcuenta
                 )
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """,
                 (
                     cod_prv,
                     body.nom_prv,
                     body.rif_prv,
-                    body.nit_prv,
                     body.dir1_prv,
+                    body.dir2_prv,
+                    body.dir3_prv,
                     body.tel_prv,
                     body.email1_prv,
-                    body.tipo_prv,
-                    body.plazo1,
-                    body.plazo2,
-                    body.plazo3,
+                    body.email2_prv,
+                    body.rep_prv,
+                    body.especial,
+                    body.numcuenta,
                 ),
             )
         conn.commit()

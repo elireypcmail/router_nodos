@@ -13,12 +13,19 @@ router = APIRouter(prefix="/api", tags=["inventario"])
 class InventarioUpsertRequest(BaseModel):
     codigo: str
     descrip: str | None = None
-    barra: str | None = None
-    existencia: float | None = None
-    precio1: float | None = None
     ccate: str | None = None
     cod_prv: str | None = None
+    precio1: float | None = None
+    pg1: float | None = None
+    barra: str | None = None
+    referencia: str | None = None
+    componente: str | None = None
+    stockmin: float | None = None
+    stockmax: float | None = None
+    recipe: int | None = None
+    cfrio: int | None = None
     activo: int | None = None
+    existencia: float | None = None
 
 
 def _fetch_inventario(search: str, limit: int) -> list[dict]:
@@ -36,11 +43,19 @@ def _fetch_inventario(search: str, limit: int) -> list[dict]:
             SELECT
               codigo,
               descrip,
-              barra,
-              existencia,
-              precio1,
               ccate,
-              cod_prv
+              cod_prv,
+              precio1,
+              pg1,
+              barra,
+              referencia,
+              componente,
+              stockmin,
+              stockmax,
+              recipe,
+              cfrio,
+              activo,
+              existencia,
             FROM sinv
             WHERE (%s = '' OR codigo LIKE %s OR descrip LIKE %s OR barra LIKE %s)
             ORDER BY descrip ASC
@@ -67,12 +82,19 @@ def _get_item(codigo: str) -> dict | None:
             SELECT
               codigo,
               descrip,
-              barra,
-              existencia,
-              precio1,
               ccate,
               cod_prv,
-              activo
+              precio1,
+              pg1,
+              barra,
+              referencia,
+              componente,
+              stockmin,
+              stockmax,
+              recipe,
+              cfrio,
+              activo,
+              existencia,
             FROM sinv
             WHERE codigo = %s
             LIMIT 1
@@ -98,26 +120,43 @@ def _upsert_item(body: InventarioUpsertRequest) -> None:
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO sinv (codigo, descrip, barra, existencia, precio1, ccate, cod_prv, activo)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO sinv (
+              codigo, descrip, ccate, cod_prv, precio1, pg1, barra, referencia,
+              componente, stockmin, stockmax, recipe, cfrio, activo, existencia
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
               descrip = VALUES(descrip),
-              barra = VALUES(barra),
-              existencia = VALUES(existencia),
-              precio1 = VALUES(precio1),
               ccate = VALUES(ccate),
               cod_prv = VALUES(cod_prv),
-              activo = VALUES(activo)
+              precio1 = VALUES(precio1),
+              pg1 = VALUES(pg1),
+              barra = VALUES(barra),
+              referencia = VALUES(referencia),
+              componente = VALUES(componente),
+              stockmin = VALUES(stockmin),
+              stockmax = VALUES(stockmax),
+              recipe = VALUES(recipe),
+              cfrio = VALUES(cfrio),
+              activo = VALUES(activo),
+              existencia = VALUES(existencia)
             """,
             (
                 codigo,
                 body.descrip,
-                body.barra,
-                body.existencia,
-                body.precio1,
                 body.ccate,
                 body.cod_prv,
+                body.precio1,
+                body.pg1,
+                body.barra,
+                body.referencia,
+                body.componente,
+                body.stockmin,
+                body.stockmax,
+                body.recipe,
+                body.cfrio,
                 body.activo,
+                body.existencia,
             ),
         )
         conn.commit()
