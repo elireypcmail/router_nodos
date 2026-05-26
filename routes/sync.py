@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 import anyio
 from pydantic import BaseModel, Field
 
+from categoria_trace import is_categoria_entity, trace, trace_exc, trace_warn
 from config import settings
 from db_mysql import MySqlClient
 from hub_client import HubClient
@@ -39,6 +40,14 @@ async def sync_apply(
     body: SyncApplyRequest,
     _: None = Depends(verify_bearer),
 ):
+    if is_categoria_entity(body.entity):
+        trace(
+            "sync.apply.enqueue",
+            event_id=body.event_id,
+            entity=body.entity,
+            action=body.action,
+            sequence=body.sequence,
+        )
     store = get_sync_store()
     enqueued = await store.enqueue(
         SyncEvent(
@@ -62,11 +71,16 @@ async def sync_apply(
 @router.post("/events")
 async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
     """Contrato guía (multishop-hub): hub empuja eventos genéricos al nodo."""
+    entity = body.entity_type.strip().lower()
+    if is_categoria_entity(entity):
+        trace("sync.events.start", entity_type=body.entity_type)
+
     mysql = MySqlClient()
     if not mysql.is_configured():
+        if is_categoria_entity(entity):
+            trace_warn("sync.events.mysql_not_configured", entity_type=body.entity_type)
         raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
 
-    entity = body.entity_type.strip().lower()
     payload = body.payload or {}
 
     if entity in {"inventory_category", "categorias", "categoria"}:
@@ -74,10 +88,19 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
         ncate = str(payload.get("ncate") or "").strip()
         pganancia = payload.get("pganancia")
         pdescu = payload.get("pdescu")
+        trace(
+            "sync.events.categoria.payload",
+            ccate=ccate,
+            ncate=ncate,
+            pganancia=pganancia,
+            pdescu=pdescu,
+        )
         if not ccate or not ncate:
+            trace_warn("sync.events.categoria.validation_failed", payload_keys=list(payload.keys()))
             raise HTTPException(status_code=422, detail="categoria requiere ccate y ncate")
 
         def upsert():
+            trace("sync.events.categoria.mysql.start", ccate=ccate)
             conn = mysql.connect()
             try:
                 cur = conn.cursor()
@@ -98,13 +121,17 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
                     ),
                 )
                 conn.commit()
-            except Exception:
+                trace("sync.events.categoria.mysql.done", ccate=ccate)
+            except Exception as exc:
                 conn.rollback()
+                trace_exc("sync.events.categoria.mysql.failed", exc, ccate=ccate)
                 raise
             finally:
                 conn.close()
 
+        trace("sync.events.categoria.thread_pool.before", ccate=ccate)
         await anyio.to_thread.run_sync(upsert)
+        trace("sync.events.categoria.done", ccate=ccate)
         return {"received": True, "entity_type": body.entity_type, "message": "ok"}
 
     if entity in {"proveedores", "proveedor", "provider", "sprv"}:
@@ -302,8 +329,12 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
 @router.post("/categorias")
 async def sync_categorias_legacy(request: Request, _: None = Depends(verify_bearer)):
     """Compatibilidad guía: /api/sync/categorias delega a /api/sync/events."""
+    trace("sync.categorias_legacy.start")
     payload = await request.json()
-    return await sync_events(SyncEventBody(entity_type="inventory_category", payload=payload), _)
+    trace("sync.categorias_legacy.payload", keys=list(payload.keys()) if isinstance(payload, dict) else None)
+    result = await sync_events(SyncEventBody(entity_type="inventory_category", payload=payload), _)
+    trace("sync.categorias_legacy.done")
+    return result
 
 
 @router.post("/categorias/pull")
@@ -312,8 +343,10 @@ async def sync_categorias_pull(
     _: None = Depends(verify_bearer),
 ):
     """Contrato guía: el hub le pide al nodo que ejecute un pull paginado al hub."""
+    trace("sync.pull.start", page_size=page_size)
     mysql = MySqlClient()
     if not mysql.is_configured():
+        trace_warn("sync.pull.mysql_not_configured")
         raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
 
     hub = HubClient()
@@ -323,20 +356,28 @@ async def sync_categorias_pull(
 
         return await pull_all_categories(hub, page_size=page_size)
 
+    trace("sync.pull.hub_fetch.start")
     items = await fetch_all()
+    trace("sync.pull.hub_fetch.done", count=len(items))
     if not items:
+        trace("sync.pull.empty")
         return {"pulled": 0, "page_size": page_size, "message": "ok"}
 
     def bulk_upsert():
+        trace("sync.pull.mysql.bulk.start", count=len(items))
         conn = mysql.connect()
+        applied = 0
+        skipped = 0
         try:
             cur = conn.cursor()
             for it in items:
                 if not isinstance(it, dict):
+                    skipped += 1
                     continue
                 ccate = str(it.get("ccate") or "").strip()
                 ncate = str(it.get("ncate") or "").strip()
                 if not ccate or not ncate:
+                    skipped += 1
                     continue
                 cur.execute(
                     """
@@ -354,14 +395,19 @@ async def sync_categorias_pull(
                         it.get("pdescu"),
                     ),
                 )
+                applied += 1
             conn.commit()
-        except Exception:
+            trace("sync.pull.mysql.bulk.done", applied=applied, skipped=skipped)
+        except Exception as exc:
             conn.rollback()
+            trace_exc("sync.pull.mysql.bulk.failed", exc, applied=applied, skipped=skipped)
             raise
         finally:
             conn.close()
 
+    trace("sync.pull.mysql.thread_pool.before")
     await anyio.to_thread.run_sync(bulk_upsert)
+    trace("sync.pull.done", pulled=len(items))
     return {"pulled": len(items), "page_size": page_size, "message": "ok"}
 
 

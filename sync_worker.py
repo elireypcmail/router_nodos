@@ -1,6 +1,7 @@
 import asyncio
 from typing import Callable
 
+from categoria_trace import is_categoria_entity, trace, trace_exc
 from sync_store import SyncEvent, SyncStore
 
 
@@ -35,9 +36,22 @@ class SyncWorker:
                 await asyncio.sleep(self._poll)
                 continue
 
+            categoria = is_categoria_entity(evt.entity)
+            if categoria:
+                trace(
+                    "worker.claimed",
+                    event_id=evt.event_id,
+                    entity=evt.entity,
+                    action=evt.action,
+                    sequence=evt.sequence,
+                )
             try:
                 await self._apply_fn(evt)
                 await self._store.mark_done(evt.event_id, evt.sequence)
+                if categoria:
+                    trace("worker.mark_done", event_id=evt.event_id)
             except Exception as e:
+                if categoria:
+                    trace_exc("worker.mark_failed", e, event_id=evt.event_id)
                 await self._store.mark_failed(evt.event_id, str(e))
                 await asyncio.sleep(self._poll)

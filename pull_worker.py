@@ -63,16 +63,32 @@ class HubPullWorker:
 
 
 async def pull_all_categories(hub: HubClient, page_size: int = 100) -> list[dict[str, Any]]:
+    from categoria_trace import trace, trace_exc
+
+    trace("pull_all_categories.start", page_size=page_size)
     all_items: list[dict[str, Any]] = []
     page = 1
-    while True:
-        data = await hub.fetch_categorias_page(page=page, limit=page_size)
-        items = data.get("items") or []
-        if not isinstance(items, list):
-            raise RuntimeError("items inválido en respuesta de categorías")
-        all_items.extend(items)
-        has_more = data.get("hasMore")
-        if not has_more:
-            break
-        page += 1
-    return all_items
+    try:
+        while True:
+            trace("pull_all_categories.page", page=page)
+            data = await hub.fetch_categorias_page(page=page, limit=page_size)
+            items = data.get("items") or []
+            if not isinstance(items, list):
+                raise RuntimeError("items inválido en respuesta de categorías")
+            all_items.extend(items)
+            has_more = data.get("hasMore")
+            trace(
+                "pull_all_categories.page.done",
+                page=page,
+                page_items=len(items),
+                total=len(all_items),
+                has_more=has_more,
+            )
+            if not has_more:
+                break
+            page += 1
+        trace("pull_all_categories.done", pages=page, total=len(all_items))
+        return all_items
+    except Exception as exc:
+        trace_exc("pull_all_categories.failed", exc, page=page, total=len(all_items))
+        raise

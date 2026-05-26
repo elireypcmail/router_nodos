@@ -2,6 +2,7 @@
 
 from contextlib import asynccontextmanager
 import logging
+import os
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -18,6 +19,7 @@ from routes import categorias, health, inventario, proveedores, sync
 from sync_apply import SyncApplier
 from sync_store import SyncStore
 from sync_worker import SyncWorker
+from categoria_trace import is_categoria_http_path, trace, trace_exc
 
 sync_store: SyncStore | None = None
 sync_worker: SyncWorker | None = None
@@ -25,6 +27,19 @@ outbox_repo: OutboxRepository | None = None
 outbox_worker: OutboxWorker | None = None
 pull_worker: HubPullWorker | None = None
 logger = logging.getLogger("multishop-nodo-api")
+
+
+def configure_logging() -> None:
+    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    if not logging.root.handlers:
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        )
+    else:
+        logging.root.setLevel(level)
+    logging.getLogger("multishop.categoria").setLevel(level)
 
 
 @asynccontextmanager
@@ -87,6 +102,8 @@ async def lifespan(_app: FastAPI):
             await pull_worker.stop()
 
 
+configure_logging()
+
 app = FastAPI(
     title="Multishop Nodo",
     description="API HTTPS del nodo en tienda (red privada hub-spoke)",
@@ -99,6 +116,27 @@ app.include_router(inventario.router)
 app.include_router(proveedores.router)
 app.include_router(categorias.router)
 app.include_router(sync.router)
+
+
+@app.middleware("http")
+async def categoria_http_trace(request: Request, call_next):
+    path = request.url.path
+    if not is_categoria_http_path(path):
+        return await call_next(request)
+
+    trace(
+        "http.start",
+        method=request.method,
+        path=path,
+        client=request.client.host if request.client else None,
+    )
+    try:
+        response = await call_next(request)
+        trace("http.end", method=request.method, path=path, status=response.status_code)
+        return response
+    except Exception as exc:
+        trace_exc("http.failed", exc, method=request.method, path=path)
+        raise
 
 
 def _error_message(exc: Exception) -> str:
@@ -153,6 +191,7 @@ async def root():
 
 
 def run():
+    configure_logging()
     ssl_cert = settings.nodo_ssl_certfile or None
     ssl_key = settings.nodo_ssl_keyfile or None
     use_ssl = bool(ssl_cert and ssl_key)

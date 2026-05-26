@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from categoria_trace import trace, trace_exc
 from db_mysql import MySqlClient
 from sync_store import SyncEvent
 
@@ -35,6 +36,12 @@ class SyncApplier:
         raise RuntimeError(f"Entidad no soportada: {event.entity}")
 
     async def _apply_categorias(self, event: SyncEvent) -> None:
+        trace(
+            "worker.apply.start",
+            event_id=event.event_id,
+            action=event.action,
+            sequence=event.sequence,
+        )
         payload: dict[str, Any] = event.payload or {}
 
         items = payload.get("items")
@@ -47,6 +54,7 @@ class SyncApplier:
         if not isinstance(items, list):
             raise RuntimeError("payload.items debe ser una lista")
 
+        trace("worker.apply.items", event_id=event.event_id, count=len(items))
         conn = self._mysql.connect()
         try:
             cur = conn.cursor()
@@ -58,6 +66,7 @@ class SyncApplier:
                 if not ccate or not ncate:
                     raise RuntimeError("categoria requiere ccate y ncate")
 
+                trace("worker.apply.row", event_id=event.event_id, ccate=ccate, action=event.action)
                 if event.action == "upsert":
                     cur.execute(
                         """
@@ -71,8 +80,10 @@ class SyncApplier:
                     cur.execute("DELETE FROM catego WHERE ccate = %s", (ccate,))
 
             conn.commit()
-        except Exception:
+            trace("worker.apply.done", event_id=event.event_id)
+        except Exception as exc:
             conn.rollback()
+            trace_exc("worker.apply.failed", exc, event_id=event.event_id)
             raise
         finally:
             conn.close()
