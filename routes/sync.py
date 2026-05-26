@@ -14,6 +14,12 @@ from sync_store import SyncEvent
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 
 
+def _mysql_decimal(value) -> float | None:
+    if value is None:
+        return None
+    return float(value)
+
+
 class SyncEventBody(BaseModel):
     entity_type: str = Field(..., description="Ej. inventory_category, provider")
     payload: dict = Field(default_factory=dict)
@@ -86,8 +92,8 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
     if entity in {"inventory_category", "categorias", "categoria"}:
         ccate = str(payload.get("ccate") or "").strip()
         ncate = str(payload.get("ncate") or "").strip()
-        pganancia = payload.get("pganancia")
-        pdescu = payload.get("pdescu")
+        pganancia = _mysql_decimal(payload.get("pganancia"))
+        pdescu = _mysql_decimal(payload.get("pdescu"))
         trace(
             "sync.events.categoria.payload",
             ccate=ccate,

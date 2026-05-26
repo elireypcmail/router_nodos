@@ -191,6 +191,13 @@ async def root():
 
 
 def run():
+    import sys
+
+    if sys.platform == "win32":
+        import faulthandler
+
+        faulthandler.enable()
+
     configure_logging()
     ssl_cert = settings.nodo_ssl_certfile or None
     ssl_key = settings.nodo_ssl_keyfile or None

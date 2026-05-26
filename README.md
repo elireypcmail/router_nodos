@@ -274,6 +274,22 @@ Logs (Windows) normalmente en:
 curl http://127.0.0.1:<NODO_PORT>/api/health -H "Authorization: Bearer <TOKEN>"
 ```
 
+### La API se cierra al recibir `POST /api/sync/events` (Windows)
+
+Síntoma: el log llega a `sync.events.categoria.mysql.start` y vuelve el prompt sin traceback.
+
+Causa habitual: driver MySQL nativo inestable en hilos. Este proyecto usa **PyMySQL** (`pip install -r requirements.txt`).
+
+En la tienda:
+
+```powershell
+cd "C:\Program Files\Multishop\nodo"   # o tu ruta
+.\venv\Scripts\pip.exe uninstall -y mysql-connector-python
+.\venv\Scripts\pip.exe install -r requirements.txt
+```
+
+Reinicia la API (`python main.py` o tarea programada).
+
 ### Si fallan triggers/outbox
 
 - Verifica `.env`:
