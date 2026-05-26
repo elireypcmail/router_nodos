@@ -371,13 +371,13 @@ function Enable-OutboxTriggersIfDocker {
 
     $docker = Get-Command docker -ErrorAction SilentlyContinue
     if (-not $docker) {
-        Write-Warning "Docker no está instalado. Omitiendo activación de triggers/outbox."
+        Write-Host "Docker no disponible; se usará MySQL local según MYSQL_* en .env (producción)." -ForegroundColor DarkGray
         return $false
     }
 
     $hasContainer = (docker ps --format '{{.Names}}' | Select-String -Pattern '^mysql56-app$' -Quiet)
     if (-not $hasContainer) {
-        Write-Warning "No se encontró el contenedor Docker mysql56-app. Omitiendo activación de triggers/outbox."
+        Write-Host "Contenedor mysql56-app no encontrado; se usará MySQL local según MYSQL_* en .env." -ForegroundColor DarkGray
         return $false
     }
 
@@ -589,16 +589,21 @@ if ($SkipExecutionPolicy) {
 }
 
 Write-Host ""
-Write-Host "Paso 6/6 - Triggers/outbox (Docker o local) [opcional] ..."
+Write-Host "Paso 6/6 - Triggers/outbox (MySQL local o Docker dev) [opcional] ..."
 $triggersInDocker = Enable-OutboxTriggersIfDocker -NodoDirPath $NodoDir
 if (-not $triggersInDocker) {
     try {
         $envFileForDb = Join-Path $NodoDir '.env'
         Enable-OutboxTriggersWithPython -NodoDirPath $NodoDir -EnvFilePath $envFileForDb -VenvPython $venvPython
     } catch {
-        Write-Warning "No se pudieron activar triggers/outbox fuera de Docker: $($_.Exception.Message)"
+        Write-Warning "No se pudieron activar triggers/outbox en MySQL: $($_.Exception.Message)"
         Write-Host ""
-        Write-Host "Si su MySQL NO está en Docker, verifique MYSQL_* en .env y que el usuario tenga permisos de CREATE TRIGGER." -ForegroundColor Yellow
+        Write-Host "Verifique MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD y MYSQL_DATABASE en .env." -ForegroundColor Yellow
+        Write-Host "El usuario MySQL necesita CREATE TRIGGER y acceso a la base del ERP." -ForegroundColor Yellow
+        Write-Host "Puede reintentar manualmente:" -ForegroundColor Yellow
+        Write-Host "  cd `"$NodoDir`"" -ForegroundColor Gray
+        Write-Host "  .\venv\Scripts\python.exe .\scripts\apply_mysql_outbox_triggers.py" -ForegroundColor Gray
+        Write-Host "  (defina antes MS_MYSQL_* y MS_SQL_FILE; el instalador las asigna al ejecutar el paso 6)" -ForegroundColor Gray
     }
 }
 

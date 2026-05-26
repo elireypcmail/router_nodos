@@ -12,6 +12,7 @@ Este proyecto implementa un modelo híbrido:
 La guía completa y detallada está en:
 
 - `doc/doc.md`
+- **[Integración con el hub](../docs/nodo-integracion-hub.md)** — URLs, Bearer, `/api/nodo/events` (compras/ventas/kardex), `/api/sync/events` (push del hub)
 
 ---
 

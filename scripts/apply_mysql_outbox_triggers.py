@@ -5,8 +5,8 @@ from __future__ import annotations
 import os
 import sys
 
-import mysql.connector
-from mysql.connector import errors
+import pymysql
+from pymysql import err as pymysql_errors
 
 
 def parse_sql_statements(text: str) -> list[str]:
@@ -43,6 +43,26 @@ def parse_sql_statements(text: str) -> list[str]:
     return [s for s in stmts if s.strip()]
 
 
+def connect_mysql(
+    *,
+    host: str,
+    port: int,
+    user: str,
+    password: str,
+    database: str | None = None,
+    autocommit: bool = True,
+) -> pymysql.connections.Connection:
+    return pymysql.connect(
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+        database=database,
+        charset="utf8mb4",
+        autocommit=autocommit,
+    )
+
+
 def main() -> int:
     host = os.environ.get("MS_MYSQL_HOST", "").strip()
     user = os.environ.get("MS_MYSQL_USER", "").strip()
@@ -64,14 +84,14 @@ def main() -> int:
         return 1
 
     try:
-        cn = mysql.connector.connect(
+        cn = connect_mysql(
             host=host,
             port=port,
             user=user,
             password=password,
             autocommit=True,
         )
-    except errors.Error as e:
+    except pymysql_errors.MySQLError as e:
         print(
             f"No se pudo conectar a MySQL en {host}:{port} con el usuario {user}: {e}",
             file=sys.stderr,
@@ -79,24 +99,20 @@ def main() -> int:
         return 1
 
     try:
-        cur = cn.cursor()
-        cur.execute("SELECT 1")
-        cur.fetchall()
-        cur.execute(
-            "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME=%s",
-            (database,),
-        )
-        if not cur.fetchone():
-            print(
-                f"La base de datos '{database}' no existe o el usuario no tiene permisos para verla",
-                file=sys.stderr,
+        with cn.cursor() as cur:
+            cur.execute("SELECT 1")
+            cur.execute(
+                "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME=%s",
+                (database,),
             )
-            return 1
+            if not cur.fetchone():
+                print(
+                    f"La base de datos '{database}' no existe o el usuario no tiene permisos para verla",
+                    file=sys.stderr,
+                )
+                return 1
     finally:
-        try:
-            cn.close()
-        except Exception:
-            pass
+        cn.close()
 
     with open(sql_path, encoding="utf-8") as f:
         sql_text = f.read()
@@ -106,27 +122,36 @@ def main() -> int:
         print("No se encontraron statements en el SQL", file=sys.stderr)
         return 1
 
-    cn = mysql.connector.connect(
-        host=host,
-        port=port,
-        user=user,
-        password=password,
-        database=database,
-        autocommit=False,
-    )
     try:
-        cur = cn.cursor()
-        for stmt in stmts:
-            s = stmt.strip()
-            if not s:
-                continue
-            cur.execute(s)
+        cn = connect_mysql(
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            database=database,
+            autocommit=False,
+        )
+    except pymysql_errors.MySQLError as e:
+        print(
+            f"No se pudo conectar a la base '{database}' en {host}:{port}: {e}",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        with cn.cursor() as cur:
+            for stmt in stmts:
+                s = stmt.strip()
+                if not s:
+                    continue
+                cur.execute(s)
         cn.commit()
+    except pymysql_errors.MySQLError as e:
+        cn.rollback()
+        print(f"Error al aplicar SQL: {e}", file=sys.stderr)
+        return 1
     finally:
-        try:
-            cn.close()
-        except Exception:
-            pass
+        cn.close()
 
     print(f"Triggers/outbox aplicados en {database} ({len(stmts)} statements).")
     return 0
