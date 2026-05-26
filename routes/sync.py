@@ -8,6 +8,7 @@ from config import settings
 from db_mysql import MySqlClient
 from hub_client import HubClient
 from middleware.auth import verify_bearer
+from sinv_store import delete_sinv, upsert_sinv
 from sprv_store import delete_sprv, upsert_sprv
 from sync_models import SyncApplyRequest
 from sync_store import SyncEvent
@@ -182,56 +183,13 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
             conn = mysql.connect()
             try:
                 cur = conn.cursor()
-                codigo = str(row.get("codigo") or "").strip()
-                if not codigo:
-                    raise RuntimeError("inventario requiere codigo")
-
                 if action == "delete":
-                    cur.execute("DELETE FROM sinv WHERE codigo = %s", (codigo,))
-                    conn.commit()
-                    return
-
-                cur.execute(
-                    """
-                    INSERT INTO sinv (
-                      codigo, descrip, ccate, cod_prv, precio1, pg1, barra, referencia,
-                      componente, stockmin, stockmax, recipe, cfrio, activo, existencia
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                      descrip = VALUES(descrip),
-                      ccate = VALUES(ccate),
-                      cod_prv = VALUES(cod_prv),
-                      precio1 = VALUES(precio1),
-                      pg1 = VALUES(pg1),
-                      barra = VALUES(barra),
-                      referencia = VALUES(referencia),
-                      componente = VALUES(componente),
-                      stockmin = VALUES(stockmin),
-                      stockmax = VALUES(stockmax),
-                      recipe = VALUES(recipe),
-                      cfrio = VALUES(cfrio),
-                      activo = VALUES(activo),
-                      existencia = VALUES(existencia)
-                    """,
-                    (
-                        codigo,
-                        row.get("descrip"),
-                        row.get("ccate"),
-                        row.get("cod_prv"),
-                        row.get("precio1"),
-                        row.get("pg1"),
-                        row.get("barra"),
-                        row.get("referencia"),
-                        row.get("componente"),
-                        row.get("stockmin"),
-                        row.get("stockmax"),
-                        row.get("recipe"),
-                        row.get("cfrio"),
-                        row.get("activo"),
-                        row.get("existencia"),
-                    ),
-                )
+                    codigo = str(row.get("codigo") or "").strip()
+                    if not codigo:
+                        raise RuntimeError("inventario requiere codigo")
+                    delete_sinv(cur, codigo)
+                else:
+                    upsert_sinv(cur, row)
                 conn.commit()
             except Exception:
                 conn.rollback()

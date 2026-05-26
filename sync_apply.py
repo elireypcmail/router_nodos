@@ -4,6 +4,7 @@ from typing import Any
 
 from categoria_trace import trace, trace_exc
 from db_mysql import MySqlClient
+from sinv_store import delete_sinv, upsert_sinv
 from sprv_store import delete_sprv, upsert_sprv
 from sync_store import SyncEvent
 
@@ -131,34 +132,9 @@ class SyncApplier:
         try:
             cur = conn.cursor()
             if event.action == "delete":
-                cur.execute("DELETE FROM sinv WHERE codigo = %s", (codigo,))
-                conn.commit()
-                return
-
-            cur.execute(
-                """
-                INSERT INTO sinv (codigo, descrip, barra, existencia, precio1, ccate, cod_prv, activo)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                  descrip = VALUES(descrip),
-                  barra = VALUES(barra),
-                  existencia = VALUES(existencia),
-                  precio1 = VALUES(precio1),
-                  ccate = VALUES(ccate),
-                  cod_prv = VALUES(cod_prv),
-                  activo = VALUES(activo)
-                """,
-                (
-                    codigo,
-                    row.get("descrip"),
-                    row.get("barra"),
-                    row.get("existencia"),
-                    row.get("precio1"),
-                    row.get("ccate"),
-                    row.get("cod_prv"),
-                    row.get("activo"),
-                ),
-            )
+                delete_sinv(cur, codigo)
+            else:
+                upsert_sinv(cur, row)
             conn.commit()
         except Exception:
             conn.rollback()

@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from config import settings
 from db_mysql import MySqlClient
+from sinv_store import delete_sinv, upsert_sinv
 from middleware.auth import verify_bearer
 
 router = APIRouter(prefix="/api", tags=["inventario"])
@@ -118,47 +119,7 @@ def _upsert_item(body: InventarioUpsertRequest) -> None:
     conn = mysql.connect()
     try:
         cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO sinv (
-              codigo, descrip, ccate, cod_prv, precio1, pg1, barra, referencia,
-              componente, stockmin, stockmax, recipe, cfrio, activo, existencia
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-              descrip = VALUES(descrip),
-              ccate = VALUES(ccate),
-              cod_prv = VALUES(cod_prv),
-              precio1 = VALUES(precio1),
-              pg1 = VALUES(pg1),
-              barra = VALUES(barra),
-              referencia = VALUES(referencia),
-              componente = VALUES(componente),
-              stockmin = VALUES(stockmin),
-              stockmax = VALUES(stockmax),
-              recipe = VALUES(recipe),
-              cfrio = VALUES(cfrio),
-              activo = VALUES(activo),
-              existencia = VALUES(existencia)
-            """,
-            (
-                codigo,
-                body.descrip,
-                body.ccate,
-                body.cod_prv,
-                body.precio1,
-                body.pg1,
-                body.barra,
-                body.referencia,
-                body.componente,
-                body.stockmin,
-                body.stockmax,
-                body.recipe,
-                body.cfrio,
-                body.activo,
-                body.existencia,
-            ),
-        )
+        upsert_sinv(cur, body.model_dump())
         conn.commit()
     except Exception:
         conn.rollback()
@@ -175,9 +136,9 @@ def _delete_item(codigo: str) -> int:
     conn = mysql.connect()
     try:
         cur = conn.cursor()
-        cur.execute("DELETE FROM sinv WHERE codigo = %s", (codigo,))
+        deleted = delete_sinv(cur, codigo)
         conn.commit()
-        return int(cur.rowcount or 0)
+        return deleted
     except Exception:
         conn.rollback()
         raise
