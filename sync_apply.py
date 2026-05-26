@@ -4,6 +4,7 @@ from typing import Any
 
 from categoria_trace import trace, trace_exc
 from db_mysql import MySqlClient
+from sprv_store import delete_sprv, upsert_sprv
 from sync_store import SyncEvent
 
 
@@ -104,86 +105,9 @@ class SyncApplier:
         try:
             cur = conn.cursor()
             if event.action == "delete":
-                cur.execute("DELETE FROM sprv WHERE cod_prv = %s", (cod_prv,))
-                conn.commit()
-                return
-
-            rif_prv = str(row.get("rif_prv") or "").strip()
-            nom_prv = str(row.get("nom_prv") or "").strip()
-            if rif_prv and nom_prv:
-                cur.execute("SELECT 1 FROM auxiliar WHERE cauxiliar = %s LIMIT 1", (rif_prv,))
-                exists = cur.fetchone()
-                if not exists:
-                    cur.execute(
-                        """
-                        INSERT INTO auxiliar (cauxiliar, nauxiliar, rif)
-                        VALUES (%s, %s, %s)
-                        """,
-                        (rif_prv, nom_prv, rif_prv),
-                    )
-
-            cur.execute(
-                """
-                UPDATE sprv
-                SET
-                  nom_prv = %s,
-                  rif_prv = %s,
-                  nit_prv = %s,
-                  dir1_prv = %s,
-                  tel_prv = %s,
-                  email1_prv = %s,
-                  tipo_prv = %s,
-                  plazo1 = %s,
-                  plazo2 = %s,
-                  plazo3 = %s
-                WHERE cod_prv = %s
-                """,
-                (
-                    row.get("nom_prv"),
-                    row.get("rif_prv"),
-                    row.get("nit_prv"),
-                    row.get("dir1_prv"),
-                    row.get("tel_prv"),
-                    row.get("email1_prv"),
-                    row.get("tipo_prv"),
-                    row.get("plazo1"),
-                    row.get("plazo2"),
-                    row.get("plazo3"),
-                    cod_prv,
-                ),
-            )
-            if int(cur.rowcount or 0) == 0:
-                cur.execute(
-                    """
-                    INSERT INTO sprv (
-                      cod_prv,
-                      nom_prv,
-                      rif_prv,
-                      nit_prv,
-                      dir1_prv,
-                      tel_prv,
-                      email1_prv,
-                      tipo_prv,
-                      plazo1,
-                      plazo2,
-                      plazo3
-                    )
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    """,
-                    (
-                        cod_prv,
-                        row.get("nom_prv"),
-                        row.get("rif_prv"),
-                        row.get("nit_prv"),
-                        row.get("dir1_prv"),
-                        row.get("tel_prv"),
-                        row.get("email1_prv"),
-                        row.get("tipo_prv"),
-                        row.get("plazo1"),
-                        row.get("plazo2"),
-                        row.get("plazo3"),
-                    ),
-                )
+                delete_sprv(cur, cod_prv)
+            else:
+                upsert_sprv(cur, row)
             conn.commit()
         except Exception:
             conn.rollback()

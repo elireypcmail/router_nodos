@@ -8,6 +8,7 @@ from config import settings
 from db_mysql import MySqlClient
 from hub_client import HubClient
 from middleware.auth import verify_bearer
+from sprv_store import delete_sprv, upsert_sprv
 from sync_models import SyncApplyRequest
 from sync_store import SyncEvent
 
@@ -152,95 +153,13 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
             conn = mysql.connect()
             try:
                 cur = conn.cursor()
-                cod_prv = str(row.get("cod_prv") or "").strip()
-                if not cod_prv:
-                    raise RuntimeError("proveedor requiere cod_prv")
-
                 if action == "delete":
-                    cur.execute("DELETE FROM sprv WHERE cod_prv = %s", (cod_prv,))
-                    conn.commit()
-                    return
-
-                rif_prv = str(row.get("rif_prv") or "").strip()
-                nom_prv = str(row.get("nom_prv") or "").strip()
-                if rif_prv and nom_prv:
-                    cur.execute("SELECT 1 FROM auxiliar WHERE cauxiliar = %s LIMIT 1", (rif_prv,))
-                    exists = cur.fetchone()
-                    if not exists:
-                        cur.execute(
-                            """
-                            INSERT INTO auxiliar (cauxiliar, nauxiliar, rif)
-                            VALUES (%s, %s, %s)
-                            """,
-                            (rif_prv, nom_prv, rif_prv),
-                        )
-
-                cur.execute(
-                    """
-                    UPDATE sprv
-                    SET
-                      nom_prv = %s,
-                      rif_prv = %s,
-                      dir1_prv = %s,
-                      dir2_prv = %s,
-                      dir3_prv = %s,
-                      tel_prv = %s,
-                      email1_prv = %s,
-                      email2_prv = %s,
-                      rep_prv = %s,
-                      especial = %s,
-                      numcuenta = %s
-                    WHERE cod_prv = %s
-                    """,
-                    (
-                        row.get("nom_prv"),
-                        row.get("rif_prv"),
-                        row.get("dir1_prv"),
-                        row.get("dir2_prv"),
-                        row.get("dir3_prv"),
-                        row.get("tel_prv"),
-                        row.get("email1_prv"),
-                        row.get("email2_prv"),
-                        row.get("rep_prv"),
-                        row.get("especial"),
-                        row.get("numcuenta"),
-                        cod_prv,
-                    ),
-                )
-                if int(cur.rowcount or 0) == 0:
-                    cur.execute(
-                        """
-                        INSERT INTO sprv (
-                          cod_prv,
-                          nom_prv,
-                          rif_prv,
-                          dir1_prv,
-                          dir2_prv,
-                          dir3_prv,
-                          tel_prv,
-                          email1_prv,
-                          email2_prv,
-                          rep_prv,
-                          especial,
-                          numcuenta
-                        )
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                        """,
-                        (
-                            cod_prv,
-                            row.get("nom_prv"),
-                            row.get("rif_prv"),
-                            row.get("dir1_prv"),
-                            row.get("dir2_prv"),
-                            row.get("dir3_prv"),
-                            row.get("tel_prv"),
-                            row.get("email1_prv"),
-                            row.get("email2_prv"),
-                            row.get("rep_prv"),
-                            row.get("especial"),
-                            row.get("numcuenta"),
-                        ),
-                    )
+                    cod_prv = str(row.get("cod_prv") or "").strip()
+                    if not cod_prv:
+                        raise RuntimeError("proveedor requiere cod_prv")
+                    delete_sprv(cur, cod_prv)
+                else:
+                    upsert_sprv(cur, row)
                 conn.commit()
             except Exception:
                 conn.rollback()

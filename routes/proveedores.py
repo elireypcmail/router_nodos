@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from config import settings
 from db_mysql import MySqlClient
+from sprv_store import delete_sprv, upsert_sprv
 from middleware.auth import verify_bearer
 
 router = APIRouter(prefix="/api", tags=["proveedores"])
@@ -110,86 +111,7 @@ def _upsert_proveedor(body: ProveedorUpsertRequest) -> None:
     conn = mysql.connect()
     try:
         cur = conn.cursor()
-
-        rif_prv = (body.rif_prv or "").strip()
-        nom_prv = (body.nom_prv or "").strip()
-        if rif_prv and nom_prv:
-            cur.execute("SELECT 1 FROM auxiliar WHERE cauxiliar = %s LIMIT 1", (rif_prv,))
-            exists = cur.fetchone()
-            if not exists:
-                cur.execute(
-                    """
-                    INSERT INTO auxiliar (cauxiliar, nauxiliar, rif)
-                    VALUES (%s, %s, %s)
-                    """,
-                    (rif_prv, nom_prv, rif_prv),
-                )
-        cur.execute(
-            """
-            UPDATE sprv
-            SET
-              nom_prv = %s,
-              rif_prv = %s,
-              dir1_prv = %s,
-              dir2_prv = %s,
-              dir3_prv = %s,
-              tel_prv = %s,
-              email1_prv = %s,
-              email2_prv = %s,
-              rep_prv = %s,
-              especial = %s,
-              numcuenta = %s
-            WHERE cod_prv = %s
-            """,
-            (
-                body.nom_prv,
-                body.rif_prv,
-                body.dir1_prv,
-                body.dir2_prv,
-                body.dir3_prv,
-                body.tel_prv,
-                body.email1_prv,
-                body.email2_prv,
-                body.rep_prv,
-                body.especial,
-                body.numcuenta,
-                cod_prv,
-            ),
-        )
-        if int(cur.rowcount or 0) == 0:
-            cur.execute(
-                """
-                INSERT INTO sprv (
-                  cod_prv,
-                  nom_prv,
-                  rif_prv,
-                  dir1_prv,
-                  dir2_prv,
-                  dir3_prv,
-                  tel_prv,
-                  email1_prv,
-                  email2_prv,
-                  rep_prv,
-                  especial,
-                  numcuenta
-                )
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                """,
-                (
-                    cod_prv,
-                    body.nom_prv,
-                    body.rif_prv,
-                    body.dir1_prv,
-                    body.dir2_prv,
-                    body.dir3_prv,
-                    body.tel_prv,
-                    body.email1_prv,
-                    body.email2_prv,
-                    body.rep_prv,
-                    body.especial,
-                    body.numcuenta,
-                ),
-            )
+        upsert_sprv(cur, body.model_dump())
         conn.commit()
     except Exception:
         conn.rollback()
@@ -206,9 +128,9 @@ def _delete_proveedor(cod_prv: str) -> int:
     conn = mysql.connect()
     try:
         cur = conn.cursor()
-        cur.execute("DELETE FROM sprv WHERE cod_prv = %s", (cod_prv,))
+        deleted = delete_sprv(cur, cod_prv)
         conn.commit()
-        return int(cur.rowcount or 0)
+        return deleted
     except Exception:
         conn.rollback()
         raise
