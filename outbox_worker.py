@@ -78,8 +78,15 @@ class OutboxWorker:
                     )
                     ids.append(e.id)
 
-                await self._hub.send_outbox_batch(payload)
-                await anyio.to_thread.run_sync(lambda: self._repo.mark_sent(ids))
+                result = await self._hub.send_outbox_batch(payload)
+                await anyio.to_thread.run_sync(
+                    lambda: self._repo.apply_send_result(result),
+                )
+                if result.has_failures:
+                    logger.warning(
+                        "Outbox worker: %s event(s) returned to pending (hub ingest failed)",
+                        len(result.failed_ids),
+                    )
                 sleep_seconds = self._interval
             except asyncio.CancelledError:
                 raise

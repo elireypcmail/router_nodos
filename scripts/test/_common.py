@@ -426,10 +426,13 @@ async def flush_outbox_once(batch_size: int = 50) -> int:
         for e in events
     ]
     ids = [e.id for e in events]
-    await hub.send_outbox_batch(payload)
-    repo.mark_sent(ids)
-    print(f"Outbox: sent {len(ids)} event(s) to {settings.hub_base_url}{settings.hub_push_path}")
-    return len(ids)
+    result = await hub.send_outbox_batch(payload)
+    repo.apply_send_result(result)
+    print(
+        f"Outbox: hub ingest sent={len(result.sent_ids)} ignored={len(result.ignored_ids)} "
+        f"failed={len(result.failed_ids)} -> {settings.hub_base_url}{settings.hub_push_path}"
+    )
+    return len(result.sent_ids)
 
 
 def maybe_flush(flush: bool) -> None:

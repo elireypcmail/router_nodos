@@ -8,6 +8,7 @@ from categoria_trace import trace, trace_exc, trace_warn
 from config import settings
 from json_util import json_safe
 from node_catalog import load_node_catalog
+from outbox_send_result import OutboxSendResult
 from sync_http_log import log_sync_error, log_sync_step
 
 logger = logging.getLogger("multishop.outbox")
@@ -61,20 +62,23 @@ class HubClient:
 
         self._base = settings.hub_base_url.rstrip("/")
 
-    async def send_outbox_batch(self, batch: list[dict]) -> None:
+    async def send_outbox_batch(self, batch: list[dict]) -> OutboxSendResult:
         url = f"{self._base}{settings.hub_push_path}"
         headers: dict[str, str] = {}
         if settings.nodo_api_token:
             headers["Authorization"] = f"Bearer {settings.nodo_api_token}"
 
+        ignored_ids: list[int] = []
+        pending_events: list[tuple[int, dict]] = []
+
         async with httpx.AsyncClient(timeout=30.0) as client:
-            events: list[dict] = []
             for e in batch:
                 table = str(e.get("table") or "").strip().lower()
 
                 outbox_id = e.get("outbox_id")
                 if outbox_id is None:
                     continue
+                outbox_id_int = int(outbox_id)
 
                 pk = e.get("pk") or {}
                 row = e.get("row") or {}
@@ -87,6 +91,7 @@ class HubClient:
                     entity_type = "sale"
                 elif table in {"kardex", "kardexd"}:
                     if not _is_kardex_inventory_adjustment(payload):
+                        ignored_ids.append(outbox_id_int)
                         continue
                     entity_type = "kardex"
                     op = str(e.get("op") or "I").strip().upper()
@@ -97,7 +102,9 @@ class HubClient:
                     op = str(e.get("op") or "I").strip().upper()
                     if op:
                         payload["outbox_op"] = op
+
                 if not entity_type:
+                    ignored_ids.append(outbox_id_int)
                     continue
 
                 codigo = _ingest_codigo(payload)
@@ -119,23 +126,36 @@ class HubClient:
                 logger.info(
                     "[hub-ingest] -> enviar %s outbox_id=%s codigo=%s tabla=%s",
                     label,
-                    outbox_id,
+                    outbox_id_int,
                     _ingest_codigo(payload),
                     table,
                 )
 
-                events.append(
-                    {
-                        "event_id": str(outbox_id),
-                        "entity_type": entity_type,
-                        "payload": payload,
-                        "occurred_at": e.get("created_at"),
-                    }
+                pending_events.append(
+                    (
+                        outbox_id_int,
+                        {
+                            "event_id": str(outbox_id_int),
+                            "entity_type": entity_type,
+                            "payload": payload,
+                            "occurred_at": e.get("created_at"),
+                        },
+                    )
                 )
 
-            if not events:
-                return
+            attempted_ids = [oid for oid, _ in pending_events]
+            if not pending_events:
+                if ignored_ids:
+                    logger.debug(
+                        "[hub-ingest] batch sin eventos transaccionales (%s ignorados)",
+                        len(ignored_ids),
+                    )
+                return OutboxSendResult(
+                    ignored_ids=ignored_ids,
+                    attempted_ids=attempted_ids,
+                )
 
+            events = [ev for _, ev in pending_events]
             logger.info(
                 "[hub-ingest] POST %s (%s evento(s) transaccional)",
                 url,
@@ -143,7 +163,56 @@ class HubClient:
             )
             resp = await client.post(url, json={"events": events}, headers=headers)
             resp.raise_for_status()
-            logger.info("[hub-ingest] OK hub responded %s", resp.status_code)
+            body = resp.json()
+            logger.info(
+                "[hub-ingest] OK hub responded %s accepted=%s failed=%s",
+                resp.status_code,
+                body.get("accepted"),
+                body.get("failed"),
+            )
+
+            sent_ids: list[int] = []
+            failed_ids: list[int] = []
+            hub_failed_messages: dict[int, str] = {}
+            for item in body.get("results") or []:
+                if not isinstance(item, dict):
+                    continue
+                raw_id = item.get("event_id")
+                try:
+                    oid = int(str(raw_id).strip())
+                except (TypeError, ValueError):
+                    continue
+                status = str(item.get("status") or "").strip().lower()
+                if status in {"accepted", "duplicate"}:
+                    sent_ids.append(oid)
+                    continue
+                failed_ids.append(oid)
+                message = item.get("message")
+                if message:
+                    hub_failed_messages[oid] = str(message)
+
+            for oid in attempted_ids:
+                if oid in sent_ids or oid in failed_ids:
+                    continue
+                failed_ids.append(oid)
+                hub_failed_messages.setdefault(
+                    oid,
+                    "hub ingest: evento sin confirmacion en la respuesta",
+                )
+
+            if failed_ids:
+                logger.warning(
+                    "[hub-ingest] %s evento(s) no confirmados por el hub",
+                    len(failed_ids),
+                )
+
+            return OutboxSendResult(
+                sent_ids=sent_ids,
+                ignored_ids=ignored_ids,
+                failed_ids=failed_ids,
+                attempted_ids=attempted_ids,
+                hub_failed_messages=hub_failed_messages,
+            )
 
     async def get_categoria_in_hub(self, ccate: str) -> dict | None:
         """None si no existe en el hub (404)."""

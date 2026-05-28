@@ -175,7 +175,7 @@ class OutboxRepository:
             cur.execute(
                 f"""
                 UPDATE {self._table}
-                SET status='sent', sent_at=NOW(3)
+                SET status='sent', sent_at=NOW(3), last_error=NULL
                 WHERE id IN ({placeholders})
                 """,
                 tuple(ids),
@@ -186,6 +186,43 @@ class OutboxRepository:
             raise
         finally:
             conn.close()
+
+    def mark_ignored(self, ids: list[int]) -> None:
+        """Filas no transaccionales (sinv/catego/espejo kardex) — no van a ingest."""
+        if not ids:
+            return
+        conn = self._mysql.connect()
+        try:
+            cur = conn.cursor()
+            placeholders = ",".join(["%s"] * len(ids))
+            cur.execute(
+                f"""
+                UPDATE {self._table}
+                SET status='ignored', sent_at=NOW(3), last_error=NULL
+                WHERE id IN ({placeholders})
+                """,
+                tuple(ids),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def apply_send_result(self, result) -> None:
+        from outbox_send_result import OutboxSendResult
+
+        if not isinstance(result, OutboxSendResult):
+            raise TypeError("result must be OutboxSendResult")
+
+        if result.sent_ids:
+            self.mark_sent(result.sent_ids)
+        if result.ignored_ids:
+            self.mark_ignored(result.ignored_ids)
+        if result.failed_ids:
+            sample = next(iter(result.hub_failed_messages.values()), "hub ingest failed")
+            self.release_to_pending(result.failed_ids, sample)
 
     def mark_failed(self, ids: list[int], error: str) -> None:
         if not ids:

@@ -46,9 +46,14 @@ def send_outbox_batch() -> dict[str, Any]:
     try:
         import anyio
 
-        anyio.run(hub.send_outbox_batch, payload)
-        repo.mark_sent(ids)
-        return {"sent": len(ids), "message": "ok"}
+        result = anyio.run(hub.send_outbox_batch, payload)
+        repo.apply_send_result(result)
+        return {
+            "sent": len(result.sent_ids),
+            "ignored": len(result.ignored_ids),
+            "failed": len(result.failed_ids),
+            "message": "ok" if not result.has_failures else "partial_failure",
+        }
     except Exception as ex:
         repo.release_to_pending(ids, str(ex))
         raise
