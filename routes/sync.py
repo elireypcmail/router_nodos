@@ -490,7 +490,10 @@ async def sync_categorias_push(_: None = Depends(verify_bearer)):
 
 @router.post("/proveedores/push")
 async def sync_proveedores_push(_: None = Depends(verify_bearer)):
-    return await _run_provider_push_to_hub()
+    trace("sync.push.start", entity="proveedor")
+    result = await _run_provider_push_to_hub()
+    trace("sync.push.done", **{k: result.get(k) for k in ("pulled", "inserted", "conflicts")})
+    return result
 
 
 @router.post("/inventario/push")

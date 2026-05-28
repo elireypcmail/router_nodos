@@ -23,6 +23,7 @@ from sync_apply import SyncApplier
 from sync_store import SyncStore
 from sync_worker import SyncWorker
 from categoria_trace import is_categoria_http_path, trace, trace_exc
+from sync_http_log import sync_http_log_middleware
 
 sync_store: SyncStore | None = None
 sync_worker: SyncWorker | None = None
@@ -150,6 +151,11 @@ app.include_router(sync.router)
 
 
 @app.middleware("http")
+async def sync_http_log(request: Request, call_next):
+    return await sync_http_log_middleware(request, call_next)
+
+
+@app.middleware("http")
 async def categoria_http_trace(request: Request, call_next):
     path = request.url.path
     if not is_categoria_http_path(path):
@@ -190,7 +196,13 @@ async def request_validation_exception_handler(_request: Request, exc: RequestVa
 @app.exception_handler(RuntimeError)
 async def runtime_exception_handler(request: Request, exc: RuntimeError):
     message = _error_message(exc)
-    logger.error("RuntimeError en %s %s: %s", request.method, request.url.path, message)
+    logger.error(
+        "RuntimeError en %s %s: %s",
+        request.method,
+        request.url.path,
+        message,
+        exc_info=True,
+    )
     return JSONResponse(
         status_code=500,
         content={

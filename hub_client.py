@@ -7,6 +7,7 @@ from categoria_trace import trace, trace_exc, trace_warn
 from config import settings
 from json_util import json_safe
 from node_catalog import load_node_catalog
+from sync_http_log import log_sync_error, log_sync_step
 
 
 def _num_field(row: dict, key: str) -> float:
@@ -327,28 +328,59 @@ class HubClient:
             "Authorization": f"Bearer {settings.nodo_api_token}",
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(
-                url,
-                json=json_safe({"items": items}),
-                headers=headers,
+        log_sync_step(
+            "hub.push.batch.start",
+            url=url,
+            items=len(items),
+            hub_base=self._base,
+        )
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                resp = await client.post(
+                    url,
+                    json=json_safe({"items": items}),
+                    headers=headers,
+                )
+        except httpx.HTTPError as exc:
+            hint = ""
+            err = str(exc).lower()
+            if "ssl" in err or "record layer" in err:
+                hint = (
+                    " (¿HUB_BASE_URL con https pero el hub escucha HTTP? "
+                    "Use http://10.66.0.1:3000 en VPN dev)"
+                )
+            log_sync_error("hub.push.batch.failed", exc, url=url, items=len(items))
+            raise RuntimeError(f"Hub inalcanzable en push batch: {exc}{hint}") from exc
+
+        if resp.status_code >= 400:
+            detail = resp.text[:500]
+            try:
+                body = resp.json()
+                if isinstance(body, dict):
+                    msg = body.get("message")
+                    if isinstance(msg, list):
+                        detail = "; ".join(str(m) for m in msg)
+                    elif isinstance(msg, str):
+                        detail = msg
+            except Exception:
+                pass
+            log_sync_step(
+                "hub.push.batch.http_error",
+                url=url,
+                status=resp.status_code,
+                detail=detail[:200],
             )
-            if resp.status_code >= 400:
-                detail = resp.text[:500]
-                try:
-                    body = resp.json()
-                    if isinstance(body, dict):
-                        msg = body.get("message")
-                        if isinstance(msg, list):
-                            detail = "; ".join(str(m) for m in msg)
-                        elif isinstance(msg, str):
-                            detail = msg
-                except Exception:
-                    pass
-                raise RuntimeError(
-                    f"Hub push batch HTTP {resp.status_code}: {detail}"
-                ) from None
-            data = resp.json()
-            if isinstance(data, dict):
-                return data
-            raise RuntimeError("Respuesta inesperada del hub en push batch")
+            raise RuntimeError(
+                f"Hub push batch HTTP {resp.status_code}: {detail}"
+            ) from None
+        data = resp.json()
+        if isinstance(data, dict):
+            log_sync_step(
+                "hub.push.batch.ok",
+                url=url,
+                items=len(items),
+                inserted=data.get("inserted"),
+                conflicts=data.get("conflicts"),
+            )
+            return data
+        raise RuntimeError("Respuesta inesperada del hub en push batch")
