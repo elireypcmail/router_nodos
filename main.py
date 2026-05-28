@@ -1,8 +1,11 @@
 """API del nodo multishop — orquestada por Nest vía VPN hub."""
 
+import asyncio
 from contextlib import asynccontextmanager
 import logging
 import os
+from pathlib import Path
+import ssl
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -29,6 +32,32 @@ pull_worker: HubPullWorker | None = None
 logger = logging.getLogger("multishop-nodo-api")
 
 
+async def _ensure_outbox_schema_with_retry(
+    outbox_repo: OutboxRepository,
+    *,
+    attempts: int = 8,
+    delay_seconds: float = 2.0,
+) -> None:
+    last_err: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            outbox_repo.ensure_schema()
+            return
+        except Exception as exc:
+            last_err = exc
+            logger.warning(
+                "MySQL outbox schema intento %s/%s: %s",
+                attempt,
+                attempts,
+                exc,
+            )
+            if attempt < attempts:
+                await asyncio.sleep(delay_seconds)
+    raise RuntimeError(
+        f"No se pudo inicializar sync_outbox tras {attempts} intentos: {last_err}"
+    ) from last_err
+
+
 def configure_logging() -> None:
     level_name = os.getenv("LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
@@ -40,6 +69,8 @@ def configure_logging() -> None:
     else:
         logging.root.setLevel(level)
     logging.getLogger("multishop.categoria").setLevel(level)
+    logging.getLogger("multishop.sync_apply").setLevel(level)
+    logging.getLogger("multishop.outbox").setLevel(level)
 
 
 @asynccontextmanager
@@ -73,7 +104,7 @@ async def lifespan(_app: FastAPI):
         if not mysql.is_configured():
             raise RuntimeError("HUB_PUSH_ENABLED requiere MYSQL_* configurado")
         outbox_repo = OutboxRepository(mysql)
-        outbox_repo.ensure_schema()
+        await _ensure_outbox_schema_with_retry(outbox_repo)
         hub = HubClient()
         outbox_worker = OutboxWorker(
             outbox_repo,
@@ -86,7 +117,7 @@ async def lifespan(_app: FastAPI):
         if not mysql.is_configured():
             raise RuntimeError("HUEY_ENABLED requiere MYSQL_* configurado")
         outbox_repo = OutboxRepository(mysql)
-        outbox_repo.ensure_schema()
+        await _ensure_outbox_schema_with_retry(outbox_repo)
         import huey_tasks
 
         huey_tasks.enqueue_outbox()
@@ -201,20 +232,64 @@ def run():
     configure_logging()
     ssl_cert = settings.nodo_ssl_certfile or None
     ssl_key = settings.nodo_ssl_keyfile or None
+    ssl_client_ca = settings.nodo_ssl_client_ca_file or None
+    client_cert_required = bool(settings.nodo_ssl_client_cert_required)
     use_ssl = bool(ssl_cert and ssl_key)
 
     if not use_ssl and not settings.nodo_allow_insecure:
         raise RuntimeError(
             "Configure NODO_SSL_CERTFILE/NODO_SSL_KEYFILE o NODO_ALLOW_INSECURE=true (solo dev)"
         )
+    if client_cert_required and not use_ssl:
+        raise RuntimeError(
+            "mTLS requiere TLS en nodo: configure NODO_SSL_CERTFILE/NODO_SSL_KEYFILE"
+        )
+    if client_cert_required and not ssl_client_ca:
+        raise RuntimeError(
+            "mTLS requiere NODO_SSL_CLIENT_CA_FILE con la CA del hub"
+        )
+
+    dev_reload = os.getenv("NODO_DEV_RELOAD", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+    reload_kwargs: dict = {}
+    if dev_reload:
+        nodo_root = Path(__file__).resolve().parent
+        # Solo .py del proyecto; evita bucle por __pycache__/venv/logs al reiniciar.
+        reload_kwargs = {
+            "reload_dirs": [str(nodo_root)],
+            "reload_includes": ["*.py"],
+            "reload_excludes": [
+                "venv",
+                "venv/**",
+                ".venv",
+                ".venv/**",
+                "**/__pycache__",
+                "**/__pycache__/**",
+                "**/*.pyc",
+                "**/*.pyo",
+                ".env",
+                ".env.*",
+                "logs",
+                "logs/**",
+                "**/*.log",
+            ],
+            "reload_delay": 0.75,
+        }
 
     uvicorn.run(
         "main:app",
         host=settings.nodo_host,
         port=settings.nodo_port,
-        reload=False,
+        reload=dev_reload,
         ssl_certfile=ssl_cert if use_ssl else None,
         ssl_keyfile=ssl_key if use_ssl else None,
+        ssl_ca_certs=ssl_client_ca if client_cert_required else None,
+        ssl_cert_reqs=ssl.CERT_REQUIRED if client_cert_required else ssl.CERT_NONE,
+        **reload_kwargs,
     )
 
 

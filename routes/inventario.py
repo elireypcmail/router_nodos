@@ -57,6 +57,9 @@ def _fetch_inventario(search: str, limit: int) -> list[dict]:
               cfrio,
               activo,
               existencia,
+              costo,
+              costopro,
+              costoant
             FROM sinv
             WHERE (%s = '' OR codigo LIKE %s OR descrip LIKE %s OR barra LIKE %s)
             ORDER BY descrip ASC
@@ -96,6 +99,9 @@ def _get_item(codigo: str) -> dict | None:
               cfrio,
               activo,
               existencia,
+              costo,
+              costopro,
+              costoant
             FROM sinv
             WHERE codigo = %s
             LIMIT 1
@@ -105,6 +111,57 @@ def _get_item(codigo: str) -> dict | None:
         return cur.fetchone()
     finally:
         conn.close()
+
+
+def _fetch_lotes(codigo: str) -> list[dict]:
+    mysql = MySqlClient()
+    if not mysql.is_configured():
+        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+
+    conn = mysql.connect()
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT
+              indice,
+              lote,
+              cubica,
+              existencia,
+              vence,
+              elabora,
+              calidad,
+              costo,
+              costopr,
+              costopro,
+              costopropr,
+              disponible,
+              traslado
+            FROM detalle
+            WHERE codigo = %s
+            ORDER BY cubica ASC, lote ASC, vence ASC
+            """,
+            (codigo,),
+        )
+        return list(cur.fetchall() or [])
+    finally:
+        conn.close()
+
+
+def _get_detalle_tienda(codigo: str) -> dict | None:
+    item = _get_item(codigo)
+    if not item:
+        return None
+    try:
+        lotes = _fetch_lotes(codigo)
+    except Exception:
+        lotes = []
+    existencia_lotes = sum(float(row.get("existencia") or 0) for row in lotes)
+    return {
+        "item": item,
+        "lotes": lotes,
+        "existencia_lotes": existencia_lotes,
+    }
 
 
 def _upsert_item(body: InventarioUpsertRequest) -> None:
@@ -158,6 +215,21 @@ async def inventario(
         "nodo_id": settings.nodo_id,
         "nombre": settings.nodo_nombre,
         "items": items,
+        "message": "ok",
+    }
+
+
+@router.get("/inventario/{codigo}/detalle-tienda")
+async def get_inventario_detalle_tienda(
+    codigo: str, _: None = Depends(verify_bearer)
+):
+    payload = await anyio.to_thread.run_sync(lambda: _get_detalle_tienda(codigo))
+    if not payload:
+        raise HTTPException(status_code=404, detail="Item no encontrado")
+    return {
+        "nodo_id": settings.nodo_id,
+        "nombre": settings.nodo_nombre,
+        **payload,
         "message": "ok",
     }
 

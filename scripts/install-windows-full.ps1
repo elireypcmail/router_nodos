@@ -381,17 +381,8 @@ function Enable-OutboxTriggersIfDocker {
         return $false
     }
 
-    Write-Host "Activando triggers/outbox en MySQL (Docker: mysql56-app, DB: mi_base_restaurada)..."
-    Write-Host "Tablas CDC: sinv, sprv, ventas/ventasd, factura/facturad, kardex/kardexd, comprasdbf, catego"
-
-    $sqlFile = Join-Path $NodoDirPath 'scripts\\mysql_outbox_triggers.sql'
-    if (-not (Test-Path -LiteralPath $sqlFile)) {
-        Write-Warning "No se encontró $sqlFile. Omitiendo activación de triggers/outbox."
-        return $false
-    }
-
-    Get-Content $sqlFile | docker exec -i mysql56-app mysql -u root -pmultishop -D mi_base_restaurada
-    return $true
+    Write-Warning "Contenedor mysql56-app detectado; use MYSQL_* del .env con apply_mysql_outbox_triggers.py (no pipe SQL directo)."
+    return $false
 }
 
 function Parse-EnvFile {
@@ -468,7 +459,8 @@ function Enable-OutboxTriggersWithPython {
     $env:MS_MYSQL_DATABASE = $db
     $env:MS_MYSQL_PORT = $port
     $env:MS_SQL_FILE = $sqlFile
-    Write-Host "Aplicando triggers/outbox ..." -ForegroundColor Cyan
+    Remove-Item Env:MS_OUTBOX_SKIP_PREFLIGHT -ErrorAction SilentlyContinue
+    Write-Host "Outbox: desinstalar triggers Multishop y reinstalar desde cero ..." -ForegroundColor Cyan
     & $VenvPython $applyScript
     if ($LASTEXITCODE -ne 0) {
         throw "apply_mysql_outbox_triggers.py salió con código $LASTEXITCODE"

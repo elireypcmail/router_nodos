@@ -1,8 +1,18 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Siempre .env en la raíz de Multishop-nodo-API (no depende del cwd al ejecutar scripts).
+_PACKAGE_DIR = Path(__file__).resolve().parent
+_ENV_FILE = _PACKAGE_DIR / ".env"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=_ENV_FILE if _ENV_FILE.is_file() else None,
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     nodo_id: str = "nodo-local"
     nodo_nombre: str = "Nodo local"
@@ -13,6 +23,8 @@ class Settings(BaseSettings):
     nodo_port: int = 8443
     nodo_ssl_certfile: str = ""
     nodo_ssl_keyfile: str = ""
+    nodo_ssl_client_ca_file: str = ""
+    nodo_ssl_client_cert_required: bool = False
     nodo_allow_insecure: bool = True
 
     sync_db_path: str = "./data/sync.sqlite"
@@ -24,6 +36,20 @@ class Settings(BaseSettings):
 
     # Contratos guía (multishop-hub): endpoints de nodo autenticados por Bearer apiToken
     hub_nodo_sync_categorias_path: str = "/api/nodo/sync/categorias"
+    hub_nodo_sync_proveedores_path: str = "/api/nodo/sync/proveedores"
+    hub_nodo_sync_productos_path: str = "/api/nodo/sync/productos"
+    hub_nodo_catalog_pull_warnings_path: str = (
+        "/api/nodo/catalog-pull-warnings/batch"
+    )
+    hub_nodo_catalog_push_categorias_path: str = (
+        "/api/nodo/catalog-push/categorias/batch"
+    )
+    hub_nodo_catalog_push_proveedores_path: str = (
+        "/api/nodo/catalog-push/proveedores/batch"
+    )
+    hub_nodo_catalog_push_inventario_path: str = (
+        "/api/nodo/catalog-push/inventario/batch"
+    )
     hub_nodo_categorias_path: str = "/api/nodo/categorias"
     hub_pull_enabled: bool = False
     hub_pull_interval_seconds: int = 10
@@ -32,7 +58,8 @@ class Settings(BaseSettings):
 
     hub_push_enabled: bool = False
     hub_push_interval_seconds: float = 1.0
-    hub_push_path: str = "/orchestration/node-outbox"
+    # Contrato actual: node → hub (ingest) para transaccional vía outbox.
+    hub_push_path: str = "/api/nodo/events/batch"
 
     huey_enabled: bool = False
     huey_db_path: str = "./data/huey.sqlite"

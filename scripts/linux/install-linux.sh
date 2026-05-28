@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Instala/configura nodo en Linux (WireGuard + API Python)
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NODO_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+BUNDLE_DIR="${1:-.}"
+
+if [[ -f "${BUNDLE_DIR}/wg0.conf" ]]; then
+  if command -v wg >/dev/null 2>&1; then
+    sudo cp "${BUNDLE_DIR}/wg0.conf" /etc/wireguard/wg0.conf
+    sudo chmod 600 /etc/wireguard/wg0.conf
+    sudo wg-quick down wg0 2>/dev/null || true
+    sudo wg-quick up wg0
+  else
+    echo "Aviso: se encontró wg0.conf pero wireguard (wg) no está instalado. Continuando sin VPN (red normal)." >&2
+  fi
+else
+  echo "Aviso: no se encontró wg0.conf. Continuando sin VPN (red normal)." >&2
+fi
+
+if [[ -f "${BUNDLE_DIR}/.env" ]]; then
+  cp "${BUNDLE_DIR}/.env" "${NODO_DIR}/.env"
+fi
+
+MYSQL_HOST=""
+MYSQL_PORT=""
+MYSQL_USER=""
+MYSQL_PASSWORD=""
+MYSQL_DATABASE=""
+
+if [[ -f "${NODO_DIR}/.env" ]]; then
+  while IFS='=' read -r k v; do
+    [[ -z "${k}" ]] && continue
+    [[ "${k}" =~ ^# ]] && continue
+    v="${v%\r}"
+    v="${v%\n}"
+    v="${v%\"}"
+    v="${v#\"}"
+    v="${v%\'}"
+    v="${v#\'}"
+    case "${k}" in
+      MYSQL_HOST) MYSQL_HOST="${v}" ;;
+      MYSQL_PORT) MYSQL_PORT="${v}" ;;
+      MYSQL_USER) MYSQL_USER="${v}" ;;
+      MYSQL_PASSWORD) MYSQL_PASSWORD="${v}" ;;
+      MYSQL_DATABASE) MYSQL_DATABASE="${v}" ;;
+    esac
+  done < "${NODO_DIR}/.env"
+fi
+
+if [[ -z "${MYSQL_PORT}" ]]; then
+  MYSQL_PORT="3306"
+fi
+
+python3 -m venv "${NODO_DIR}/venv"
+"${NODO_DIR}/venv/bin/pip" install -q -r "${NODO_DIR}/requirements.txt"
+
+apply_outbox_triggers() {
+  if [[ -z "${MYSQL_HOST}" || -z "${MYSQL_USER}" || -z "${MYSQL_PASSWORD}" || -z "${MYSQL_DATABASE}" ]]; then
+    echo "Aviso: MYSQL_* incompleto en .env. Omitiendo outbox (triggers)." >&2
+    return 0
+  fi
+  export MS_MYSQL_HOST="${MYSQL_HOST}"
+  export MS_MYSQL_PORT="${MYSQL_PORT}"
+  export MS_MYSQL_USER="${MYSQL_USER}"
+  export MS_MYSQL_PASSWORD="${MYSQL_PASSWORD}"
+  export MS_MYSQL_DATABASE="${MYSQL_DATABASE}"
+  export MS_SQL_FILE="${NODO_DIR}/scripts/mysql_outbox_triggers.sql"
+  unset MS_OUTBOX_SKIP_PREFLIGHT
+  echo "Outbox: desinstalar triggers Multishop y reinstalar (apply_mysql_outbox_triggers.py)..."
+  "${NODO_DIR}/venv/bin/python" "${NODO_DIR}/scripts/apply_mysql_outbox_triggers.py"
+}
+
+apply_outbox_triggers || echo "Aviso: no se pudo aplicar outbox. Revise MySQL y permisos TRIGGER." >&2
+
+echo "Nodo Linux listo. Arranque API: ${NODO_DIR}/venv/bin/python ${NODO_DIR}/main.py"
+echo ""
+echo "Huey (opcional, recomendado para reintentos de outbox):"
+echo "- En .env: HUEY_ENABLED=true (y configure HUB_* + MYSQL_*)"
+echo "- Arranque Huey consumer: ${NODO_DIR}/venv/bin/python -m huey.bin.huey_consumer huey_tasks.huey"

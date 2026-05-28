@@ -1,13 +1,26 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 import anyio
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from categoria_trace import is_categoria_entity, trace, trace_exc, trace_warn
 from config import settings
 from db_mysql import MySqlClient
 from hub_client import HubClient
 from middleware.auth import verify_bearer
+from catalog_apply import (
+    apply_categoria_row,
+    apply_inventario_row,
+    apply_inventario_dependency_rows,
+    apply_proveedor_row,
+    assert_inventario_dependencies,
+)
+from sync_apply_trace import (
+    log_apply_exception,
+    log_apply_ok,
+    log_apply_start,
+    log_apply_value_error,
+)
 from sinv_store import delete_sinv, upsert_sinv
 from sprv_store import delete_sprv, upsert_sprv
 from sync_models import SyncApplyRequest
@@ -206,7 +219,186 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
             detail="Transaccional (compras/ventas/kardex) no se aplica por push; debe entrar por pull (/orchestration/sync/events)",
         )
 
-    raise HTTPException(status_code=400, detail=f"entity_type no soportado: {body.entity_type}")
+    raise HTTPException(
+        status_code=400,
+        detail=f"entity_type no soportado: {body.entity_type}",
+    )
+
+
+def _to_float(value: object) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    # pymysql devuelve DECIMAL como decimal.Decimal
+    if type(value).__name__ == "Decimal":
+        return float(value)
+    try:
+        return float(str(value).strip())
+    except Exception:
+        return 0.0
+
+
+def _fetch_sinv_cost_row(cur, codigo: str) -> dict | None:
+    """Busca por código normalizado (TRIM); devuelve fila con codigo real en BD."""
+    key = codigo.strip()
+    if not key:
+        return None
+    cur.execute(
+        "SELECT codigo, costo, costopro FROM sinv WHERE TRIM(codigo) = %s LIMIT 1",
+        (key,),
+    )
+    return cur.fetchone()
+
+
+@router.post("/cost/propose")
+async def sync_cost_propose(body: SyncEventBody, _: None = Depends(verify_bearer)):
+    """
+    Propuesta de actualización de costo (hub → nodo).
+
+    No modifica tablas si el costo propuesto es menor que el costo local.
+    """
+    entity = body.entity_type.strip().lower()
+    if entity not in {"inventory_cost_update", "cost_update", "inventory_cost"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"entity_type no soportado: {body.entity_type}",
+        )
+
+    payload = body.payload or {}
+    codigo = str(payload.get("codigo") or "").strip()
+    costo_propuesto = _to_float(payload.get("costo_promedio_ponderado"))
+    costo_actual_factura = _to_float(payload.get("costo_actual_factura"))
+
+    if not codigo:
+        raise HTTPException(status_code=422, detail="cost/propose requiere codigo")
+
+    mysql = MySqlClient()
+    if not mysql.is_configured():
+        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+
+    def decide_and_apply():
+        conn = mysql.connect()
+        try:
+            cur = conn.cursor(dictionary=True)
+            row = _fetch_sinv_cost_row(cur, codigo)
+            if not row:
+                return {
+                    "status": "not_found",
+                    "codigo": codigo,
+                    "message": "sinv no encontrado en esta tienda",
+                }
+
+            codigo_db = str(row.get("codigo") or codigo).strip()
+            costo_local = _to_float(row.get("costo"))
+            costopro_local = _to_float(row.get("costopro"))
+            costo_local_max = max(costo_local, costopro_local)
+
+            if costo_propuesto < costo_local_max:
+                return {
+                    "status": "warning",
+                    "codigo": codigo_db,
+                    "costo_local": costo_local,
+                    "costopro_local": costopro_local,
+                    "costo_local_max": costo_local_max,
+                    "costo_propuesto": costo_propuesto,
+                }
+
+            costoant = costo_local
+            nuevo_costo = (
+                costo_actual_factura if costo_actual_factura != 0 else costo_propuesto
+            )
+
+            cur.execute(
+                "UPDATE sinv SET costoant=%s, costo=%s, costopro=%s WHERE codigo=%s",
+                (costoant, nuevo_costo, costo_propuesto, codigo_db),
+            )
+            conn.commit()
+
+            return {
+                "status": "applied",
+                "codigo": codigo_db,
+                "costo_local": costo_local,
+                "costopro_local": costopro_local,
+                "costo_propuesto": costo_propuesto,
+            }
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    try:
+        return await anyio.to_thread.run_sync(decide_and_apply)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/cost/apply")
+async def sync_cost_apply(body: SyncEventBody, _: None = Depends(verify_bearer)):
+    """
+    Forzar actualización de costo (hub → nodo).
+
+    Se usa después de que el usuario confirma en el portal.
+    """
+    entity = body.entity_type.strip().lower()
+    if entity not in {"inventory_cost_update", "cost_update", "inventory_cost"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"entity_type no soportado: {body.entity_type}",
+        )
+
+    payload = body.payload or {}
+    codigo = str(payload.get("codigo") or "").strip()
+    costo_propuesto = _to_float(payload.get("costo_promedio_ponderado"))
+    costo_actual_factura = _to_float(payload.get("costo_actual_factura"))
+
+    if not codigo:
+        raise HTTPException(status_code=422, detail="cost/apply requiere codigo")
+
+    mysql = MySqlClient()
+    if not mysql.is_configured():
+        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+
+    def apply():
+        conn = mysql.connect()
+        try:
+            cur = conn.cursor(dictionary=True)
+            row = _fetch_sinv_cost_row(cur, codigo)
+            if not row:
+                return {
+                    "status": "not_found",
+                    "codigo": codigo,
+                    "message": "sinv no encontrado en esta tienda",
+                }
+
+            codigo_db = str(row.get("codigo") or codigo).strip()
+            costo_local = _to_float(row.get("costo"))
+            nuevo_costo = (
+                costo_actual_factura if costo_actual_factura != 0 else costo_propuesto
+            )
+
+            cur.execute(
+                "UPDATE sinv SET costoant=%s, costo=%s, costopro=%s WHERE codigo=%s",
+                (costo_local, nuevo_costo, costo_propuesto, codigo_db),
+            )
+            conn.commit()
+            return {
+                "status": "applied",
+                "codigo": codigo_db,
+                "costo_local": costo_local,
+                "costo_propuesto": costo_propuesto,
+            }
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    try:
+        return await anyio.to_thread.run_sync(apply)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.post("/categorias")
@@ -220,78 +412,303 @@ async def sync_categorias_legacy(request: Request, _: None = Depends(verify_bear
     return result
 
 
+async def _run_category_pull_with_warnings(page_size: int) -> dict:
+    from pull_categoria import run_category_pull_from_hub
+
+    mysql = MySqlClient()
+    if not mysql.is_configured():
+        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+    return await run_category_pull_from_hub(
+        hub=HubClient(), mysql=mysql, page_size=page_size
+    )
+
+
+async def _run_provider_pull_with_warnings(page_size: int) -> dict:
+    from pull_proveedor import run_provider_pull_from_hub
+
+    mysql = MySqlClient()
+    if not mysql.is_configured():
+        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+    return await run_provider_pull_from_hub(
+        hub=HubClient(), mysql=mysql, page_size=page_size
+    )
+
+
 @router.post("/categorias/pull")
 async def sync_categorias_pull(
     page_size: int = Query(100, ge=1, le=500, description="Tamaño de página al hub"),
     _: None = Depends(verify_bearer),
 ):
-    """Contrato guía: el hub le pide al nodo que ejecute un pull paginado al hub."""
-    trace("sync.pull.start", page_size=page_size)
+    trace("sync.pull.start", page_size=page_size, entity="categoria")
+    result = await _run_category_pull_with_warnings(page_size)
+    trace("sync.pull.done", **{k: result.get(k) for k in ("pulled", "inserted", "conflicts")})
+    return result
+
+
+@router.post("/proveedores/pull")
+async def sync_proveedores_pull(
+    page_size: int = Query(100, ge=1, le=500),
+    _: None = Depends(verify_bearer),
+):
+    return await _run_provider_pull_with_warnings(page_size)
+
+
+async def _run_category_push_to_hub() -> dict:
+    from push_categoria import run_category_push_to_hub
+
     mysql = MySqlClient()
     if not mysql.is_configured():
-        trace_warn("sync.pull.mysql_not_configured")
         raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+    return await run_category_push_to_hub(hub=HubClient(), mysql=mysql)
 
+
+async def _run_provider_push_to_hub() -> dict:
+    from push_proveedor import run_provider_push_to_hub
+
+    mysql = MySqlClient()
+    if not mysql.is_configured():
+        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+    return await run_provider_push_to_hub(hub=HubClient(), mysql=mysql)
+
+
+async def _run_inventory_push_to_hub() -> dict:
+    from push_inventario import run_inventory_push_to_hub
+
+    mysql = MySqlClient()
+    if not mysql.is_configured():
+        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+    return await run_inventory_push_to_hub(hub=HubClient(), mysql=mysql)
+
+
+@router.post("/categorias/push")
+async def sync_categorias_push(_: None = Depends(verify_bearer)):
+    trace("sync.push.start", entity="categoria")
+    result = await _run_category_push_to_hub()
+    trace("sync.push.done", **{k: result.get(k) for k in ("pulled", "inserted", "conflicts")})
+    return result
+
+
+@router.post("/proveedores/push")
+async def sync_proveedores_push(_: None = Depends(verify_bearer)):
+    return await _run_provider_push_to_hub()
+
+
+@router.post("/inventario/push")
+async def sync_inventario_push(_: None = Depends(verify_bearer)):
+    trace("sync.push.start", entity="inventario")
+    result = await _run_inventory_push_to_hub()
+    trace(
+        "sync.push.done",
+        **{
+            k: result.get(k)
+            for k in ("pulled", "inserted", "conflicts", "missing_dependencies")
+        },
+    )
+    return result
+
+
+@router.post("/productos/push")
+async def sync_productos_push(_: None = Depends(verify_bearer)):
+    """Alias de inventario/push."""
+    return await _run_inventory_push_to_hub()
+
+
+async def _run_inventory_pull_with_warnings(page_size: int) -> dict:
+    from pull_inventario import run_inventory_pull_from_hub
+
+    mysql = MySqlClient()
+    if not mysql.is_configured():
+        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
     hub = HubClient()
+    return await run_inventory_pull_from_hub(
+        hub=hub,
+        mysql=mysql,
+        page_size=page_size,
+    )
 
-    async def fetch_all():
-        from pull_worker import pull_all_categories
 
-        return await pull_all_categories(hub, page_size=page_size)
+@router.post("/productos/pull")
+async def sync_productos_pull(
+    page_size: int = Query(100, ge=1, le=500),
+    _: None = Depends(verify_bearer),
+):
+    """Pull de catálogo: inserta nuevos; conflictos → warnings en el hub."""
+    return await _run_inventory_pull_with_warnings(page_size)
 
-    trace("sync.pull.hub_fetch.start")
-    items = await fetch_all()
-    trace("sync.pull.hub_fetch.done", count=len(items))
-    if not items:
-        trace("sync.pull.empty")
-        return {"pulled": 0, "page_size": page_size, "message": "ok"}
 
-    def bulk_upsert():
-        trace("sync.pull.mysql.bulk.start", count=len(items))
+@router.post("/inventario/pull")
+async def sync_inventario_pull(
+    page_size: int = Query(100, ge=1, le=500),
+    _: None = Depends(verify_bearer),
+):
+    return await _run_inventory_pull_with_warnings(page_size)
+
+
+class ApplyFromHubBody(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    row: dict = Field(..., description="Fila del hub")
+    require_local_dependencies: bool = Field(
+        default=False,
+        validation_alias="require_local_dependencies",
+        description="Si true, exige categoría y proveedor en MySQL antes de inventario",
+    )
+    categoria_row: dict | None = Field(
+        default=None,
+        validation_alias="categoria_row",
+        description="Opcional: upsert catego antes de inventario (misma transacción)",
+    )
+    proveedor_row: dict | None = Field(
+        default=None,
+        validation_alias="proveedor_row",
+        description="Opcional: upsert sprv antes de inventario (misma transacción)",
+    )
+
+
+@router.post("/categorias/apply-from-hub")
+async def sync_categorias_apply_from_hub(
+    body: ApplyFromHubBody,
+    _: None = Depends(verify_bearer),
+):
+    return await _apply_from_hub(body, apply_categoria_row, code_field="ccate")
+
+
+@router.post("/proveedores/apply-from-hub")
+async def sync_proveedores_apply_from_hub(
+    body: ApplyFromHubBody,
+    _: None = Depends(verify_bearer),
+):
+    return await _apply_from_hub(body, apply_proveedor_row, code_field="cod_prv")
+
+
+@router.post("/inventario/apply-from-hub")
+async def sync_inventario_apply_from_hub(
+    body: ApplyFromHubBody,
+    _: None = Depends(verify_bearer),
+):
+    mysql = MySqlClient()
+    if not mysql.is_configured():
+        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+    row = body.row
+    if not isinstance(row, dict):
+        raise HTTPException(status_code=422, detail="row debe ser objeto")
+
+    entity = "inventario"
+
+    def apply():
+        log_apply_start(
+            entity,
+            require_local_dependencies=body.require_local_dependencies,
+            row=row,
+        )
         conn = mysql.connect()
-        applied = 0
-        skipped = 0
         try:
             cur = conn.cursor()
-            for it in items:
-                if not isinstance(it, dict):
-                    skipped += 1
-                    continue
-                ccate = str(it.get("ccate") or "").strip()
-                ncate = str(it.get("ncate") or "").strip()
-                if not ccate or not ncate:
-                    skipped += 1
-                    continue
-                cur.execute(
-                    """
-                    INSERT INTO catego (ccate, ncate, pganancia, pdescu)
-                    VALUES (%s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                      ncate = VALUES(ncate),
-                      pganancia = VALUES(pganancia),
-                      pdescu = VALUES(pdescu)
-                    """,
-                    (
-                        ccate,
-                        ncate,
-                        it.get("pganancia"),
-                        it.get("pdescu"),
-                    ),
-                )
-                applied += 1
+            apply_inventario_dependency_rows(
+                cur,
+                categoria_row=body.categoria_row,
+                proveedor_row=body.proveedor_row,
+            )
+            if body.require_local_dependencies:
+                assert_inventario_dependencies(cur, row)
+            apply_inventario_row(cur, row)
             conn.commit()
-            trace("sync.pull.mysql.bulk.done", applied=applied, skipped=skipped)
+        except ValueError as exc:
+            conn.rollback()
+            log_apply_value_error(
+                entity,
+                str(exc),
+                require_local_dependencies=body.require_local_dependencies,
+                row=row,
+            )
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             conn.rollback()
-            trace_exc("sync.pull.mysql.bulk.failed", exc, applied=applied, skipped=skipped)
+            log_apply_exception(
+                entity,
+                exc,
+                require_local_dependencies=body.require_local_dependencies,
+                row=row,
+            )
             raise
         finally:
             conn.close()
 
-    trace("sync.pull.mysql.thread_pool.before")
-    await anyio.to_thread.run_sync(bulk_upsert)
-    trace("sync.pull.done", pulled=len(items))
-    return {"pulled": len(items), "page_size": page_size, "message": "ok"}
+    await anyio.to_thread.run_sync(apply)
+    codigo = str(row.get("codigo") or "").strip()
+    log_apply_ok(entity, code=codigo)
+    return {"applied": True, "codigo": codigo, "message": "ok"}
+
+
+async def _apply_from_hub(
+    body: ApplyFromHubBody,
+    apply_fn,
+    *,
+    code_field: str,
+) -> dict:
+    mysql = MySqlClient()
+    if not mysql.is_configured():
+        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+    row = body.row
+    if not isinstance(row, dict):
+        raise HTTPException(status_code=422, detail="row debe ser objeto")
+
+    entity = code_field
+
+    def apply():
+        log_apply_start(entity, row=row)
+        conn = mysql.connect()
+        try:
+            cur = conn.cursor()
+            apply_fn(cur, row)
+            conn.commit()
+        except ValueError as exc:
+            conn.rollback()
+            log_apply_value_error(entity, str(exc), row=row)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            conn.rollback()
+            log_apply_exception(entity, exc, row=row)
+            raise
+        finally:
+            conn.close()
+
+    await anyio.to_thread.run_sync(apply)
+    code = str(row.get(code_field) or "").strip()
+    log_apply_ok(entity, code=code)
+    return {"applied": True, "codigo": code, "message": "ok"}
+
+
+@router.post("/backfill-inicial")
+async def sync_backfill_inicial(
+    page_size: int = Query(100, ge=1, le=500),
+    _: None = Depends(verify_bearer),
+):
+    """Orden recomendado: categorías → proveedores → inventario (artículos)."""
+    cat = await _run_category_pull_with_warnings(page_size)
+    prv = await _run_provider_pull_with_warnings(page_size)
+    inv = await _run_inventory_pull_with_warnings(page_size)
+    return {
+        "message": "ok",
+        "page_size": page_size,
+        "categorias": cat,
+        "proveedores": prv,
+        "inventario": inv,
+    }
+
+
+@router.post("/push-inicial")
+async def sync_push_inicial(_: None = Depends(verify_bearer)):
+    """Sube categorías, proveedores e inventario de la tienda al hub."""
+    cat = await _run_category_push_to_hub()
+    prv = await _run_provider_push_to_hub()
+    inv = await _run_inventory_push_to_hub()
+    return {
+        "message": "ok",
+        "categorias": cat,
+        "proveedores": prv,
+        "inventario": inv,
+    }
 
 
 @router.get("/categorias")

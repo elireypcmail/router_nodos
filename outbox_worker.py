@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 from typing import Any
 
+import anyio
+
+from db_mysql import is_transient_mysql_error
 from hub_client import HubClient
 from outbox_mysql import OutboxRepository
+
+logger = logging.getLogger("multishop.outbox")
 
 
 class OutboxWorker:
@@ -31,18 +38,33 @@ class OutboxWorker:
     async def stop(self) -> None:
         self._stop.set()
         if self._task:
-            await asyncio.wait([self._task], timeout=5)
+            try:
+                await asyncio.wait_for(self._task, timeout=5)
+            except asyncio.TimeoutError:
+                self._task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._task
+            except Exception as ex:
+                # Evita "Task exception was never retrieved" al apagar.
+                logger.debug("Outbox worker stop ignored error: %s", ex)
+            finally:
+                self._task = None
 
     async def _run(self) -> None:
+        sleep_seconds = self._interval
         while not self._stop.is_set():
+            ids: list[int] = []
             try:
-                events = self._repo.fetch_pending(limit=self._batch)
+                events = await anyio.to_thread.run_sync(
+                    lambda: self._repo.reserve_pending(limit=self._batch),
+                )
                 if not events:
+                    sleep_seconds = self._interval
                     await asyncio.sleep(self._interval)
                     continue
 
                 payload: list[dict[str, Any]] = []
-                ids: list[int] = []
+                ids = []
                 for e in events:
                     payload.append(
                         {
@@ -57,10 +79,28 @@ class OutboxWorker:
                     ids.append(e.id)
 
                 await self._hub.send_outbox_batch(payload)
-                self._repo.mark_sent(ids)
+                await anyio.to_thread.run_sync(lambda: self._repo.mark_sent(ids))
+                sleep_seconds = self._interval
+            except asyncio.CancelledError:
+                raise
             except Exception as ex:
-                try:
-                    if "ids" in locals():
-                        self._repo.mark_failed(ids, str(ex))
-                finally:
-                    await asyncio.sleep(self._interval)
+                if self._stop.is_set():
+                    # Durante shutdown no intentamos reencolar ni loggear como fallo operativo.
+                    logger.debug("Outbox worker shutdown: %s", ex)
+                    break
+                logger.warning("Outbox worker: %s", ex)
+                if ids:
+                    err_msg = str(ex)[:2000]
+                    try:
+                        await anyio.to_thread.run_sync(
+                            lambda: self._repo.release_to_pending(ids, err_msg),
+                        )
+                    except Exception as release_exc:
+                        logger.error(
+                            "Outbox: no se pudo devolver %s evento(s) a pending: %s",
+                            len(ids),
+                            release_exc,
+                        )
+                if is_transient_mysql_error(ex):
+                    sleep_seconds = min(max(sleep_seconds * 2, self._interval), 60.0)
+            await asyncio.sleep(sleep_seconds)
