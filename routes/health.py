@@ -10,7 +10,7 @@ router = APIRouter(prefix="/api", tags=["health"])
 @router.get("/health")
 async def health(_: None = Depends(verify_bearer)):
     db = mysql_db_health_status()
-    # Sin MySQL en .env el nodo sigue operativo (sync SQLite); con MySQL caído → degradado.
+    # Sin MySQL en .env el nodo sigue operativo (sync SQLite); con MySQL caído -> degradado.
     status = "ok" if db in ("ok", "simulated") else "degraded"
     return {
         "status": status,

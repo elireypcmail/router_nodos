@@ -16,7 +16,7 @@ def _list_categorias(search: str, limit: int) -> list[dict]:
     trace("mysql.list.start", search=search, limit=limit)
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
 
     q = search.strip()
     like = f"%{q}%"
@@ -45,7 +45,7 @@ def _get_categoria(ccate: str) -> dict | None:
     trace("mysql.get.start", ccate=ccate)
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
 
     conn = mysql.connect()
     try:
@@ -76,7 +76,7 @@ def _upsert_categoria(body: CategoriaUpsertRequest) -> None:
     )
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
 
     conn = mysql.connect()
     try:
@@ -111,7 +111,7 @@ def _delete_categoria(ccate: str) -> int:
     trace("mysql.delete.start", ccate=ccate)
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
 
     conn = mysql.connect()
     try:
@@ -231,7 +231,7 @@ async def upsert_categoria(
                 error_type=exc.__class__.__name__,
             )
     else:
-        trace("rest.upsert.hub_push.skipped", reason="HUB_BASE_URL vacío")
+        trace("rest.upsert.hub_push.skipped", reason="HUB_BASE_URL empty")
 
     item = await anyio.to_thread.run_sync(lambda: _get_categoria(body.ccate))
     trace("rest.upsert.done", ccate=body.ccate)

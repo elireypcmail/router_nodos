@@ -15,7 +15,7 @@ class SyncApplier:
 
     async def apply(self, event: SyncEvent) -> None:
         if not self._mysql.is_configured():
-            raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+            raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
 
         entity = (event.entity or "").strip().lower()
 
@@ -35,7 +35,7 @@ class SyncApplier:
             await self._apply_transaccional(event, table=entity)
             return
 
-        raise RuntimeError(f"Entidad no soportada: {event.entity}")
+        raise RuntimeError(f"Unsupported entity: {event.entity}")
 
     async def _apply_categorias(self, event: SyncEvent) -> None:
         trace(
@@ -54,7 +54,7 @@ class SyncApplier:
             items = [item]
 
         if not isinstance(items, list):
-            raise RuntimeError("payload.items debe ser una lista")
+            raise RuntimeError("payload.items must be a list")
 
         trace("worker.apply.items", event_id=event.event_id, count=len(items))
         conn = self._mysql.connect()
@@ -62,11 +62,11 @@ class SyncApplier:
             cur = conn.cursor()
             for item in items:
                 if not isinstance(item, dict):
-                    raise RuntimeError("cada item debe ser un objeto")
+                    raise RuntimeError("each item must be an object")
                 ccate = str(item.get("ccate") or "").strip()
                 ncate = str(item.get("ncate") or "").strip()
                 if not ccate or not ncate:
-                    raise RuntimeError("categoria requiere ccate y ncate")
+                    raise RuntimeError("category requires ccate and ncate")
 
                 trace("worker.apply.row", event_id=event.event_id, ccate=ccate, action=event.action)
                 if event.action == "upsert":
@@ -96,11 +96,11 @@ class SyncApplier:
         if row is None:
             row = payload
         if not isinstance(row, dict):
-            raise RuntimeError("payload.row debe ser objeto")
+            raise RuntimeError("payload.row must be an object")
 
         cod_prv = str(row.get("cod_prv") or "").strip()
         if not cod_prv:
-            raise RuntimeError("proveedor requiere cod_prv")
+            raise RuntimeError("provider row requires cod_prv")
 
         conn = self._mysql.connect()
         try:
@@ -122,11 +122,11 @@ class SyncApplier:
         if row is None:
             row = payload
         if not isinstance(row, dict):
-            raise RuntimeError("payload.row debe ser objeto")
+            raise RuntimeError("payload.row must be an object")
 
         codigo = str(row.get("codigo") or "").strip()
         if not codigo:
-            raise RuntimeError("inventario requiere codigo")
+            raise RuntimeError("inventory row requires codigo")
 
         conn = self._mysql.connect()
         try:
@@ -147,9 +147,9 @@ class SyncApplier:
         row = payload.get("row")
         pk = payload.get("pk")
         if not isinstance(row, dict):
-            raise RuntimeError("payload.row debe ser objeto")
+            raise RuntimeError("payload.row must be an object")
         if pk is not None and not isinstance(pk, dict):
-            raise RuntimeError("payload.pk debe ser objeto")
+            raise RuntimeError("payload.pk must be an object")
 
         conn = self._mysql.connect()
         try:
@@ -207,7 +207,7 @@ class SyncApplier:
 
             cols = list(row.keys())
             if not cols:
-                raise RuntimeError("row vacío")
+                raise RuntimeError("empty row")
             placeholders = ", ".join(["%s"] * len(cols))
             col_list = ", ".join(cols)
             update_list = ", ".join([f"{c}=VALUES({c})" for c in cols])

@@ -1,4 +1,4 @@
-"""Logs de peticiones /api/sync/* y llamadas salientes al hub (push/pull)."""
+"""HTTP request logs for /api/sync/* and outbound hub calls."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from fastapi import Request
+from log_compat import ascii_safe
 from starlette.responses import Response
 
 logger = logging.getLogger("multishop-nodo-api.sync")
@@ -13,7 +14,11 @@ logger = logging.getLogger("multishop-nodo-api.sync")
 
 def log_sync_step(step: str, **fields: Any) -> None:
     if fields:
-        logger.info("%s | %s", step, " ".join(f"{k}={v!r}" for k, v in fields.items()))
+        parts = " ".join(
+            f"{k}={ascii_safe(v)!r}" if isinstance(v, str) else f"{k}={v!r}"
+            for k, v in fields.items()
+        )
+        logger.info("%s | %s", step, parts)
     else:
         logger.info(step)
 

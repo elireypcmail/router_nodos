@@ -97,7 +97,7 @@ class OutboxWorker:
                         )
                     except Exception as release_exc:
                         logger.error(
-                            "Outbox: no se pudo devolver %s evento(s) a pending: %s",
+                            "Outbox: could not release %s event(s) back to pending: %s",
                             len(ids),
                             release_exc,
                         )

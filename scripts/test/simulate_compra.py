@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""INSERT en comprasdbf → trigger outbox purchase → hub."""
+"""INSERT en comprasdbf -> trigger outbox purchase -> hub."""
 
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.lotes_pct and args.lotes is None:
-        print("Error: --lotes-pct requiere --lotes N", file=sys.stderr)
+        print("Error: --lotes-pct requires --lotes N", file=sys.stderr)
         return 2
 
     mysql = require_mysql()
@@ -111,8 +111,8 @@ def main() -> int:
         costo_antes = float(product.get("costo") or 0)
         costopro_antes = float(product.get("costopro") or 0)
         print(
-            f"Producto: {codigo} (costo={costo_antes}, costopro={costopro_antes}, "
-            f"existencia sinv={ex_antes})"
+            f"Product: {codigo} (cost={costo_antes}, costopro={costopro_antes}, "
+            f"sinv stock={ex_antes})"
         )
         print(
             f"INSERT comprasdbf: contador={contador} numdoc={numdoc} "
@@ -148,7 +148,7 @@ def main() -> int:
             )
         if not args.no_update_sinv:
             ex0, ex1 = apply_sinv_existencia_delta(conn, codigo, cantidad)
-            print(f"sinv.existencia: {ex0} → {ex1}")
+            print(f"sinv.stock: {ex0} -> {ex1}")
             _, costo_nuevo, costopro_nuevo = apply_sinv_cost_after_compra(
                 conn,
                 codigo,
@@ -159,8 +159,8 @@ def main() -> int:
                 costopro_antes=costopro_antes,
             )
             print(
-                f"sinv costos: costo {costo_antes} → {costo_nuevo}, "
-                f"costopro {costopro_antes} → {costopro_nuevo} (CPP con precio={precio})"
+                f"sinv costos: costo {costo_antes} -> {costo_nuevo}, "
+                f"costopro {costopro_antes} -> {costopro_nuevo} (CPP con precio={precio})"
             )
             for lote, qty in lote_splits:
                 upsert_detalle_lote(
@@ -171,9 +171,9 @@ def main() -> int:
                     costo=precio,
                 )
                 label = lote or "(default)"
-                print(f"detalle: lote {label} +{qty} (outbox detalle → hub)")
+                print(f"lot detail: {label} +{qty} (outbox lot -> hub)")
         conn.commit()
-        print("OK: compra insertada (debe encolar sync_outbox comprasdbf).")
+        print("OK: purchase inserted (should enqueue sync_outbox comprasdbf).")
         show_recent_outbox(conn, "comprasdbf")
     except Exception as ex:
         conn.rollback()

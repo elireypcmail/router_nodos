@@ -29,18 +29,54 @@ class InventarioUpsertRequest(BaseModel):
     existencia: float | None = None
 
 
-def _fetch_inventario(search: str, limit: int) -> list[dict]:
+def _catalog_like(term: str) -> str:
+    return f"%{term.strip()}%"
+
+
+def _fetch_inventario(
+    search: str,
+    codigo: str,
+    nombre: str,
+    page: int,
+    limit: int,
+) -> tuple[list[dict], int]:
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
 
     q = search.strip()
-    like = f"%{q}%"
+    c = codigo.strip()
+    n = nombre.strip()
+    like_search = _catalog_like(q) if q else None
+    like_codigo = _catalog_like(c) if c else None
+    like_nombre = _catalog_like(n) if n else None
+    offset = max(0, (page - 1) * limit)
+
     conn = mysql.connect()
     try:
         cur = conn.cursor(dictionary=True)
+        where = """
+            WHERE 1=1
+              AND (%s = '' OR codigo LIKE %s OR descrip LIKE %s OR barra LIKE %s)
+              AND (%s = '' OR codigo LIKE %s)
+              AND (%s = '' OR descrip LIKE %s)
+        """
+        params = (
+            q,
+            like_search or "",
+            like_search or "",
+            like_search or "",
+            c,
+            like_codigo or "",
+            n,
+            like_nombre or "",
+        )
+        cur.execute(f"SELECT COUNT(*) AS cnt FROM sinv {where}", params)
+        total_row = cur.fetchone() or {}
+        total = int(total_row.get("cnt") or 0)
+
         cur.execute(
-            """
+            f"""
             SELECT
               codigo,
               descrip,
@@ -61,14 +97,14 @@ def _fetch_inventario(search: str, limit: int) -> list[dict]:
               costopro,
               costoant
             FROM sinv
-            WHERE (%s = '' OR codigo LIKE %s OR descrip LIKE %s OR barra LIKE %s)
+            {where}
             ORDER BY descrip ASC
-            LIMIT %s
+            LIMIT %s OFFSET %s
             """,
-            (q, like, like, like, int(limit)),
+            (*params, int(limit), int(offset)),
         )
         rows = cur.fetchall() or []
-        return list(rows)
+        return list(rows), total
     finally:
         conn.close()
 
@@ -76,7 +112,7 @@ def _fetch_inventario(search: str, limit: int) -> list[dict]:
 def _get_item(codigo: str) -> dict | None:
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
 
     conn = mysql.connect()
     try:
@@ -116,7 +152,7 @@ def _get_item(codigo: str) -> dict | None:
 def _fetch_lotes(codigo: str) -> list[dict]:
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
 
     conn = mysql.connect()
     try:
@@ -167,11 +203,11 @@ def _get_detalle_tienda(codigo: str) -> dict | None:
 def _upsert_item(body: InventarioUpsertRequest) -> None:
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
 
     codigo = (body.codigo or "").strip()
     if not codigo:
-        raise RuntimeError("codigo es requerido")
+        raise RuntimeError("codigo is required")
 
     conn = mysql.connect()
     try:
@@ -188,7 +224,7 @@ def _upsert_item(body: InventarioUpsertRequest) -> None:
 def _delete_item(codigo: str) -> int:
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
 
     conn = mysql.connect()
     try:
@@ -205,16 +241,28 @@ def _delete_item(codigo: str) -> int:
 
 @router.get("/inventario")
 async def inventario(
-    search: str = Query("", description="Filtro por nombre o SKU"),
-    limit: int = Query(50, ge=1, le=500, description="Máximo de resultados"),
+    search: str = Query("", description="Coincidencia en código o descripción"),
+    codigo: str = Query("", description="Filtro por código (parcial)"),
+    nombre: str = Query("", description="Filtro por descripción (parcial)"),
+    page: int = Query(1, ge=1, description="Página"),
+    limit: int = Query(25, ge=1, le=500, description="Filas por página"),
     _: None = Depends(verify_bearer),
 ):
-    items = await anyio.to_thread.run_sync(lambda: _fetch_inventario(search, limit))
+    items, total = await anyio.to_thread.run_sync(
+        lambda: _fetch_inventario(search, codigo, nombre, page, limit)
+    )
+    total_pages = 0 if total == 0 else (total + limit - 1) // limit
     return {
         "search": search,
+        "codigo": codigo,
+        "filtro_nombre": nombre,
         "nodo_id": settings.nodo_id,
         "nombre": settings.nodo_nombre,
         "items": items,
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "totalPages": total_pages,
         "message": "ok",
     }
 

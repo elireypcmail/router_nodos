@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import anyio
 import httpx
+import logging
 
 from categoria_trace import trace, trace_exc, trace_warn
 from config import settings
 from json_util import json_safe
 from node_catalog import load_node_catalog
 from sync_http_log import log_sync_error, log_sync_step
+
+logger = logging.getLogger("multishop.outbox")
+
+_MISSING_CODIGO = "-"
 
 
 def _num_field(row: dict, key: str) -> float:
@@ -25,15 +30,15 @@ def _num_field(row: dict, key: str) -> float:
 def _ingest_codigo(payload: dict) -> str:
     raw = payload.get("codigo")
     if raw is None:
-        return "—"
-    return str(raw).strip() or "—"
+        return _MISSING_CODIGO
+    return str(raw).strip() or _MISSING_CODIGO
 
 
 _INGEST_LABEL = {
-    "purchase": "compra",
-    "sale": "venta",
+    "purchase": "purchase",
+    "sale": "sale",
     "kardex": "kardex",
-    "inventory_lot": "lote",
+    "inventory_lot": "lot",
 }
 
 
@@ -52,19 +57,13 @@ def _is_kardex_inventory_adjustment(row: dict) -> bool:
 class HubClient:
     def __init__(self):
         if not settings.hub_base_url:
-            raise RuntimeError("HUB_BASE_URL no configurado")
+            raise RuntimeError("HUB_BASE_URL not set")
 
         self._base = settings.hub_base_url.rstrip("/")
 
     async def send_outbox_batch(self, batch: list[dict]) -> None:
         url = f"{self._base}{settings.hub_push_path}"
-        headers = {}
-        if settings.hub_api_key:
-            headers["x-internal-api-key"] = settings.hub_api_key
-
-        # Contrato actual del hub:
-        # POST /api/nodo/events/batch { "events": [ {event_id, entity_type, payload, occurred_at?}, ... ] }
-        # Nota: el hub valida el nodo por Bearer token.
+        headers: dict[str, str] = {}
         if settings.nodo_api_token:
             headers["Authorization"] = f"Bearer {settings.nodo_api_token}"
 
@@ -102,7 +101,7 @@ class HubClient:
                     continue
 
                 codigo = _ingest_codigo(payload)
-                if codigo != "—":
+                if codigo != _MISSING_CODIGO:
                     try:
                         catalog = await anyio.to_thread.run_sync(
                             load_node_catalog, codigo
@@ -117,11 +116,12 @@ class HubClient:
                         )
 
                 label = _INGEST_LABEL.get(entity_type, entity_type)
-                print(
-                    f"[hub-ingest] → enviar {label} "
-                    f"outbox_id={outbox_id} codigo={_ingest_codigo(payload)} "
-                    f"tabla={table}",
-                    flush=True,
+                logger.info(
+                    "[hub-ingest] -> enviar %s outbox_id=%s codigo=%s tabla=%s",
+                    label,
+                    outbox_id,
+                    _ingest_codigo(payload),
+                    table,
                 )
 
                 events.append(
@@ -136,33 +136,14 @@ class HubClient:
             if not events:
                 return
 
-            print(
-                f"[hub-ingest] POST {url} ({len(events)} evento(s) transaccional)",
-                flush=True,
+            logger.info(
+                "[hub-ingest] POST %s (%s evento(s) transaccional)",
+                url,
+                len(events),
             )
             resp = await client.post(url, json={"events": events}, headers=headers)
             resp.raise_for_status()
-            print(f"[hub-ingest] OK hub respondió {resp.status_code}", flush=True)
-
-    async def fetch_sync_events(self, from_seq: int, limit: int) -> list[dict]:
-        url = f"{self._base}{settings.hub_pull_path}"
-        headers = {}
-        if settings.hub_api_key:
-            headers["x-internal-api-key"] = settings.hub_api_key
-
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(
-                url,
-                params={"from": int(from_seq), "limit": int(limit), "nodo_id": settings.nodo_id},
-                headers=headers,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if isinstance(data, dict) and isinstance(data.get("events"), list):
-                return list(data["events"])
-            if isinstance(data, list):
-                return list(data)
-            raise RuntimeError("Respuesta inesperada del hub para pull events")
+            logger.info("[hub-ingest] OK hub responded %s", resp.status_code)
 
     async def get_categoria_in_hub(self, ccate: str) -> dict | None:
         """None si no existe en el hub (404)."""
@@ -182,7 +163,7 @@ class HubClient:
                 if isinstance(data, dict):
                     trace("hub.get_categoria.found", ccate=ccate)
                     return data
-                raise RuntimeError("Respuesta inesperada del hub al consultar categoria")
+                raise RuntimeError("Unexpected hub response when fetching category")
         except httpx.HTTPStatusError:
             raise
         except Exception as exc:
@@ -203,7 +184,7 @@ class HubClient:
                         "hub.create_categoria.already_exists",
                         ccate=ccate,
                         detail=resp.text[:500] if resp.text else None,
-                        hint="Hub sin upsert (reinicia Nest) o categoría ya en Postgres; se considera sincronizado",
+                        hint="Hub has no upsert (restart Nest) or category already in Postgres; treating as synced",
                     )
                     return {
                         "ccate": ccate,
@@ -215,7 +196,7 @@ class HubClient:
                 if isinstance(data, dict):
                     trace("hub.create_categoria.done", ccate=ccate)
                     return data
-                raise RuntimeError("Respuesta inesperada del hub al crear categoria")
+                raise RuntimeError("Unexpected hub response when creating category")
         except Exception as exc:
             trace_exc("hub.create_categoria.failed", exc, url=url, ccate=ccate)
             raise
@@ -243,7 +224,7 @@ class HubClient:
                         has_more=data.get("hasMore"),
                     )
                     return data
-                raise RuntimeError("Respuesta inesperada del hub al paginar categorias")
+                raise RuntimeError("Unexpected hub response when paging categories")
         except Exception as exc:
             trace_exc("hub.fetch_categorias_page.failed", exc, url=url, page=page)
             raise
@@ -261,7 +242,7 @@ class HubClient:
             data = resp.json()
             if isinstance(data, dict):
                 return data
-            raise RuntimeError("Respuesta inesperada del hub al paginar proveedores")
+            raise RuntimeError("Unexpected hub response when paging providers")
 
     async def fetch_productos_page(self, page: int, limit: int) -> dict:
         url = f"{self._base}{settings.hub_nodo_sync_productos_path}"
@@ -276,7 +257,7 @@ class HubClient:
             data = resp.json()
             if isinstance(data, dict):
                 return data
-            raise RuntimeError("Respuesta inesperada del hub al paginar productos")
+            raise RuntimeError("Unexpected hub response when paging products")
 
     async def report_catalog_pull_warnings(self, items: list[dict]) -> int:
         if not items:
@@ -346,11 +327,11 @@ class HubClient:
             err = str(exc).lower()
             if "ssl" in err or "record layer" in err:
                 hint = (
-                    " (¿HUB_BASE_URL con https pero el hub escucha HTTP? "
-                    "Use http://10.66.0.1:3000 en VPN dev)"
+                    " (HUB_BASE_URL uses https but hub listens on HTTP? "
+                    "Use http://10.66.0.1:3000 on VPN dev)"
                 )
             log_sync_error("hub.push.batch.failed", exc, url=url, items=len(items))
-            raise RuntimeError(f"Hub inalcanzable en push batch: {exc}{hint}") from exc
+            raise RuntimeError(f"Hub unreachable on push batch: {exc}{hint}") from exc
 
         if resp.status_code >= 400:
             detail = resp.text[:500]
@@ -383,4 +364,4 @@ class HubClient:
                 conflicts=data.get("conflicts"),
             )
             return data
-        raise RuntimeError("Respuesta inesperada del hub en push batch")
+        raise RuntimeError("Unexpected hub response on push batch")

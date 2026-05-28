@@ -26,19 +26,54 @@ class ProveedorUpsertRequest(BaseModel):
     numcuenta: str | None = None
 
 
-def _fetch_proveedores(search: str, limit: int) -> list[dict]:
+def _catalog_like(term: str) -> str:
+    return f"%{term.strip()}%"
+
+
+def _fetch_proveedores(
+    search: str,
+    codigo: str,
+    nombre: str,
+    page: int,
+    limit: int,
+) -> tuple[list[dict], int]:
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
 
     q = search.strip()
-    like = f"%{q}%"
+    c = codigo.strip()
+    n = nombre.strip()
+    like_search = _catalog_like(q) if q else None
+    like_codigo = _catalog_like(c) if c else None
+    like_nombre = _catalog_like(n) if n else None
+    offset = max(0, (page - 1) * limit)
 
     conn = mysql.connect()
     try:
         cur = conn.cursor(dictionary=True)
+        where = """
+            WHERE 1=1
+              AND (%s = '' OR cod_prv LIKE %s OR nom_prv LIKE %s OR rif_prv LIKE %s)
+              AND (%s = '' OR cod_prv LIKE %s)
+              AND (%s = '' OR nom_prv LIKE %s)
+        """
+        params = (
+            q,
+            like_search or "",
+            like_search or "",
+            like_search or "",
+            c,
+            like_codigo or "",
+            n,
+            like_nombre or "",
+        )
+        cur.execute(f"SELECT COUNT(*) AS cnt FROM sprv {where}", params)
+        total_row = cur.fetchone() or {}
+        total = int(total_row.get("cnt") or 0)
+
         cur.execute(
-            """
+            f"""
             SELECT
               cod_prv,
               nom_prv,
@@ -53,14 +88,14 @@ def _fetch_proveedores(search: str, limit: int) -> list[dict]:
               especial,
               numcuenta
             FROM sprv
-            WHERE (%s = '' OR cod_prv LIKE %s OR nom_prv LIKE %s OR rif_prv LIKE %s)
+            {where}
             ORDER BY nom_prv ASC
-            LIMIT %s
+            LIMIT %s OFFSET %s
             """,
-            (q, like, like, like, int(limit)),
+            (*params, int(limit), int(offset)),
         )
         rows = cur.fetchall() or []
-        return list(rows)
+        return list(rows), total
     finally:
         conn.close()
 
@@ -68,7 +103,7 @@ def _fetch_proveedores(search: str, limit: int) -> list[dict]:
 def _get_proveedor(cod_prv: str) -> dict | None:
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
 
     conn = mysql.connect()
     try:
@@ -102,11 +137,11 @@ def _get_proveedor(cod_prv: str) -> dict | None:
 def _upsert_proveedor(body: ProveedorUpsertRequest) -> None:
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
 
     cod_prv = (body.cod_prv or "").strip()
     if not cod_prv:
-        raise RuntimeError("cod_prv es requerido")
+        raise RuntimeError("cod_prv is required")
 
     conn = mysql.connect()
     try:
@@ -123,7 +158,7 @@ def _upsert_proveedor(body: ProveedorUpsertRequest) -> None:
 def _delete_proveedor(cod_prv: str) -> int:
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
 
     conn = mysql.connect()
     try:
@@ -140,16 +175,28 @@ def _delete_proveedor(cod_prv: str) -> int:
 
 @router.get("/proveedores")
 async def proveedores(
-    search: str = Query("", description="Filtro por código/nombre/RIF"),
-    limit: int = Query(100, ge=1, le=1000),
+    search: str = Query("", description="Coincidencia en código o nombre"),
+    codigo: str = Query("", description="Filtro por código (parcial)"),
+    nombre: str = Query("", description="Filtro por nombre (parcial)"),
+    page: int = Query(1, ge=1, description="Página"),
+    limit: int = Query(25, ge=1, le=500, description="Filas por página"),
     _: None = Depends(verify_bearer),
 ):
-    items = await anyio.to_thread.run_sync(lambda: _fetch_proveedores(search, limit))
+    items, total = await anyio.to_thread.run_sync(
+        lambda: _fetch_proveedores(search, codigo, nombre, page, limit)
+    )
+    total_pages = 0 if total == 0 else (total + limit - 1) // limit
     return {
         "search": search,
+        "codigo": codigo,
+        "filtro_nombre": nombre,
         "nodo_id": settings.nodo_id,
         "nombre": settings.nodo_nombre,
         "items": items,
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "totalPages": total_pages,
         "message": "ok",
     }
 

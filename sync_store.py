@@ -81,7 +81,7 @@ class SyncStore:
                         event.sequence,
                         event.entity,
                         event.action,
-                        json.dumps(event.payload, ensure_ascii=False),
+                        json.dumps(event.payload, ensure_ascii=True),
                         event.created_at,
                         self._now(),
                     ),

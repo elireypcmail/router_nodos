@@ -1,4 +1,4 @@
-"""API del nodo multishop — orquestada por Nest vía VPN hub."""
+"""API del nodo multishop - orquestada por Nest vía VPN hub."""
 
 import asyncio
 from contextlib import asynccontextmanager
@@ -6,6 +6,8 @@ import logging
 import os
 from pathlib import Path
 import ssl
+
+from log_compat import configure_node_logging
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -17,7 +19,6 @@ from db_mysql import MySqlClient
 from hub_client import HubClient
 from outbox_mysql import OutboxRepository
 from outbox_worker import OutboxWorker
-from pull_worker import HubPullWorker
 from routes import categorias, health, inventario, proveedores, sync
 from sync_apply import SyncApplier
 from sync_store import SyncStore
@@ -29,7 +30,6 @@ sync_store: SyncStore | None = None
 sync_worker: SyncWorker | None = None
 outbox_repo: OutboxRepository | None = None
 outbox_worker: OutboxWorker | None = None
-pull_worker: HubPullWorker | None = None
 logger = logging.getLogger("multishop-nodo-api")
 
 
@@ -47,7 +47,7 @@ async def _ensure_outbox_schema_with_retry(
         except Exception as exc:
             last_err = exc
             logger.warning(
-                "MySQL outbox schema intento %s/%s: %s",
+                "MySQL outbox schema attempt %s/%s: %s",
                 attempt,
                 attempts,
                 exc,
@@ -55,28 +55,23 @@ async def _ensure_outbox_schema_with_retry(
             if attempt < attempts:
                 await asyncio.sleep(delay_seconds)
     raise RuntimeError(
-        f"No se pudo inicializar sync_outbox tras {attempts} intentos: {last_err}"
+        f"Could not initialize sync_outbox after {attempts} attempts: {last_err}"
     ) from last_err
 
 
 def configure_logging() -> None:
-    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
-    level = getattr(logging, level_name, logging.INFO)
-    if not logging.root.handlers:
-        logging.basicConfig(
-            level=level,
-            format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-        )
-    else:
-        logging.root.setLevel(level)
-    logging.getLogger("multishop.categoria").setLevel(level)
-    logging.getLogger("multishop.sync_apply").setLevel(level)
-    logging.getLogger("multishop.outbox").setLevel(level)
+    configure_node_logging(
+        logger_names=(
+            "multishop.categoria",
+            "multishop.sync_apply",
+            "multishop.outbox",
+        ),
+    )
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global sync_store, sync_worker, outbox_repo, outbox_worker, pull_worker
+    global sync_store, sync_worker, outbox_repo, outbox_worker
 
     sync_store = SyncStore(settings.sync_db_path)
     await sync_store.init()
@@ -91,19 +86,9 @@ async def lifespan(_app: FastAPI):
     if settings.sync_worker_enabled:
         sync_worker.start()
 
-    if settings.hub_pull_enabled:
-        hub = HubClient()
-        pull_worker = HubPullWorker(
-            sync_store,
-            hub,
-            interval_seconds=float(settings.hub_pull_interval_seconds),
-            batch_size=int(settings.hub_pull_batch_size),
-        )
-        pull_worker.start()
-
     if settings.hub_push_enabled and not settings.huey_enabled:
         if not mysql.is_configured():
-            raise RuntimeError("HUB_PUSH_ENABLED requiere MYSQL_* configurado")
+            raise RuntimeError("HUB_PUSH_ENABLED requires MYSQL_* configured")
         outbox_repo = OutboxRepository(mysql)
         await _ensure_outbox_schema_with_retry(outbox_repo)
         hub = HubClient()
@@ -116,7 +101,7 @@ async def lifespan(_app: FastAPI):
 
     if settings.huey_enabled:
         if not mysql.is_configured():
-            raise RuntimeError("HUEY_ENABLED requiere MYSQL_* configurado")
+            raise RuntimeError("HUEY_ENABLED requires MYSQL_* configured")
         outbox_repo = OutboxRepository(mysql)
         await _ensure_outbox_schema_with_retry(outbox_repo)
         import huey_tasks
@@ -130,8 +115,6 @@ async def lifespan(_app: FastAPI):
             await sync_worker.stop()
         if outbox_worker:
             await outbox_worker.stop()
-        if pull_worker:
-            await pull_worker.stop()
 
 
 configure_logging()
@@ -187,7 +170,7 @@ async def request_validation_exception_handler(_request: Request, exc: RequestVa
         status_code=422,
         content={
             "error": "validation_error",
-            "detail": "Payload inválido",
+            "detail": "Invalid payload",
             "errors": exc.errors(),
         },
     )
@@ -197,7 +180,7 @@ async def request_validation_exception_handler(_request: Request, exc: RequestVa
 async def runtime_exception_handler(request: Request, exc: RuntimeError):
     message = _error_message(exc)
     logger.error(
-        "RuntimeError en %s %s: %s",
+        "RuntimeError on %s %s: %s",
         request.method,
         request.url.path,
         message,
@@ -216,7 +199,7 @@ async def runtime_exception_handler(request: Request, exc: RuntimeError):
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     message = _error_message(exc)
-    logger.exception("Error no controlado en %s %s", request.method, request.url.path)
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
     return JSONResponse(
         status_code=500,
         content={

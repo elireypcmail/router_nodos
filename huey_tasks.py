@@ -19,7 +19,7 @@ def send_outbox_batch() -> dict[str, Any]:
     """
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("Huey outbox requiere MYSQL_* configurado")
+        raise RuntimeError("Huey outbox requires MYSQL_* configured")
 
     repo = OutboxRepository(mysql)
     hub = HubClient()

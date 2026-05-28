@@ -46,7 +46,7 @@ def upsert_sinv(cur, row: dict) -> None:
     """
     codigo = _str_field(row, "codigo")
     if not codigo:
-        raise ValueError("inventario requiere codigo")
+        raise ValueError("inventory row requires codigo")
 
     update_fields = list(SINV_UPDATE_FIELDS)
     if row.get("existencia") is not None:

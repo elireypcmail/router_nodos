@@ -33,7 +33,7 @@ def log_apply_start(
     row: dict[str, Any] | None = None,
 ) -> None:
     logger.info(
-        "[apply-from-hub] %s inicio require_local_dependencies=%s %s",
+        "[apply-from-hub] %s start require_local_dependencies=%s %s",
         entity,
         require_local_dependencies,
         row_summary(row) if row else "",

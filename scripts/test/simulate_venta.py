@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""INSERT en ventasi → trigger outbox sale → hub."""
+"""INSERT en ventasi -> trigger outbox sale -> hub."""
 
 from __future__ import annotations
 
@@ -39,13 +39,13 @@ def main() -> int:
         fecha = today()
 
         ex_antes = read_sinv_existencia(conn, codigo)
-        print(f"Producto: {codigo} (existencia sinv={ex_antes})")
+        print(f"Product: {codigo} (sinv stock={ex_antes})")
         print(
             f"INSERT ventasi: numero={numero} codigo={codigo} "
             f"cantidad={cantidad} contador={contador} fecha={fecha}"
         )
         if not args.no_update_sinv:
-            print(f"UPDATE sinv: existencia -= {cantidad} (simula ERP local)")
+            print(f"UPDATE sinv: stock -= {cantidad} (simulates local ERP)")
 
         if args.dry_run:
             return 0
@@ -61,9 +61,9 @@ def main() -> int:
             )
         if not args.no_update_sinv:
             ex0, ex1 = apply_sinv_existencia_delta(conn, codigo, -cantidad)
-            print(f"sinv.existencia: {ex0} → {ex1}")
+            print(f"sinv.stock: {ex0} -> {ex1}")
         conn.commit()
-        print("OK: venta insertada (debe encolar sync_outbox ventasi).")
+        print("OK: sale inserted (should enqueue sync_outbox ventasi).")
         show_recent_outbox(conn, "ventasi")
     except Exception as ex:
         conn.rollback()

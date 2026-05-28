@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""INSERT en kardex con devolución (devov o devoc) → outbox kardex → hub."""
+"""INSERT en kardex con devolución (devov o devoc) -> outbox kardex -> hub."""
 
 from __future__ import annotations
 
@@ -51,13 +51,13 @@ def main() -> int:
 
         delta = qty if args.tipo == "devov" else -qty
         ex_antes = read_sinv_existencia(conn, codigo)
-        print(f"Producto: {codigo} (existencia sinv={ex_antes})")
+        print(f"Product: {codigo} (sinv stock={ex_antes})")
         print(
             f"INSERT kardex: {args.tipo}={qty} numero={numero} "
             f"contador={contador} fecha={fecha}"
         )
         if not args.no_update_sinv:
-            print(f"UPDATE sinv: existencia += {delta} (simula ERP local)")
+            print(f"UPDATE sinv: stock += {delta} (simulates local ERP)")
 
         if args.dry_run:
             return 0
@@ -82,9 +82,9 @@ def main() -> int:
             indice = row.get("indice")
         if not args.no_update_sinv:
             ex0, ex1 = apply_sinv_existencia_delta(conn, codigo, delta)
-            print(f"sinv.existencia: {ex0} → {ex1}")
+            print(f"sinv.stock: {ex0} -> {ex1}")
         conn.commit()
-        print(f"OK: kardex insertado indice={indice} (outbox si triggers activos).")
+        print(f"OK: kardex inserted index={indice} (outbox if triggers active).")
         show_recent_outbox(conn, "kardex")
     except Exception as ex:
         conn.rollback()

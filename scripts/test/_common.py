@@ -1,4 +1,4 @@
-"""Utilidades compartidas para simulaciones transaccionales (outbox → hub)."""
+"""Utilidades compartidas para simulaciones transaccionales (outbox -> hub)."""
 
 from __future__ import annotations
 
@@ -65,11 +65,11 @@ def require_mysql() -> MySqlClient:
     mysql = MySqlClient()
     if not mysql.is_configured():
         print(
-            f"Configura MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD y MYSQL_DATABASE en:\n  {ENV_FILE}",
+            f"Set MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD and MYSQL_DATABASE in:\n  {ENV_FILE}",
             file=sys.stderr,
         )
         if not ENV_FILE.is_file():
-            print(f"  (archivo no encontrado)", file=sys.stderr)
+            print(f"  (file not found)", file=sys.stderr)
         raise SystemExit(1)
     return mysql
 
@@ -309,7 +309,7 @@ def pick_product(
     aleatorio: bool = False,
 ) -> dict[str, Any]:
     if aleatorio and codigo:
-        print("Usa --aleatorio o --codigo, no ambos", file=sys.stderr)
+        print("Use --aleatorio or --codigo, not both", file=sys.stderr)
         raise SystemExit(2)
 
     with conn.cursor() as cur:
@@ -325,7 +325,7 @@ def pick_product(
             )
             row = cur.fetchone()
             if not row:
-                print(f"No existe sinv.codigo={codigo!r}", file=sys.stderr)
+                print(f"sinv.codigo={codigo!r} not found", file=sys.stderr)
                 raise SystemExit(1)
             return row
 
@@ -351,13 +351,13 @@ def pick_product(
             )
         row = cur.fetchone()
         if not row:
-            print("No hay productos en sinv", file=sys.stderr)
+            print("No products in sinv", file=sys.stderr)
             raise SystemExit(1)
         return row
 
 
 def test_suffix() -> str:
-    """Sufijo corto único para numdoc/numero (límite ERP ~6–15 chars)."""
+    """Sufijo corto único para numdoc/numero (límite ERP ~6-15 chars)."""
     return datetime.now().strftime("%H%M%S")
 
 
@@ -390,7 +390,7 @@ def show_recent_outbox(
         )
         rows = cur.fetchall() or []
     if not rows:
-        print("  (sin filas recientes en sync_outbox; ¿triggers aplicados?)")
+        print("  (no recent sync_outbox rows; triggers applied?)")
         return
     for r in rows:
         print(
@@ -401,7 +401,7 @@ def show_recent_outbox(
 
 async def flush_outbox_once(batch_size: int = 50) -> int:
     if not settings.hub_base_url:
-        print("HUB_BASE_URL vacío; no se puede --flush", file=sys.stderr)
+        print("HUB_BASE_URL empty; cannot --flush", file=sys.stderr)
         raise SystemExit(1)
 
     mysql = require_mysql()
@@ -411,7 +411,7 @@ async def flush_outbox_once(batch_size: int = 50) -> int:
 
     events = repo.fetch_pending(limit=batch_size)
     if not events:
-        print("Outbox: no hay eventos pending.")
+        print("Outbox: no pending events.")
         return 0
 
     payload = [
@@ -428,15 +428,15 @@ async def flush_outbox_once(batch_size: int = 50) -> int:
     ids = [e.id for e in events]
     await hub.send_outbox_batch(payload)
     repo.mark_sent(ids)
-    print(f"Outbox: enviados {len(ids)} evento(s) a {settings.hub_base_url}{settings.hub_push_path}")
+    print(f"Outbox: sent {len(ids)} event(s) to {settings.hub_base_url}{settings.hub_push_path}")
     return len(ids)
 
 
 def maybe_flush(flush: bool) -> None:
     if not flush:
         print(
-            "Tip: con la API y HUB_PUSH_ENABLED=true el worker envía solo; "
-            "o ejecuta con --flush"
+            "Tip: with API running and HUB_PUSH_ENABLED=true the worker sends automatically; "
+            "or run with --flush"
         )
         return
     asyncio.run(flush_outbox_once())

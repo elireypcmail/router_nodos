@@ -32,9 +32,8 @@ class Settings(BaseSettings):
     sync_worker_poll_interval_seconds: float = 0.5
 
     hub_base_url: str = ""
-    hub_api_key: str = ""
 
-    # Contratos guía (multishop-hub): endpoints de nodo autenticados por Bearer apiToken
+    # Contratos hub↔nodo (Bearer NODO_API_TOKEN)
     hub_nodo_sync_categorias_path: str = "/api/nodo/sync/categorias"
     hub_nodo_sync_proveedores_path: str = "/api/nodo/sync/proveedores"
     hub_nodo_sync_productos_path: str = "/api/nodo/sync/productos"
@@ -51,14 +50,10 @@ class Settings(BaseSettings):
         "/api/nodo/catalog-push/inventario/batch"
     )
     hub_nodo_categorias_path: str = "/api/nodo/categorias"
-    hub_pull_enabled: bool = False
-    hub_pull_interval_seconds: int = 10
-    hub_pull_path: str = "/orchestration/sync/events"
-    hub_pull_batch_size: int = 200
 
     hub_push_enabled: bool = False
     hub_push_interval_seconds: float = 1.0
-    # Contrato actual: node → hub (ingest) para transaccional vía outbox.
+    # Contrato actual: node -> hub (ingest) para transaccional vía outbox.
     hub_push_path: str = "/api/nodo/events/batch"
 
     huey_enabled: bool = False

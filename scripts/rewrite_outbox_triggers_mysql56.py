@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convierte JSON_OBJECT → CONCAT + ms_json_* en mysql_outbox_triggers.sql (MySQL 5.6)."""
+"""Convierte JSON_OBJECT -> CONCAT + ms_json_* en mysql_outbox_triggers.sql (MySQL 5.6)."""
 
 from __future__ import annotations
 
@@ -239,7 +239,7 @@ def replace_json_objects(text: str) -> str:
 def main() -> None:
     raw = SQL_PATH.read_text(encoding="utf-8")
     if "ms_json_str" in raw and "JSON_OBJECT" not in raw:
-        print("Ya convertido (sin JSON_OBJECT).")
+        print("Already converted (no JSON_OBJECT).")
         return
     if "CREATE FUNCTION ms_json_str" not in raw:
         # Insert after sync_outbox CREATE TABLE block
@@ -253,7 +253,7 @@ def main() -> None:
         raise SystemExit("Quedaron JSON_OBJECT sin convertir")
 
     SQL_PATH.write_text(converted, encoding="utf-8")
-    print(f"OK: {SQL_PATH} actualizado para MySQL 5.6 ({converted.count('ms_json_')} usos ms_json_*).")
+    print(f"OK: {SQL_PATH} updated for MySQL 5.6 ({converted.count('ms_json_')} ms_json_* uses).")
 
 
 if __name__ == "__main__":

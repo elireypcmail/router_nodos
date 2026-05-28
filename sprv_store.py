@@ -43,7 +43,7 @@ def _field(payload: dict, key: str, default: str = "") -> str:
 def build_sprv_db_row(payload: dict) -> dict[str, Any]:
     body = {k: _field(payload, k) for k in SPRV_BODY_FIELDS}
     if not body["cod_prv"]:
-        raise ValueError("proveedor requiere cod_prv")
+        raise ValueError("provider row requires cod_prv")
     rif = body["rif_prv"]
     nom = body["nom_prv"]
     return {

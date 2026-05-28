@@ -5,8 +5,8 @@ Usado por install Windows/Linux/Mac y start-dev.sh.
 
 Variables de entorno:
   MS_MYSQL_HOST, MS_MYSQL_USER, MS_MYSQL_PASSWORD, MS_MYSQL_DATABASE, MS_MYSQL_PORT
-  MS_SQL_FILE — ruta al .sql (default: scripts/mysql_outbox_triggers.sql junto a este script)
-  MS_OUTBOX_SKIP_PREFLIGHT=1 — solo reaplicar SQL sin DROP previo (no recomendado)
+  MS_SQL_FILE - ruta al .sql (default: scripts/mysql_outbox_triggers.sql junto a este script)
+  MS_OUTBOX_SKIP_PREFLIGHT=1 - solo reaplicar SQL sin DROP previo (no recomendado)
 """
 
 from __future__ import annotations
@@ -132,7 +132,7 @@ def apply_sql_file(
 ) -> int:
     sql_path = Path(sql_path)
     if not sql_path.is_file():
-        print(f"No existe el archivo SQL: {sql_path}", file=sys.stderr)
+        print(f"SQL file not found: {sql_path}", file=sys.stderr)
         return 1
 
     with sql_path.open(encoding="utf-8") as f:
@@ -141,7 +141,7 @@ def apply_sql_file(
     triggers, functions = manifest_from_sql(sql_text)
     stmts = order_statements(parse_sql_statements(sql_text))
     if not stmts:
-        print("No se encontraron statements en el SQL", file=sys.stderr)
+        print("No statements found in SQL file", file=sys.stderr)
         return 1
 
     try:
@@ -155,7 +155,7 @@ def apply_sql_file(
         )
     except pymysql_errors.MySQLError as e:
         print(
-            f"No se pudo conectar a la base '{database}' en {host}:{port}: {e}",
+            f"Could not connect to database '{database}' at {host}:{port}: {e}",
             file=sys.stderr,
         )
         return 1
@@ -164,8 +164,8 @@ def apply_sql_file(
         with cn.cursor() as cur:
             if not skip_preflight:
                 print(
-                    f"Outbox: desinstalando {len(triggers)} triggers y "
-                    f"{len(functions)} funciones ms_json_* (instalación limpia)..."
+                    f"Outbox: uninstalling {len(triggers)} triggers and "
+                    f"{len(functions)} ms_json_* functions (clean install)..."
                 )
                 preflight_drop_outbox_objects(cur, triggers=triggers, functions=functions)
 
@@ -183,28 +183,28 @@ def apply_sql_file(
                     )
                     extra = f" ({m.group(1)} ON {m.group(2)})" if m else ""
                     print(
-                        f"Error en statement #{idx}{extra}: {e}\n  → {head}",
+                        f"Error in statement #{idx}{extra}: {e}\n  -> {head}",
                         file=sys.stderr,
                     )
                     if e.args and e.args[0] == 1235:
                         print(
-                            "MySQL 5.6: solo un trigger por (tabla, momento, evento). "
-                            "Los triggers ERP (p. ej. fechaua_i en sinv) no se tocan; "
-                            "no deben ser otro AFTER INSERT en la misma tabla.",
+                            "MySQL 5.6: only one trigger per (table, timing, event). "
+                            "ERP triggers (e.g. fechaua_i on sinv) are untouched; "
+                            "must not add another AFTER INSERT on the same table.",
                             file=sys.stderr,
                         )
                     return 1
         cn.commit()
     except pymysql_errors.MySQLError as e:
         cn.rollback()
-        print(f"Error al aplicar SQL: {e}", file=sys.stderr)
+        print(f"Error applying SQL: {e}", file=sys.stderr)
         return 1
     finally:
         cn.close()
 
     print(
-        f"Outbox instalado en '{database}': {len(triggers)} triggers, "
-        f"{len(functions)} funciones ({len(stmts)} statements)."
+        f"Outbox installed on '{database}': {len(triggers)} triggers, "
+        f"{len(functions)} functions ({len(stmts)} statements)."
     )
     return 0
 
@@ -224,8 +224,7 @@ def main() -> int:
 
     if not all([host, user, password, database]):
         print(
-            "Faltan variables: MS_MYSQL_HOST, MS_MYSQL_USER, MS_MYSQL_PASSWORD, "
-            "MS_MYSQL_DATABASE",
+            "Missing env vars: MS_MYSQL_HOST, MS_MYSQL_USER, MS_MYSQL_PASSWORD, MS_MYSQL_DATABASE",
             file=sys.stderr,
         )
         return 1
@@ -240,7 +239,7 @@ def main() -> int:
         )
     except pymysql_errors.MySQLError as e:
         print(
-            f"No se pudo conectar a MySQL en {host}:{port} con el usuario {user}: {e}",
+            f"Could not connect to MySQL at {host}:{port} as user {user}: {e}",
             file=sys.stderr,
         )
         return 1
@@ -254,7 +253,7 @@ def main() -> int:
             )
             if not cur.fetchone():
                 print(
-                    f"La base de datos '{database}' no existe o el usuario no tiene permisos",
+                    f"Database '{database}' does not exist or user lacks permissions",
                     file=sys.stderr,
                 )
                 return 1

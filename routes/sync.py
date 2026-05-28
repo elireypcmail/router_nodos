@@ -44,7 +44,7 @@ def get_sync_store():
     from main import sync_store
 
     if not sync_store:
-        raise RuntimeError("sync_store no inicializado")
+        raise RuntimeError("sync_store not initialized")
     return sync_store
 
 
@@ -52,7 +52,7 @@ def get_outbox_repo():
     from main import outbox_repo
 
     if not outbox_repo:
-        raise RuntimeError("outbox_repo no inicializado")
+        raise RuntimeError("outbox_repo not initialized")
     return outbox_repo
 
 
@@ -100,7 +100,7 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
     if not mysql.is_configured():
         if is_categoria_entity(entity):
             trace_warn("sync.events.mysql_not_configured", entity_type=body.entity_type)
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
 
     payload = body.payload or {}
 
@@ -118,7 +118,7 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
         )
         if not ccate or not ncate:
             trace_warn("sync.events.categoria.validation_failed", payload_keys=list(payload.keys()))
-            raise HTTPException(status_code=422, detail="categoria requiere ccate y ncate")
+            raise HTTPException(status_code=422, detail="category requires ccate and ncate")
 
         def upsert():
             trace("sync.events.categoria.mysql.start", ccate=ccate)
@@ -161,7 +161,7 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
         if row is None:
             row = payload
         if not isinstance(row, dict):
-            raise HTTPException(status_code=422, detail="payload.row debe ser objeto")
+            raise HTTPException(status_code=422, detail="payload.row must be an object")
 
         def apply_row():
             conn = mysql.connect()
@@ -170,7 +170,7 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
                 if action == "delete":
                     cod_prv = str(row.get("cod_prv") or "").strip()
                     if not cod_prv:
-                        raise RuntimeError("proveedor requiere cod_prv")
+                        raise RuntimeError("provider row requires cod_prv")
                     delete_sprv(cur, cod_prv)
                 else:
                     upsert_sprv(cur, row)
@@ -190,7 +190,7 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
         if row is None:
             row = payload
         if not isinstance(row, dict):
-            raise HTTPException(status_code=422, detail="payload.row debe ser objeto")
+            raise HTTPException(status_code=422, detail="payload.row must be an object")
 
         def apply_row():
             conn = mysql.connect()
@@ -199,7 +199,7 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
                 if action == "delete":
                     codigo = str(row.get("codigo") or "").strip()
                     if not codigo:
-                        raise RuntimeError("inventario requiere codigo")
+                        raise RuntimeError("inventory row requires codigo")
                     delete_sinv(cur, codigo)
                 else:
                     upsert_sinv(cur, row)
@@ -216,7 +216,7 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
     if entity in {"ventas", "ventasd", "kardex", "kardexd", "comprasdbf"}:
         raise HTTPException(
             status_code=400,
-            detail="Transaccional (compras/ventas/kardex) no se aplica por push; debe entrar por pull (/orchestration/sync/events)",
+            detail="Transaccional (compras/ventas/kardex) no se aplica por push; use POST /api/nodo/events o /api/nodo/events/batch con outbox",
         )
 
     raise HTTPException(
@@ -254,7 +254,7 @@ def _fetch_sinv_cost_row(cur, codigo: str) -> dict | None:
 @router.post("/cost/propose")
 async def sync_cost_propose(body: SyncEventBody, _: None = Depends(verify_bearer)):
     """
-    Propuesta de actualización de costo (hub → nodo).
+    Propuesta de actualización de costo (hub -> nodo).
 
     No modifica tablas si el costo propuesto es menor que el costo local.
     """
@@ -275,7 +275,7 @@ async def sync_cost_propose(body: SyncEventBody, _: None = Depends(verify_bearer
 
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
 
     def decide_and_apply():
         conn = mysql.connect()
@@ -337,7 +337,7 @@ async def sync_cost_propose(body: SyncEventBody, _: None = Depends(verify_bearer
 @router.post("/cost/apply")
 async def sync_cost_apply(body: SyncEventBody, _: None = Depends(verify_bearer)):
     """
-    Forzar actualización de costo (hub → nodo).
+    Forzar actualización de costo (hub -> nodo).
 
     Se usa después de que el usuario confirma en el portal.
     """
@@ -358,7 +358,7 @@ async def sync_cost_apply(body: SyncEventBody, _: None = Depends(verify_bearer))
 
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
 
     def apply():
         conn = mysql.connect()
@@ -417,7 +417,7 @@ async def _run_category_pull_with_warnings(page_size: int) -> dict:
 
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
     return await run_category_pull_from_hub(
         hub=HubClient(), mysql=mysql, page_size=page_size
     )
@@ -428,7 +428,7 @@ async def _run_provider_pull_with_warnings(page_size: int) -> dict:
 
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
     return await run_provider_pull_from_hub(
         hub=HubClient(), mysql=mysql, page_size=page_size
     )
@@ -458,7 +458,7 @@ async def _run_category_push_to_hub() -> dict:
 
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
     return await run_category_push_to_hub(hub=HubClient(), mysql=mysql)
 
 
@@ -467,7 +467,7 @@ async def _run_provider_push_to_hub() -> dict:
 
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
     return await run_provider_push_to_hub(hub=HubClient(), mysql=mysql)
 
 
@@ -476,7 +476,7 @@ async def _run_inventory_push_to_hub() -> dict:
 
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
     return await run_inventory_push_to_hub(hub=HubClient(), mysql=mysql)
 
 
@@ -521,7 +521,7 @@ async def _run_inventory_pull_with_warnings(page_size: int) -> dict:
 
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
     hub = HubClient()
     return await run_inventory_pull_from_hub(
         hub=hub,
@@ -535,7 +535,7 @@ async def sync_productos_pull(
     page_size: int = Query(100, ge=1, le=500),
     _: None = Depends(verify_bearer),
 ):
-    """Pull de catálogo: inserta nuevos; conflictos → warnings en el hub."""
+    """Pull de catálogo: inserta nuevos; conflictos -> warnings en el hub."""
     return await _run_inventory_pull_with_warnings(page_size)
 
 
@@ -591,7 +591,7 @@ async def sync_inventario_apply_from_hub(
 ):
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
     row = body.row
     if not isinstance(row, dict):
         raise HTTPException(status_code=422, detail="row debe ser objeto")
@@ -651,7 +651,7 @@ async def _apply_from_hub(
 ) -> dict:
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
     row = body.row
     if not isinstance(row, dict):
         raise HTTPException(status_code=422, detail="row debe ser objeto")
@@ -687,7 +687,7 @@ async def sync_backfill_inicial(
     page_size: int = Query(100, ge=1, le=500),
     _: None = Depends(verify_bearer),
 ):
-    """Orden recomendado: categorías → proveedores → inventario (artículos)."""
+    """Orden recomendado: categorías -> proveedores -> inventario (artículos)."""
     cat = await _run_category_pull_with_warnings(page_size)
     prv = await _run_provider_pull_with_warnings(page_size)
     inv = await _run_inventory_pull_with_warnings(page_size)
@@ -718,7 +718,7 @@ async def sync_push_inicial(_: None = Depends(verify_bearer)):
 async def sync_categorias(_: None = Depends(verify_bearer)):
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("MySQL del nodo no configurado (MYSQL_* en .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
 
     def fetch():
         conn = mysql.connect()

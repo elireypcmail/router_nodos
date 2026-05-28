@@ -24,7 +24,7 @@ def main() -> int:
     sleep_s = float(_env("MYSQL_WAIT_SLEEP", "2") or "2")
 
     if not user or not database:
-        print("MYSQL_USER y MYSQL_DATABASE requeridos", file=sys.stderr)
+        print("MYSQL_USER and MYSQL_DATABASE required", file=sys.stderr)
         return 2
 
     last_err: Exception | None = None
@@ -47,17 +47,17 @@ def main() -> int:
                     cur.fetchone()
             finally:
                 conn.close()
-            print(f"MySQL listo en {host}:{port} ({database}), intento {attempt}")
+            print(f"MySQL ready at {host}:{port} ({database}), attempt {attempt}")
             return 0
         except Exception as exc:
             last_err = exc
             print(
-                f"Esperando MySQL {host}:{port} ({attempt}/{max_tries}): {exc}",
+                f"Waiting for MySQL {host}:{port} ({attempt}/{max_tries}): {exc}",
                 file=sys.stderr,
             )
             time.sleep(sleep_s)
 
-    print(f"MySQL no respondió: {last_err}", file=sys.stderr)
+    print(f"MySQL did not respond: {last_err}", file=sys.stderr)
     return 1
 
 

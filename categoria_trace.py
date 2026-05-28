@@ -1,9 +1,11 @@
-"""Trazas unificadas del flujo categorías (REST, sync push/pull, hub, worker)."""
+"""Unified category flow traces (REST, sync push/pull, hub, worker)."""
 
 from __future__ import annotations
 
 import logging
 from typing import Any
+
+from log_compat import ascii_safe
 
 logger = logging.getLogger("multishop.categoria")
 
@@ -22,7 +24,10 @@ def is_categoria_http_path(path: str) -> bool:
 
 
 def _format_fields(fields: dict[str, Any]) -> str:
-    return " ".join(f"{k}={v!r}" for k, v in fields.items())
+    return " ".join(
+        f"{k}={ascii_safe(v)!r}" if isinstance(v, str) else f"{k}={v!r}"
+        for k, v in fields.items()
+    )
 
 
 def trace(step: str, **fields: Any) -> None:
