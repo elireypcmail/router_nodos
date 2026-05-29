@@ -44,7 +44,7 @@ _INGEST_LABEL = {
 
 
 def _is_kardex_inventory_adjustment(row: dict) -> bool:
-    """Ajustes y devoluciones vía kardex; ignorar filas espejo de compras/ventas."""
+    """Kardex adjustments/returns only; skip purchase/sale mirror rows."""
     if _num_field(row, "compras") != 0 or _num_field(row, "ventas") != 0:
         return False
     return (
@@ -147,7 +147,7 @@ class HubClient:
             if not pending_events:
                 if ignored_ids:
                     logger.debug(
-                        "[hub-ingest] batch sin eventos transaccionales (%s ignorados)",
+                        "[hub-ingest] batch has no transactional events (%s ignored)",
                         len(ignored_ids),
                     )
                 return OutboxSendResult(
@@ -157,7 +157,7 @@ class HubClient:
 
             events = [ev for _, ev in pending_events]
             logger.info(
-                "[hub-ingest] POST %s (%s evento(s) transaccional)",
+                "[hub-ingest] POST %s (%s transactional event(s))",
                 url,
                 len(events),
             )
@@ -197,12 +197,12 @@ class HubClient:
                 failed_ids.append(oid)
                 hub_failed_messages.setdefault(
                     oid,
-                    "hub ingest: evento sin confirmacion en la respuesta",
+                    "hub ingest: event missing from hub response",
                 )
 
             if failed_ids:
                 logger.warning(
-                    "[hub-ingest] %s evento(s) no confirmados por el hub",
+                    "[hub-ingest] %s event(s) not confirmed by hub",
                     len(failed_ids),
                 )
 

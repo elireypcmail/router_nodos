@@ -29,7 +29,7 @@ async def recover_stale_local_jobs() -> None:
                 {
                     "status": "interrupted",
                     "error_message": (
-                        "El job quedó a mitad en el nodo. Relance push/pull inventario."
+                        "Job interrupted on node. Retry catalog push/pull inventory."
                     ),
                 },
             )

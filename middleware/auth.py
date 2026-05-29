@@ -12,10 +12,10 @@ async def verify_bearer(
     if not credentials or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token Bearer requerido",
+            detail="Bearer token required",
         )
     if credentials.credentials != settings.nodo_api_token:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Token inválido",
+            detail="Invalid token",
         )

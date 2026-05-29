@@ -131,7 +131,7 @@ def _delete_categoria(ccate: str) -> int:
 
 @router.get("")
 async def list_categorias(
-    search: str = Query("", description="Filtro por código o nombre"),
+    search: str = Query("", description="Match code or name"),
     limit: int = Query(200, ge=1, le=2000),
     _: None = Depends(verify_bearer),
 ):
@@ -152,7 +152,7 @@ async def get_categoria(ccate: str, _: None = Depends(verify_bearer)):
     item = await anyio.to_thread.run_sync(lambda: _get_categoria(ccate))
     if not item:
         trace_warn("rest.get.not_found", ccate=ccate)
-        raise HTTPException(status_code=404, detail="Categoria no encontrada")
+        raise HTTPException(status_code=404, detail="Category not found")
     trace("rest.get.done", ccate=ccate)
     return {"nodo_id": settings.nodo_id, "item": item}
 
@@ -177,7 +177,7 @@ async def upsert_categoria(
         except Exception as exc:
             raise HTTPException(
                 status_code=503,
-                detail=f"No se pudo inicializar cliente del hub: {exc}",
+                detail=f"Could not initialize hub client: {exc}",
             ) from exc
 
     hub_item: dict | None = None
@@ -193,7 +193,7 @@ async def upsert_categoria(
             trace_exc("rest.upsert.hub_check.failed", exc, ccate=body.ccate)
             raise HTTPException(
                 status_code=503,
-                detail=f"No se pudo consultar el hub antes de guardar: {exc}",
+                detail=f"Could not query hub before save: {exc}",
             ) from exc
         if hub_item is not None and is_new_local and not confirmar_hub:
             trace_warn("rest.upsert.hub_check.blocked", ccate=body.ccate)
@@ -202,8 +202,8 @@ async def upsert_categoria(
                 detail={
                     "error": "categoria_existe_en_hub",
                     "message": (
-                        "El código ya existe en el hub y no hay fila local. "
-                        "Repite con confirmar_hub=true para crear en MySQL y alinear con el hub."
+                        "Code already exists in hub with no local row. "
+                        "Retry with confirmar_hub=true to create in MySQL and align with hub."
                     ),
                     "ccate": body.ccate,
                     "hub": hub_item,
@@ -244,6 +244,6 @@ async def delete_categoria(ccate: str, _: None = Depends(verify_bearer)):
     deleted = await anyio.to_thread.run_sync(lambda: _delete_categoria(ccate))
     if deleted == 0:
         trace_warn("rest.delete.not_found", ccate=ccate)
-        raise HTTPException(status_code=404, detail="Categoria no encontrada")
+        raise HTTPException(status_code=404, detail="Category not found")
     trace("rest.delete.done", ccate=ccate)
     return {"nodo_id": settings.nodo_id, "deleted": True}

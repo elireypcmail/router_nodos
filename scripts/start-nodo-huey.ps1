@@ -19,5 +19,17 @@ if (-not (Test-Path $venvPython)) {
     throw "No se encontro $venvPython"
 }
 
+if (-not (Test-Path $DeployDir)) {
+    New-Item -ItemType Directory -Path $DeployDir -Force | Out-Null
+}
+$logOut = Join-Path $DeployDir "nodo-huey.out.log"
+$logErr = Join-Path $DeployDir "nodo-huey.err.log"
+
+# UTF-8 en Windows evita UnicodeEncodeError (cp1252) al loguear.
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+
 Set-Location $NodoDir
-& $venvPython -m huey.bin.huey_consumer huey_tasks.huey
+& $venvPython -m huey.bin.huey_consumer huey_tasks.huey `
+    1>> $logOut `
+    2>> $logErr

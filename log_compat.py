@@ -15,9 +15,19 @@ HUB_BASE_URL_NOT_SET = "HUB_BASE_URL not set"
 HUB_PUSH_REQUIRES_MYSQL = "HUB_PUSH_ENABLED requires MYSQL_* configured"
 HUEY_REQUIRES_MYSQL = "HUEY_ENABLED requires MYSQL_* configured"
 
+_DEFAULT_LOGGER_NAMES = (
+    "multishop.categoria",
+    "multishop.sync_apply",
+    "multishop.outbox",
+    "multishop-nodo-api",
+    "multishop-nodo-api.sync",
+    "multishop.sync_jobs",
+    "huey",
+)
+
 
 def ascii_safe(value: Any) -> str:
-    """Coerce any value to an ASCII log string (non-ASCII escaped or dropped)."""
+    """Coerce any value to an ASCII log/API string (non-ASCII escaped or dropped)."""
     text = str(value)
     return text.encode("ascii", errors="backslashreplace").decode("ascii")
 
@@ -63,6 +73,10 @@ def configure_node_logging(*, logger_names: tuple[str, ...] = ()) -> None:
         root.setLevel(level)
 
     ascii_filter = AsciiSafeLogFilter()
-    root.addFilter(ascii_filter)
-    for name in logger_names:
-        logging.getLogger(name).setLevel(level)
+    if ascii_filter not in root.filters:
+        root.addFilter(ascii_filter)
+    for name in (*_DEFAULT_LOGGER_NAMES, *logger_names):
+        log = logging.getLogger(name)
+        log.setLevel(level)
+        if ascii_filter not in log.filters:
+            log.addFilter(ascii_filter)

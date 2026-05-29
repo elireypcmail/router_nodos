@@ -247,12 +247,12 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
     if entity in {"ventas", "ventasd", "kardex", "kardexd", "comprasdbf"}:
         raise HTTPException(
             status_code=400,
-            detail="Transaccional (compras/ventas/kardex) no se aplica por push; use POST /api/nodo/events o /api/nodo/events/batch con outbox",
+            detail="Transactional entities (purchase/sale/kardex) are not applied via push; use POST /api/nodo/events or /api/nodo/events/batch with outbox",
         )
 
     raise HTTPException(
         status_code=400,
-        detail=f"entity_type no soportado: {body.entity_type}",
+        detail=f"unsupported entity_type: {body.entity_type}",
     )
 
 
@@ -293,7 +293,7 @@ async def sync_cost_propose(body: SyncEventBody, _: None = Depends(verify_bearer
     if entity not in {"inventory_cost_update", "cost_update", "inventory_cost"}:
         raise HTTPException(
             status_code=400,
-            detail=f"entity_type no soportado: {body.entity_type}",
+            detail=f"unsupported entity_type: {body.entity_type}",
         )
 
     payload = body.payload or {}
@@ -302,7 +302,7 @@ async def sync_cost_propose(body: SyncEventBody, _: None = Depends(verify_bearer
     costo_actual_factura = _to_float(payload.get("costo_actual_factura"))
 
     if not codigo:
-        raise HTTPException(status_code=422, detail="cost/propose requiere codigo")
+        raise HTTPException(status_code=422, detail="cost/propose requires codigo")
 
     mysql = MySqlClient()
     if not mysql.is_configured():
@@ -376,7 +376,7 @@ async def sync_cost_apply(body: SyncEventBody, _: None = Depends(verify_bearer))
     if entity not in {"inventory_cost_update", "cost_update", "inventory_cost"}:
         raise HTTPException(
             status_code=400,
-            detail=f"entity_type no soportado: {body.entity_type}",
+            detail=f"unsupported entity_type: {body.entity_type}",
         )
 
     payload = body.payload or {}
@@ -385,7 +385,7 @@ async def sync_cost_apply(body: SyncEventBody, _: None = Depends(verify_bearer))
     costo_actual_factura = _to_float(payload.get("costo_actual_factura"))
 
     if not codigo:
-        raise HTTPException(status_code=422, detail="cost/apply requiere codigo")
+        raise HTTPException(status_code=422, detail="cost/apply requires codigo")
 
     mysql = MySqlClient()
     if not mysql.is_configured():
@@ -467,7 +467,7 @@ async def _run_provider_pull_with_warnings(page_size: int) -> dict:
 
 @router.post("/categorias/pull")
 async def sync_categorias_pull(
-    page_size: int = Query(100, ge=1, le=500, description="Tamaño de página al hub"),
+    page_size: int = Query(100, ge=1, le=500, description="Hub page size"),
     _: None = Depends(verify_bearer),
 ):
     trace("sync.pull.start", page_size=page_size, entity="categoria")
@@ -585,17 +585,17 @@ class ApplyFromHubBody(BaseModel):
     require_local_dependencies: bool = Field(
         default=False,
         validation_alias="require_local_dependencies",
-        description="Si true, exige categoría y proveedor en MySQL antes de inventario",
+        description="If true, require category and provider in MySQL before inventory",
     )
     categoria_row: dict | None = Field(
         default=None,
         validation_alias="categoria_row",
-        description="Opcional: upsert catego antes de inventario (misma transacción)",
+        description="Optional: upsert catego before inventory (same transaction)",
     )
     proveedor_row: dict | None = Field(
         default=None,
         validation_alias="proveedor_row",
-        description="Opcional: upsert sprv antes de inventario (misma transacción)",
+        description="Optional: upsert sprv before inventory (same transaction)",
     )
 
 
@@ -625,7 +625,7 @@ async def sync_inventario_apply_from_hub(
         raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
     row = body.row
     if not isinstance(row, dict):
-        raise HTTPException(status_code=422, detail="row debe ser objeto")
+        raise HTTPException(status_code=422, detail="row must be an object")
 
     entity = "inventario"
 
@@ -685,7 +685,7 @@ async def _apply_from_hub(
         raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
     row = body.row
     if not isinstance(row, dict):
-        raise HTTPException(status_code=422, detail="row debe ser objeto")
+        raise HTTPException(status_code=422, detail="row must be an object")
 
     entity = code_field
 

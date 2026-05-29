@@ -1,4 +1,4 @@
-"""Comparación hub vs tienda para pull de categorías y proveedores."""
+"""Compare hub vs store rows for category/provider pull."""
 
 from __future__ import annotations
 
@@ -11,25 +11,25 @@ from sprv_store import SPRV_BODY_FIELDS
 CATEGO_FIELDS = ("ccate", "ncate", "pganancia", "pdescu")
 
 CATEGO_FIELD_LABELS: dict[str, str] = {
-    "ccate": "Código categoría",
-    "ncate": "Nombre categoría",
-    "pganancia": "% ganancia",
-    "pdescu": "% descuento",
+    "ccate": "Category code",
+    "ncate": "Category name",
+    "pganancia": "Margin pct",
+    "pdescu": "Discount pct",
 }
 
 SPRV_FIELD_LABELS: dict[str, str] = {
-    "cod_prv": "Código proveedor",
-    "nom_prv": "Nombre",
-    "rif_prv": "RIF",
-    "dir1_prv": "Dirección 1",
-    "dir2_prv": "Dirección 2",
-    "dir3_prv": "Dirección 3",
-    "tel_prv": "Teléfono",
+    "cod_prv": "Provider code",
+    "nom_prv": "Name",
+    "rif_prv": "Tax id",
+    "dir1_prv": "Address 1",
+    "dir2_prv": "Address 2",
+    "dir3_prv": "Address 3",
+    "tel_prv": "Phone",
     "email1_prv": "Email 1",
     "email2_prv": "Email 2",
-    "rep_prv": "Representante",
-    "especial": "Especial",
-    "numcuenta": "Nº cuenta",
+    "rep_prv": "Representative",
+    "especial": "Special",
+    "numcuenta": "Account no",
 }
 
 _CATEGO_NUM = frozenset({"pganancia", "pdescu"})

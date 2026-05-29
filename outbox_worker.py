@@ -9,6 +9,7 @@ import anyio
 
 from db_mysql import is_transient_mysql_error
 from hub_client import HubClient
+from log_compat import ascii_safe
 from outbox_mysql import OutboxRepository
 
 logger = logging.getLogger("multishop.outbox")
@@ -55,6 +56,7 @@ class OutboxWorker:
         while not self._stop.is_set():
             ids: list[int] = []
             try:
+                await anyio.to_thread.run_sync(self._repo.recover_processing)
                 events = await anyio.to_thread.run_sync(
                     lambda: self._repo.reserve_pending(limit=self._batch),
                 )
@@ -97,7 +99,7 @@ class OutboxWorker:
                     break
                 logger.warning("Outbox worker: %s", ex)
                 if ids:
-                    err_msg = str(ex)[:2000]
+                    err_msg = ascii_safe(ex)[:2000]
                     try:
                         await anyio.to_thread.run_sync(
                             lambda: self._repo.release_to_pending(ids, err_msg),

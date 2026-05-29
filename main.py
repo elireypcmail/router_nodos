@@ -1,4 +1,4 @@
-"""API del nodo multishop - orquestada por Nest vía VPN hub."""
+"""Multishop store node API - orchestrated by Nest hub over VPN."""
 
 import asyncio
 from contextlib import asynccontextmanager
@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import ssl
 
-from log_compat import configure_node_logging
+from log_compat import configure_node_logging, ascii_safe
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -60,13 +60,7 @@ async def _ensure_outbox_schema_with_retry(
 
 
 def configure_logging() -> None:
-    configure_node_logging(
-        logger_names=(
-            "multishop.categoria",
-            "multishop.sync_apply",
-            "multishop.outbox",
-        ),
-    )
+    configure_node_logging()
 
 
 @asynccontextmanager
@@ -128,7 +122,7 @@ configure_logging()
 
 app = FastAPI(
     title="Multishop Nodo",
-    description="API HTTPS del nodo en tienda (red privada hub-spoke)",
+    description="Store node HTTPS API (private hub-spoke network)",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -168,7 +162,7 @@ async def categoria_http_trace(request: Request, call_next):
 
 def _error_message(exc: Exception) -> str:
     message = str(exc).strip()
-    return message or exc.__class__.__name__
+    return ascii_safe(message or exc.__class__.__name__)
 
 
 @app.exception_handler(RequestValidationError)
@@ -240,15 +234,15 @@ def run():
 
     if not use_ssl and not settings.nodo_allow_insecure:
         raise RuntimeError(
-            "Configure NODO_SSL_CERTFILE/NODO_SSL_KEYFILE o NODO_ALLOW_INSECURE=true (solo dev)"
+            "Configure NODO_SSL_CERTFILE/NODO_SSL_KEYFILE or NODO_ALLOW_INSECURE=true (dev only)"
         )
     if client_cert_required and not use_ssl:
         raise RuntimeError(
-            "mTLS requiere TLS en nodo: configure NODO_SSL_CERTFILE/NODO_SSL_KEYFILE"
+            "mTLS requires TLS on node: configure NODO_SSL_CERTFILE/NODO_SSL_KEYFILE"
         )
     if client_cert_required and not ssl_client_ca:
         raise RuntimeError(
-            "mTLS requiere NODO_SSL_CLIENT_CA_FILE con la CA del hub"
+            "mTLS requires NODO_SSL_CLIENT_CA_FILE with hub CA certificate"
         )
 
     dev_reload = os.getenv("NODO_DEV_RELOAD", "").strip().lower() in (

@@ -175,11 +175,11 @@ def _delete_proveedor(cod_prv: str) -> int:
 
 @router.get("/proveedores")
 async def proveedores(
-    search: str = Query("", description="Coincidencia en código o nombre"),
-    codigo: str = Query("", description="Filtro por código (parcial)"),
-    nombre: str = Query("", description="Filtro por nombre (parcial)"),
-    page: int = Query(1, ge=1, description="Página"),
-    limit: int = Query(25, ge=1, le=500, description="Filas por página"),
+    search: str = Query("", description="Match code or name"),
+    codigo: str = Query("", description="Filter by code (partial)"),
+    nombre: str = Query("", description="Filter by name (partial)"),
+    page: int = Query(1, ge=1, description="Page"),
+    limit: int = Query(25, ge=1, le=500, description="Rows per page"),
     _: None = Depends(verify_bearer),
 ):
     items, total = await anyio.to_thread.run_sync(
@@ -205,7 +205,7 @@ async def proveedores(
 async def get_proveedor(cod_prv: str, _: None = Depends(verify_bearer)):
     item = await anyio.to_thread.run_sync(lambda: _get_proveedor(cod_prv))
     if not item:
-        raise HTTPException(status_code=404, detail="Proveedor no encontrado")
+        raise HTTPException(status_code=404, detail="Provider not found")
     return {"nodo_id": settings.nodo_id, "item": item}
 
 
@@ -220,5 +220,5 @@ async def upsert_proveedor(body: ProveedorUpsertRequest, _: None = Depends(verif
 async def delete_proveedor(cod_prv: str, _: None = Depends(verify_bearer)):
     deleted = await anyio.to_thread.run_sync(lambda: _delete_proveedor(cod_prv))
     if deleted == 0:
-        raise HTTPException(status_code=404, detail="Proveedor no encontrado")
+        raise HTTPException(status_code=404, detail="Provider not found")
     return {"nodo_id": settings.nodo_id, "deleted": True}

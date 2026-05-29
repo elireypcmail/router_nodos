@@ -1,4 +1,4 @@
-"""Dependencias categoría/proveedor al hacer pull de inventario hub → tienda."""
+"""Category/provider dependencies when pulling inventory from hub to store."""
 
 from __future__ import annotations
 

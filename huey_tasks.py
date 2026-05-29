@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import logging
 from typing import Any
 
 import anyio
 
 from config import settings
+from log_compat import configure_node_logging, ascii_safe
 from db_mysql import MySqlClient
 from hub_client import HubClient
 from huey_app import huey
@@ -16,15 +18,21 @@ from sync_job_progress import report_progress
 from sync_job_pull_file import run_inventory_pull_from_file
 from sync_job_store import save_job
 
+logger = logging.getLogger("multishop.outbox")
+
+configure_node_logging()
 
 @huey.task(retries=settings.huey_outbox_task_retries, retry_delay=settings.huey_outbox_retry_delay_seconds)
 def send_outbox_batch() -> dict[str, Any]:
-    """Tarea Huey: reserva un batch de eventos pending y los envía al hub."""
+    """Huey task: reserve a pending outbox batch and send it to the hub."""
     mysql = MySqlClient()
     if not mysql.is_configured():
         raise RuntimeError("Huey outbox requires MYSQL_* configured")
 
     repo = OutboxRepository(mysql)
+    recovered = repo.recover_processing()
+    if recovered:
+        logger.warning("Outbox: recovered %s row(s) from processing", recovered)
     hub = HubClient()
 
     events = repo.reserve_pending(limit=int(settings.huey_outbox_batch_size))
@@ -56,7 +64,7 @@ def send_outbox_batch() -> dict[str, Any]:
             "message": "ok" if not result.has_failures else "partial_failure",
         }
     except Exception as ex:
-        repo.release_to_pending(ids, str(ex))
+        repo.release_to_pending(ids, ascii_safe(ex))
         raise
 
 

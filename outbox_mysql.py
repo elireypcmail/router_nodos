@@ -56,8 +56,33 @@ class OutboxRepository:
         finally:
             conn.close()
 
+    def recover_processing(self) -> int:
+        """Return rows stuck in processing to pending (consumer died mid-batch)."""
+        conn = self._mysql.connect()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"""
+                UPDATE {self._table}
+                SET status='pending',
+                    attempts=attempts + 1,
+                    last_error=LEFT(
+                        CONCAT('recovered processing: ', COALESCE(last_error, '')),
+                        2000
+                    )
+                WHERE status = 'processing'
+                """
+            )
+            conn.commit()
+            return int(cur.rowcount or 0)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def release_to_pending(self, ids: list[int], error: str) -> None:
-        """Devuelve eventos a pending (para reintento) e incrementa attempts."""
+        """Return events to pending (for retry) and increment attempts."""
         if not ids:
             return
         conn = self._mysql.connect()
@@ -111,9 +136,9 @@ class OutboxRepository:
             conn.close()
 
     def reserve_pending(self, limit: int = 200) -> list[OutboxEvent]:
-        """Reserva eventos para envío marcándolos como processing.
+        """Reserve events for send by marking them processing.
 
-        Esto evita que múltiples workers/consumers envíen el mismo batch.
+        Prevents multiple workers/consumers from sending the same batch.
         """
         conn = self._mysql.connect()
         try:
@@ -188,7 +213,7 @@ class OutboxRepository:
             conn.close()
 
     def mark_ignored(self, ids: list[int]) -> None:
-        """Filas no transaccionales (sinv/catego/espejo kardex) — no van a ingest."""
+        """Non-transactional rows (sinv/catego/kardex mirror) - not sent to ingest."""
         if not ids:
             return
         conn = self._mysql.connect()

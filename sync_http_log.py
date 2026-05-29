@@ -26,13 +26,16 @@ def log_sync_step(step: str, **fields: Any) -> None:
 def log_sync_error(step: str, exc: BaseException, **fields: Any) -> None:
     suffix = ""
     if fields:
-        suffix = " | " + " ".join(f"{k}={v!r}" for k, v in fields.items())
+        suffix = " | " + " ".join(
+            f"{k}={ascii_safe(v)!r}" if isinstance(v, str) else f"{k}={v!r}"
+            for k, v in fields.items()
+        )
     logger.error(
         "%s%s | %s: %s",
         step,
         suffix,
         exc.__class__.__name__,
-        exc,
+        ascii_safe(exc),
         exc_info=(type(exc), exc, exc.__traceback__),
     )
 

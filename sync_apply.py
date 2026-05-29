@@ -159,7 +159,7 @@ class SyncApplier:
                 if table == "ventas":
                     numero = str(where_pk.get("numero") or row.get("numero") or "").strip()
                     if not numero:
-                        raise RuntimeError("ventas delete requiere numero")
+                        raise RuntimeError("ventas delete requires numero")
                     cur.execute("DELETE FROM ventas WHERE numero = %s", (numero,))
                 elif table == "ventasd":
                     numero = str(where_pk.get("numero") or row.get("numero") or "").strip()
@@ -168,7 +168,7 @@ class SyncApplier:
                     if indice_det is None:
                         indice_det = row.get("indice_det")
                     if not numero or not codigo or indice_det is None:
-                        raise RuntimeError("ventasd delete requiere numero, codigo, indice_det")
+                        raise RuntimeError("ventasd delete requires numero, codigo, indice_det")
                     cur.execute(
                         "DELETE FROM ventasd WHERE numero=%s AND codigo=%s AND indice_det=%s",
                         (numero, codigo, int(indice_det)),
@@ -178,7 +178,7 @@ class SyncApplier:
                     if indice is None:
                         indice = row.get("indice")
                     if indice is None:
-                        raise RuntimeError("kardex/kardexd delete requiere indice")
+                        raise RuntimeError("kardex/kardexd delete requires indice")
                     cur.execute(f"DELETE FROM {table} WHERE indice = %s", (int(indice),))
                 elif table == "comprasdbf":
                     contador = where_pk.get("contador")
@@ -194,13 +194,13 @@ class SyncApplier:
                     if fecha is None:
                         fecha = row.get("fecha")
                     if contador is None or not numdoc or not codigo or fecha is None:
-                        raise RuntimeError("comprasdbf delete requiere contador,numdoc,codigo,fecha")
+                        raise RuntimeError("comprasdbf delete requires contador,numdoc,codigo,fecha")
                     cur.execute(
                         "DELETE FROM comprasdbf WHERE contador=%s AND numdoc=%s AND codigo=%s AND fecha=%s",
                         (int(contador), numdoc, codigo, fecha),
                     )
                 else:
-                    raise RuntimeError(f"delete no soportado para {table}")
+                    raise RuntimeError(f"delete not supported for {table}")
 
                 conn.commit()
                 return

@@ -49,7 +49,7 @@ def main() -> int:
         numero = f"KD{suf}"[:15]
         contador = int(suf) % 999999 or 1
         fecha = today()
-        kobs = f"Devolución cliente #{suf}" if args.tipo == "devov" else f"Devolución proveedor #{suf}"
+        kobs = f"Customer return #{suf}" if args.tipo == "devov" else f"Supplier return #{suf}"
 
         delta = qty if args.tipo == "devov" else -qty
         ex_antes = read_sinv_existencia(conn, codigo)

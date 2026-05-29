@@ -19,7 +19,7 @@ def is_categoria_entity(entity: str) -> bool:
 
 
 def is_categoria_http_path(path: str) -> bool:
-    """Rutas REST/sync de categorías. /api/sync/events es genérico → no incluir."""
+    """Category REST/sync paths. Excludes generic /api/sync/events."""
     p = (path or "").lower()
     return "/categorias" in p
 
@@ -32,6 +32,7 @@ def _format_fields(fields: dict[str, Any]) -> str:
 
 
 def trace(step: str, **fields: Any) -> None:
+    step = ascii_safe(step)
     if fields:
         logger.info("[catego] %s | %s", step, _format_fields(fields))
     else:
@@ -39,6 +40,7 @@ def trace(step: str, **fields: Any) -> None:
 
 
 def trace_warn(step: str, **fields: Any) -> None:
+    step = ascii_safe(step)
     if fields:
         logger.warning("[catego] %s | %s", step, _format_fields(fields))
     else:
@@ -46,12 +48,13 @@ def trace_warn(step: str, **fields: Any) -> None:
 
 
 def trace_exc(step: str, exc: BaseException, **fields: Any) -> None:
+    step = ascii_safe(step)
     suffix = f" | {_format_fields(fields)}" if fields else ""
     logger.error(
         "[catego] %s%s | %s: %s",
         step,
         suffix,
         exc.__class__.__name__,
-        exc,
+        ascii_safe(exc),
         exc_info=(type(exc), exc, exc.__traceback__),
     )

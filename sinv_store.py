@@ -44,7 +44,7 @@ SINV_INSERT_ONLY_LOCAL_FIELDS = frozenset({"fcrea", "descontinuador"})
 
 
 def _parse_hub_fcrea(raw_row: dict) -> str | None:
-    """fcrea / createdAt del hub → YYYY-MM-DD para sinv.fcrea."""
+    """Map hub fcrea/createdAt to YYYY-MM-DD for sinv.fcrea."""
     for key in ("fcrea", "createdAt", "created_at"):
         val = raw_row.get(key)
         if val is None:
@@ -99,7 +99,7 @@ def _hub_row_has_activo(raw_row: dict) -> bool:
 
 
 def prepare_sinv_upsert(row: dict) -> dict[str, Any]:
-    """Normaliza fila hub/PGMQ → snapshot sinv + campos locales derivados."""
+    """Normalize hub/PGMQ row to sinv snapshot plus derived local fields."""
     from sinv_compare import normalize_sinv_snapshot
 
     clean = {k: v for k, v in row.items() if k not in SINV_SYNC_META_KEYS}

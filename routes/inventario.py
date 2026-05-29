@@ -242,11 +242,11 @@ def _delete_item(codigo: str) -> int:
 
 @router.get("/inventario")
 async def inventario(
-    search: str = Query("", description="Coincidencia en código o descripción"),
-    codigo: str = Query("", description="Filtro por código (parcial)"),
-    nombre: str = Query("", description="Filtro por descripción (parcial)"),
-    page: int = Query(1, ge=1, description="Página"),
-    limit: int = Query(25, ge=1, le=500, description="Filas por página"),
+    search: str = Query("", description="Match code or description"),
+    codigo: str = Query("", description="Filter by code (partial)"),
+    nombre: str = Query("", description="Filter by description (partial)"),
+    page: int = Query(1, ge=1, description="Page"),
+    limit: int = Query(25, ge=1, le=500, description="Rows per page"),
     _: None = Depends(verify_bearer),
 ):
     items, total = await anyio.to_thread.run_sync(
@@ -274,7 +274,7 @@ async def get_inventario_detalle_tienda(
 ):
     payload = await anyio.to_thread.run_sync(lambda: _get_detalle_tienda(codigo))
     if not payload:
-        raise HTTPException(status_code=404, detail="Item no encontrado")
+        raise HTTPException(status_code=404, detail="Item not found")
     return {
         "nodo_id": settings.nodo_id,
         "nombre": settings.nodo_nombre,
@@ -287,7 +287,7 @@ async def get_inventario_detalle_tienda(
 async def get_inventario_item(codigo: str, _: None = Depends(verify_bearer)):
     item = await anyio.to_thread.run_sync(lambda: _get_item(codigo))
     if not item:
-        raise HTTPException(status_code=404, detail="Item no encontrado")
+        raise HTTPException(status_code=404, detail="Item not found")
     return {"nodo_id": settings.nodo_id, "item": item}
 
 
@@ -302,5 +302,5 @@ async def upsert_inventario_item(body: InventarioUpsertRequest, _: None = Depend
 async def delete_inventario_item(codigo: str, _: None = Depends(verify_bearer)):
     deleted = await anyio.to_thread.run_sync(lambda: _delete_item(codigo))
     if deleted == 0:
-        raise HTTPException(status_code=404, detail="Item no encontrado")
+        raise HTTPException(status_code=404, detail="Item not found")
     return {"nodo_id": settings.nodo_id, "deleted": True}

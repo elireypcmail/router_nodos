@@ -1,4 +1,4 @@
-"""Comparación de maestros sinv (hub vs tienda) para pull inicial."""
+"""Compare sinv master rows (hub vs store) for initial pull."""
 
 from __future__ import annotations
 
@@ -8,21 +8,21 @@ from typing import Any
 from sinv_store import SINV_HUB_FIELDS
 
 SINV_FIELD_LABELS: dict[str, str] = {
-    "codigo": "Código",
-    "descrip": "Descripción",
-    "ccate": "Categoría",
-    "cod_prv": "Proveedor",
-    "precio1": "Precio 1",
-    "pg1": "Precio granel",
-    "barra": "Código de barras",
-    "referencia": "Referencia",
-    "componente": "Componente",
-    "stockmin": "Stock mínimo",
-    "stockmax": "Stock máximo",
-    "recipe": "Receta",
-    "cfrio": "Cadena frío",
-    "activo": "Activo",
-    "porvg": "% ganancia",
+    "codigo": "Code",
+    "descrip": "Description",
+    "ccate": "Category",
+    "cod_prv": "Provider",
+    "precio1": "Price 1",
+    "pg1": "Bulk price",
+    "barra": "Barcode",
+    "referencia": "Reference",
+    "componente": "Component",
+    "stockmin": "Min stock",
+    "stockmax": "Max stock",
+    "recipe": "Recipe",
+    "cfrio": "Cold chain",
+    "activo": "Active",
+    "porvg": "Margin pct",
 }
 
 _NUMERIC_FIELDS = frozenset({"precio1", "pg1", "stockmin", "stockmax", "porvg"})
@@ -40,7 +40,7 @@ def _norm_flag01(value: object, *, default: int = 0) -> int:
     text = str(value).strip().lower()
     if not text:
         return default
-    if text in {"1", "true", "si", "sí", "yes"}:
+    if text in {"1", "true", "si", "yes"}:
         return 1
     if text in {"0", "false", "no"}:
         return 0
