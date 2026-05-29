@@ -103,11 +103,13 @@ function Start-MultishopNodoApi {
         [string]$NodoDirOverride = ""
     )
 
-    $MultishopDir = Get-MultishopLogDir
-    $logOut = Join-Path $MultishopDir "nodo-api.out.log"
-    $logErr = Join-Path $MultishopDir "nodo-api.err.log"
+    $startBody = {
+        param($NodoDirOverride)
 
-    try {
+        $MultishopDir = Get-MultishopLogDir
+        $logOut = Join-Path $MultishopDir "nodo-api.out.log"
+        $logErr = Join-Path $MultishopDir "nodo-api.err.log"
+
         Write-NodoApiLog "=== arranque === user=$env:USERNAME session=$env:SESSIONNAME logdir=$MultishopDir"
 
         $NodoDir = Get-MultishopNodoDir -NodoDirOverride $NodoDirOverride
@@ -165,6 +167,14 @@ function Start-MultishopNodoApi {
         }
 
         Write-NodoApiLog "API activa PID $($proc.Id) puerto $apiPort"
+    }
+
+    try {
+        if (Get-Command Invoke-MultishopStartMutex -ErrorAction SilentlyContinue) {
+            Invoke-MultishopStartMutex -Name "Api" -ScriptBlock { & $startBody $NodoDirOverride }
+        } else {
+            & $startBody $NodoDirOverride
+        }
     } catch {
         Write-NodoApiLog "ERROR: $($_.Exception.Message)"
         throw

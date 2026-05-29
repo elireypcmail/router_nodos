@@ -103,6 +103,49 @@ function Test-MultishopNodoApiProcessRunning {
     return 0
 }
 
+function Test-MultishopHueyProcessRunning {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDir
+    )
+    foreach ($wp in Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue) {
+        $cmd = ($wp.CommandLine -as [string])
+        if (-not $cmd) { continue }
+        if (-not (Test-IsMultishopNodoProcess -CommandLine $cmd -NodoDir $NodoDir)) { continue }
+        if ($cmd -match 'huey_consumer') {
+            return [int]$wp.ProcessId
+        }
+    }
+    return 0
+}
+
+function Invoke-MultishopStartMutex {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$ScriptBlock,
+
+        [int]$TimeoutMs = 120000
+    )
+    $mutexName = "Global\Multishop-Nodo-$Name"
+    $mutex = New-Object System.Threading.Mutex($false, $mutexName)
+    $acquired = $false
+    try {
+        $acquired = $mutex.WaitOne($TimeoutMs)
+        if (-not $acquired) {
+            throw "Timeout esperando mutex $mutexName ($TimeoutMs ms)"
+        }
+        & $ScriptBlock
+    } finally {
+        if ($acquired) {
+            try { $mutex.ReleaseMutex() } catch { }
+        }
+        $mutex.Dispose()
+    }
+}
+
 function Stop-MultishopNodoProcesses {
     param(
         [Parameter(Mandatory = $true)]

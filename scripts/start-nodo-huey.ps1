@@ -7,6 +7,10 @@ $ErrorActionPreference = "Stop"
 $DeployDir = Join-Path $env:ProgramData "Multishop"
 $DirFile = Join-Path $DeployDir "nodo-dir.txt"
 $StartLog = Join-Path $DeployDir "nodo-huey-start.log"
+$envHelper = Join-Path $PSScriptRoot "nodo-env.ps1"
+if (Test-Path -LiteralPath $envHelper) {
+    . $envHelper
+}
 
 function Write-HueyStartLog {
     param([string]$Message)
@@ -19,38 +23,43 @@ function Write-HueyStartLog {
 
 function Test-HueyConsumerRunning {
     param([string]$NodoDirPath)
+    if (Get-Command Test-MultishopHueyProcessRunning -ErrorAction SilentlyContinue) {
+        return (Test-MultishopHueyProcessRunning -NodoDir $NodoDirPath)
+    }
     $nodoLower = $NodoDirPath.TrimEnd('\').ToLowerInvariant()
     foreach ($wp in Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue) {
         $cmd = ($wp.CommandLine -as [string])
         if (-not $cmd) { continue }
         if ($cmd.ToLowerInvariant() -notlike "*$nodoLower*") { continue }
-        if ($cmd -match 'huey\.bin\.huey_consumer|huey_consumer') {
+        if ($cmd -match 'huey_consumer') {
             return [int]$wp.ProcessId
         }
     }
     return 0
 }
 
-try {
+function Start-MultishopHueyConsumer {
+    param([string]$NodoDirPath)
+
     Write-HueyStartLog "=== huey launcher user=$env:USERNAME session=$env:SESSIONNAME ==="
 
-    if (-not $NodoDir -and (Test-Path $DirFile)) {
-        $NodoDir = (Get-Content -LiteralPath $DirFile -Raw).Trim()
+    if (-not $NodoDirPath -and (Test-Path $DirFile)) {
+        $NodoDirPath = (Get-Content -LiteralPath $DirFile -Raw).Trim()
     }
-    if (-not $NodoDir) {
+    if (-not $NodoDirPath) {
         throw "NodoDir not set (missing nodo-dir.txt in ProgramData\Multishop)"
     }
-    if (-not (Test-Path -LiteralPath $NodoDir)) {
-        throw "NodoDir does not exist: $NodoDir"
+    if (-not (Test-Path -LiteralPath $NodoDirPath)) {
+        throw "NodoDir does not exist: $NodoDirPath"
     }
 
-    $existingPid = Test-HueyConsumerRunning -NodoDirPath $NodoDir
+    $existingPid = Test-HueyConsumerRunning -NodoDirPath $NodoDirPath
     if ($existingPid -gt 0) {
         Write-HueyStartLog "Huey consumer already running PID $existingPid; skip."
-        exit 0
+        return
     }
 
-    $venvPython = Join-Path $NodoDir "venv\Scripts\python.exe"
+    $venvPython = Join-Path $NodoDirPath "venv\Scripts\python.exe"
     if (-not (Test-Path -LiteralPath $venvPython)) {
         throw "Missing venv python: $venvPython"
     }
@@ -61,11 +70,11 @@ try {
     $env:PYTHONUTF8 = "1"
     $env:PYTHONIOENCODING = "utf-8"
 
-    Write-HueyStartLog "Starting: $venvPython -m huey.bin.huey_consumer huey_tasks.huey (cwd $NodoDir)"
+    Write-HueyStartLog "Starting: $venvPython -m huey.bin.huey_consumer huey_tasks.huey (cwd $NodoDirPath)"
 
     $proc = Start-Process -FilePath $venvPython `
         -ArgumentList @("-m", "huey.bin.huey_consumer", "huey_tasks.huey") `
-        -WorkingDirectory $NodoDir `
+        -WorkingDirectory $NodoDirPath `
         -WindowStyle Hidden `
         -RedirectStandardOutput $logOut `
         -RedirectStandardError $logErr `
@@ -82,6 +91,14 @@ try {
     }
 
     Write-HueyStartLog "Huey consumer active PID $($proc.Id)"
+}
+
+try {
+    if (Get-Command Invoke-MultishopStartMutex -ErrorAction SilentlyContinue) {
+        Invoke-MultishopStartMutex -Name "Huey" -ScriptBlock { Start-MultishopHueyConsumer -NodoDirPath $NodoDir }
+    } else {
+        Start-MultishopHueyConsumer -NodoDirPath $NodoDir
+    }
 } catch {
     Write-HueyStartLog "ERROR: $($_.Exception.Message)"
     throw

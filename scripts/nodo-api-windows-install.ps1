@@ -187,18 +187,22 @@ function Install-NodoHueyAutostart {
     $hueyTr = 'wscript.exe //nologo "' + $hueyVbs + '"'
 
     Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey"
-    $onStartArgs = @(
-        "/Create", "/TN", "Multishop-Nodo-Huey", "/SC", "ONSTART",
-        "/TR", $hueyTr, "/RU", "SYSTEM", "/RL", "HIGHEST", "/DELAY", "0002:00", "/F"
-    )
-    $onStartOut = & schtasks.exe @onStartArgs 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "schtasks Multishop-Nodo-Huey ONSTART failed: $onStartOut"
-    } else {
-        Write-Host "Task Multishop-Nodo-Huey registered (ONSTART, ~2 min delay)."
+    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey-Logon"
+
+    if (Test-NodoInProgramFiles -Path $NodoDir) {
+        $onStartArgs = @(
+            "/Create", "/TN", "Multishop-Nodo-Huey", "/SC", "ONSTART",
+            "/TR", $hueyTr, "/RU", "SYSTEM", "/RL", "HIGHEST", "/DELAY", "0002:00", "/F"
+        )
+        $onStartOut = & schtasks.exe @onStartArgs 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "schtasks Multishop-Nodo-Huey ONSTART failed: $onStartOut"
+        } else {
+            Write-Host "Task Multishop-Nodo-Huey registered (ONSTART SYSTEM only, ~2 min delay)."
+        }
+        return
     }
 
-    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey-Logon"
     $runUser = "$env:USERDOMAIN\$env:USERNAME"
     $logonDelay = Format-SchTasksDelay -Seconds 60
     $onLogonArgs = @(
@@ -209,7 +213,7 @@ function Install-NodoHueyAutostart {
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "schtasks Multishop-Nodo-Huey-Logon failed: $onLogonOut"
     } else {
-        Write-Host "Task Multishop-Nodo-Huey-Logon registered (ONLOGON, delay $logonDelay)."
+        Write-Host "Task Multishop-Nodo-Huey-Logon registered (ONLOGON only, delay $logonDelay)."
     }
 }
 
@@ -271,23 +275,40 @@ function Deploy-NodoApiLauncher {
     Write-Host "Launcher: $DeployedVbs"
 }
 
+function Get-WindowsProgramFilesRoots {
+    $roots = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in @('ProgramW6432', 'ProgramFiles')) {
+        $val = [Environment]::GetEnvironmentVariable($name, 'Process')
+        if ($val) {
+            [void]$roots.Add($val.TrimEnd('\'))
+        }
+    }
+    $x86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)', 'Process')
+    if ($x86) {
+        [void]$roots.Add($x86.TrimEnd('\'))
+    }
+    return @($roots)
+}
+
 function Test-NodoInProgramFiles {
     param([string]$Path)
-    $norm = (Resolve-Path -LiteralPath $Path).Path.TrimEnd('\\')
-    foreach ($root in @(${env:ProgramFiles}, ${env:ProgramFiles(x86)})) {
-        if (-not $root) { continue }
-        $root = $root.TrimEnd('\\')
-        if ($norm.StartsWith($root + '\\', [StringComparison]::OrdinalIgnoreCase)) {
+    $norm = (Resolve-Path -LiteralPath $Path).Path.TrimEnd('\')
+    foreach ($root in Get-WindowsProgramFilesRoots) {
+        if ($norm.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) {
             return $true
         }
+    }
+    # WOW64: 32-bit PowerShell redirige ProgramFiles a (x86); ruta real suele ser C:\Program Files\...
+    if ($norm -match '(?i)^[A-Z]:\\Program Files\\') {
+        return $true
     }
     return $false
 }
 
 function Install-NodoApiOnStartTask {
     if (-not (Test-NodoInProgramFiles -Path $NodoDir)) {
-        Write-Host "ONSTART omitido (nodo fuera de Program Files; use carpeta Inicio + ONLOGON)."
-        return
+        Write-Host "ONSTART omitido (nodo fuera de Program Files; use ONLOGON)."
+        return $false
     }
     if (-not (Test-Path $DeployedVbs)) {
         throw "Falta launcher $DeployedVbs"
@@ -310,21 +331,28 @@ function Install-NodoApiOnStartTask {
     $output = & schtasks.exe @schArgs 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "schtasks ONSTART fallo: $output"
-    } else {
-        Write-Host "Tarea $TaskNameOnStart registrada (ONSTART SYSTEM, retraso 1:30)."
+        return $false
     }
+    Write-Host "Tarea $TaskNameOnStart registrada (ONSTART SYSTEM, retraso 1:30)."
+    return $true
 }
 
 function Install-NodoApiScheduledTask {
     if (-not (Test-Path $DeployedVbs)) {
         throw "Falta launcher $DeployedVbs"
     }
+
+    Remove-NodoApiLogonTask
+
+    if (Test-NodoInProgramFiles -Path $NodoDir) {
+        Write-Host "ONLOGON omitido (Program Files: solo tarea $TaskNameOnStart)."
+        return
+    }
+
     $trCmd = 'wscript.exe //nologo "' + $DeployedVbs + '"'
     if ($trCmd.Length -gt 261) {
         throw "Comando /TR demasiado largo ($($trCmd.Length) chars, max 261)"
     }
-
-    Remove-NodoApiLogonTask
 
     $runUser = "$env:USERDOMAIN\$env:USERNAME"
     $delay = Format-SchTasksDelay -Seconds $LogonDelaySeconds
@@ -347,16 +375,18 @@ function Install-NodoApiScheduledTask {
 }
 
 function Start-NodoApiBackground {
-    . $SourceScript
+    if (-not (Test-Path -LiteralPath $DeployedScript)) {
+        throw "Falta launcher $DeployedScript"
+    }
     try {
-        Start-MultishopNodoApi -NodoDirOverride $NodoDir
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $DeployedScript
         Write-Host "API iniciada en segundo plano." -ForegroundColor Green
-        Write-Host "Log arranque: $DeployDir\\nodo-api-start.log"
-        Write-Host "Salida API:  $DeployDir\\nodo-api.out.log"
-        Write-Host "Errores:     $DeployDir\\nodo-api.err.log"
+        Write-Host "Log arranque: $DeployDir\nodo-api-start.log"
+        Write-Host "Salida API:  $DeployDir\nodo-api.out.log"
+        Write-Host "Errores:     $DeployDir\nodo-api.err.log"
     } catch {
         Write-Host "No se pudo iniciar la API: $($_.Exception.Message)" -ForegroundColor Red
-        Write-Host "Revise $DeployDir\\nodo-api.err.log"
+        Write-Host "Revise $DeployDir\nodo-api.err.log"
         throw
     }
 }
@@ -377,8 +407,11 @@ if ($Uninstall) {
 
 Assert-AdminForInstall
 
+$inProgramFiles = Test-NodoInProgramFiles -Path $NodoDir
+Write-Host "Modo autostart: $(if ($inProgramFiles) { 'Program Files -> ONSTART (SYSTEM)' } else { 'fuera de Program Files -> ONLOGON' })"
+
 Deploy-NodoApiLauncher
-Install-NodoApiStartupFolder
+Remove-NodoApiStartupFolder
 Install-NodoApiOnStartTask
 Install-NodoApiScheduledTask
 
@@ -397,6 +430,11 @@ if ($enableHuey) {
 }
 
 if ($StartNow) {
+    if (Test-Path -LiteralPath $DeployedEnvHelper) {
+        . $DeployedEnvHelper
+        Write-Host "Deteniendo procesos Multishop existentes antes de -StartNow ..."
+        Stop-MultishopNodoProcesses -NodoDir $NodoDir
+    }
     Start-NodoApiBackground
     if ($enableHuey) {
         Start-NodoHueyBackground
@@ -404,13 +442,13 @@ if ($StartNow) {
 }
 
 Write-Host ""
-Write-Host "Tras REINICIAR: API ONSTART (SYSTEM) + ONLOGON (usuario); sin carpeta Inicio (evita duplicados)."
-Write-Host "Huey consumer: ONSTART + ONLOGON si HUEY_ENABLED=true."
-Write-Host "Revise: Get-Content $DeployDir\\nodo-api-start.log -Tail 20"
+Write-Host "Autostart (Program Files): 1 tarea ONSTART por servicio (API + Huey si HUEY_ENABLED=true)."
+Write-Host "Sin carpeta Inicio ni ONLOGON duplicado."
+Write-Host "Revise: Get-Content $DeployDir\nodo-api-start.log -Tail 20"
 Write-Host ""
 Write-Host "Probar ahora:"
 Write-Host "  wscript.exe //nologo `"$DeployedVbs`""
-Write-Host "  schtasks /Run /TN `"$TaskName`""
+Write-Host "  schtasks /Run /TN `"$TaskNameOnStart`""
 Write-Host "  schtasks /Run /TN `"Multishop-Nodo-Huey`"   # si HUEY_ENABLED=true"
 $healthPort = 8443
 if (Test-Path -LiteralPath $SourceEnvHelper) {
