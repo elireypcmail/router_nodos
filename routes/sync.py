@@ -832,6 +832,16 @@ async def sync_status(_: None = Depends(verify_bearer)):
     }
 
 
+class OutboxDeleteBody(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=500)
+
+
+def _parse_outbox_statuses(raw: str | None) -> list[str] | None:
+    if not raw or not raw.strip():
+        return None
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
 @router.get("/outbox/status")
 async def outbox_status(_: None = Depends(verify_bearer)):
     repo = get_outbox_repo()
@@ -846,4 +856,98 @@ async def outbox_status(_: None = Depends(verify_bearer)):
             "recent_pending": recent_pending,
             "recent_failed": recent_failed,
         },
+    }
+
+
+@router.get("/outbox")
+async def outbox_list(
+    _: None = Depends(verify_bearer),
+    status: str | None = Query(
+        None,
+        description="Comma-separated: pending,processing,failed (default: all three)",
+    ),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+):
+    repo = get_outbox_repo()
+    statuses = _parse_outbox_statuses(status)
+    offset = (page - 1) * limit
+
+    def _load() -> tuple[list[dict], int, dict[str, int]]:
+        items, total = repo.list_queue(
+            statuses=statuses, limit=limit, offset=offset
+        )
+        return items, total, repo.stats()
+
+    items, total, stats = await anyio.to_thread.run_sync(_load)
+    total_pages = max(1, (total + limit - 1) // limit) if total else 1
+    return {
+        "nodo_id": settings.nodo_id,
+        "db": settings.mysql_database,
+        "stats": stats,
+        "items": items,
+        "pagination": {
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "total_pages": total_pages,
+        },
+    }
+
+
+@router.post("/outbox/flush")
+async def outbox_flush(
+    _: None = Depends(verify_bearer),
+    max_batches: int = Query(20, ge=1, le=100),
+):
+    from huey_tasks import run_outbox_flush_once
+
+    batches: list[dict] = []
+    total_sent = 0
+    total_ignored = 0
+    total_failed = 0
+
+    for _ in range(max_batches):
+        try:
+            result = await anyio.to_thread.run_sync(run_outbox_flush_once)
+        except Exception as ex:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Outbox flush failed: {ex}",
+            ) from ex
+        batches.append(result)
+        total_sent += int(result.get("sent") or 0)
+        total_ignored += int(result.get("ignored") or 0)
+        total_failed += int(result.get("failed") or 0)
+        if result.get("message") == "no_pending":
+            break
+
+    repo = get_outbox_repo()
+    stats = await anyio.to_thread.run_sync(repo.stats)
+    return {
+        "nodo_id": settings.nodo_id,
+        "batches_run": len(batches),
+        "sent": total_sent,
+        "ignored": total_ignored,
+        "failed": total_failed,
+        "stats": stats,
+        "batches": batches,
+    }
+
+
+@router.post("/outbox/delete")
+async def outbox_delete(
+    body: OutboxDeleteBody,
+    _: None = Depends(verify_bearer),
+):
+    repo = get_outbox_repo()
+    deleted = await anyio.to_thread.run_sync(
+        lambda: repo.delete_by_ids(body.ids),
+    )
+    stats = await anyio.to_thread.run_sync(repo.stats)
+    return {
+        "nodo_id": settings.nodo_id,
+        "requested": len(body.ids),
+        "deleted": deleted,
+        "stats": stats,
     }

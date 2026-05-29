@@ -1,5 +1,8 @@
 -- Outbox Multishop → hub. Instalación: scripts/apply_mysql_outbox_triggers.py
 -- (siempre DROP de trg_* y ms_json_* del manifiesto y CREATE de nuevo; no pegar este archivo a mano).
+--
+-- Transaccional compra/venta/ajuste: una sola fuente = tabla kardex (trg_kardex_*).
+-- No hay triggers en comprasdbf, ventasi ni kardexd (evita duplicar con cabecera/detalle ERP).
 
 CREATE TABLE IF NOT EXISTS sync_outbox (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -85,6 +88,7 @@ DROP TRIGGER IF EXISTS trg_kardex_ai;
 DROP TRIGGER IF EXISTS trg_kardex_au;
 DROP TRIGGER IF EXISTS trg_kardex_ad;
 
+-- kardexd: sin triggers (una sola fuente = cabecera kardex; evita duplicar ajustes/dev con detalle ERP)
 DROP TRIGGER IF EXISTS trg_kardexd_ai;
 DROP TRIGGER IF EXISTS trg_kardexd_au;
 DROP TRIGGER IF EXISTS trg_kardexd_ad;
@@ -236,66 +240,6 @@ BEGIN
     );
   END IF;
 END$$
-
-CREATE TRIGGER trg_kardexd_ai AFTER INSERT ON kardexd FOR EACH ROW
-BEGIN
-  IF (NEW.kobs NOT LIKE 'Compra#:%' AND NEW.kobs NOT LIKE 'Vta#:%')
-     AND IFNULL(NEW.compras, 0) = 0
-     AND IFNULL(NEW.ventas, 0) = 0
-     AND (IFNULL(NEW.ajustesp, 0) <> 0
-          OR IFNULL(NEW.ajustesn, 0) <> 0
-          OR IFNULL(NEW.devoc, 0) <> 0
-          OR IFNULL(NEW.devov, 0) <> 0) THEN
-    INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
-    VALUES (
-      'kardexd',
-      'I',
-      CONCAT('{','\"indice\":',ms_json_int(NEW.indice),'}'),
-      CONCAT('{','\"indice\":',ms_json_int(NEW.indice),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"fecha\":',ms_json_date(NEW.fecha),',','\"contador\":',ms_json_int(NEW.contador),',','\"ajustesp\":',ms_json_num(NEW.ajustesp),',','\"ajustesn\":',ms_json_num(NEW.ajustesn),',','\"compras\":',ms_json_num(NEW.compras),',','\"ventas\":',ms_json_num(NEW.ventas),',','\"devoc\":',ms_json_num(NEW.devoc),',','\"devov\":',ms_json_num(NEW.devov),',','\"outbox_op\":',ms_json_str('I'),'}'),
-      NOW(3)
-    );
-  END IF;
-END$$
-
-CREATE TRIGGER trg_kardexd_au AFTER UPDATE ON kardexd FOR EACH ROW
-BEGIN
-  IF (NEW.kobs NOT LIKE 'Compra#:%' AND NEW.kobs NOT LIKE 'Vta#:%')
-     AND IFNULL(NEW.compras, 0) = 0
-     AND IFNULL(NEW.ventas, 0) = 0
-     AND (IFNULL(NEW.ajustesp, 0) <> 0
-          OR IFNULL(NEW.ajustesn, 0) <> 0
-          OR IFNULL(NEW.devoc, 0) <> 0
-          OR IFNULL(NEW.devov, 0) <> 0) THEN
-    INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
-    VALUES (
-      'kardexd',
-      'U',
-      CONCAT('{','\"indice\":',ms_json_int(NEW.indice),'}'),
-      CONCAT('{','\"indice\":',ms_json_int(NEW.indice),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"fecha\":',ms_json_date(NEW.fecha),',','\"contador\":',ms_json_int(NEW.contador),',','\"ajustesp\":',ms_json_num(NEW.ajustesp),',','\"ajustesn\":',ms_json_num(NEW.ajustesn),',','\"compras\":',ms_json_num(NEW.compras),',','\"ventas\":',ms_json_num(NEW.ventas),',','\"devoc\":',ms_json_num(NEW.devoc),',','\"devov\":',ms_json_num(NEW.devov),',','\"outbox_op\":',ms_json_str('U'),'}'),
-      NOW(3)
-    );
-  END IF;
-END$$
-
-CREATE TRIGGER trg_kardexd_ad AFTER DELETE ON kardexd FOR EACH ROW
-BEGIN
-  IF (OLD.kobs NOT LIKE 'Compra#:%' AND OLD.kobs NOT LIKE 'Vta#:%')
-     AND IFNULL(OLD.compras, 0) = 0
-     AND IFNULL(OLD.ventas, 0) = 0
-     AND (IFNULL(OLD.ajustesp, 0) <> 0
-          OR IFNULL(OLD.ajustesn, 0) <> 0
-          OR IFNULL(OLD.devoc, 0) <> 0
-          OR IFNULL(OLD.devov, 0) <> 0) THEN
-    INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
-    VALUES (
-      'kardexd',
-      'D',
-      CONCAT('{','\"indice\":',ms_json_int(OLD.indice),'}'),
-      CONCAT('{','\"indice\":',ms_json_int(OLD.indice),',','\"codigo\":',ms_json_str(OLD.codigo),',','\"fecha\":',ms_json_date(OLD.fecha),',','\"contador\":',ms_json_int(OLD.contador),',','\"ajustesp\":',ms_json_num(OLD.ajustesp),',','\"ajustesn\":',ms_json_num(OLD.ajustesn),',','\"compras\":',ms_json_num(OLD.compras),',','\"ventas\":',ms_json_num(OLD.ventas),',','\"devoc\":',ms_json_num(OLD.devoc),',','\"devov\":',ms_json_num(OLD.devov),',','\"outbox_op\":',ms_json_str('D'),'}'),
-      NOW(3)
-    );
-  END IF;
-END$$
 DELIMITER ;
 
 DROP TRIGGER IF EXISTS trg_sinv_ai;
@@ -388,6 +332,7 @@ DROP TRIGGER IF EXISTS trg_ventasd_ai;
 DROP TRIGGER IF EXISTS trg_ventasd_au;
 DROP TRIGGER IF EXISTS trg_ventasd_ad;
 
+-- ventasi: sin triggers (venta transaccional vía kardex.ventas -> outbox ventasi)
 DROP TRIGGER IF EXISTS trg_ventasi_ai;
 DROP TRIGGER IF EXISTS trg_ventasi_au;
 DROP TRIGGER IF EXISTS trg_ventasi_ad;
@@ -464,42 +409,6 @@ BEGIN
     NOW(3)
   );
 END$$
-
-CREATE TRIGGER trg_ventasi_ai AFTER INSERT ON ventasi FOR EACH ROW
-BEGIN
-  INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
-  VALUES (
-    'ventasi',
-    'I',
-    CONCAT('{','\"numero\":',ms_json_str(NEW.numero),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"contador\":',ms_json_int(NEW.contador),',','\"ccaja\":',ms_json_str(NEW.ccaja),'}'),
-    CONCAT('{','\"numero\":',ms_json_str(NEW.numero),',','\"fecha\":',ms_json_date(NEW.fecha),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"cantidad\":',ms_json_num(NEW.cantidad),',','\"contador\":',ms_json_int(NEW.contador),',','\"ccaja\":',ms_json_str(NEW.ccaja),'}'),
-    NOW(3)
-  );
-END$$
-
-CREATE TRIGGER trg_ventasi_au AFTER UPDATE ON ventasi FOR EACH ROW
-BEGIN
-  INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
-  VALUES (
-    'ventasi',
-    'U',
-    CONCAT('{','\"numero\":',ms_json_str(NEW.numero),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"contador\":',ms_json_int(NEW.contador),',','\"ccaja\":',ms_json_str(NEW.ccaja),'}'),
-    CONCAT('{','\"numero\":',ms_json_str(NEW.numero),',','\"fecha\":',ms_json_date(NEW.fecha),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"cantidad\":',ms_json_num(NEW.cantidad),',','\"contador\":',ms_json_int(NEW.contador),',','\"ccaja\":',ms_json_str(NEW.ccaja),'}'),
-    NOW(3)
-  );
-END$$
-
-CREATE TRIGGER trg_ventasi_ad AFTER DELETE ON ventasi FOR EACH ROW
-BEGIN
-  INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
-  VALUES (
-    'ventasi',
-    'D',
-    CONCAT('{','\"numero\":',ms_json_str(OLD.numero),',','\"codigo\":',ms_json_str(OLD.codigo),',','\"contador\":',ms_json_int(OLD.contador),',','\"ccaja\":',ms_json_str(OLD.ccaja),'}'),
-    CONCAT('{','\"numero\":',ms_json_str(OLD.numero),',','\"fecha\":',ms_json_date(OLD.fecha),',','\"codigo\":',ms_json_str(OLD.codigo),',','\"cantidad\":',ms_json_num(OLD.cantidad),',','\"contador\":',ms_json_int(OLD.contador),',','\"ccaja\":',ms_json_str(OLD.ccaja),'}'),
-    NOW(3)
-  );
-END$$
 DELIMITER ;
 
 DROP TRIGGER IF EXISTS trg_factura_ai;
@@ -510,6 +419,7 @@ DROP TRIGGER IF EXISTS trg_facturad_ai;
 DROP TRIGGER IF EXISTS trg_facturad_au;
 DROP TRIGGER IF EXISTS trg_facturad_ad;
 
+-- comprasdbf: sin triggers (compra transaccional vía kardex.compras -> outbox comprasdbf)
 DROP TRIGGER IF EXISTS trg_comprasdbf_ai;
 DROP TRIGGER IF EXISTS trg_comprasdbf_au;
 DROP TRIGGER IF EXISTS trg_comprasdbf_ad;
@@ -583,81 +493,6 @@ BEGIN
     'D',
     CONCAT('{','\"numero\":',ms_json_str(OLD.numero),',','\"codigo\":',ms_json_str(OLD.codigo),'}'),
     NULL,
-    NOW(3)
-  );
-END$$
-
-CREATE TRIGGER trg_comprasdbf_ai AFTER INSERT ON comprasdbf FOR EACH ROW
-BEGIN
-  INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
-  VALUES (
-    'comprasdbf',
-    'I',
-    CONCAT('{','\"contador\":',ms_json_int(NEW.contador),',','\"numdoc\":',ms_json_str(NEW.numdoc),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"fecha\":',ms_json_date(NEW.fecha),'}'),
-    CONCAT('{','\"contador\":',ms_json_int(NEW.contador),',','\"numdoc\":',ms_json_str(NEW.numdoc),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"cantidad\":',ms_json_num(NEW.cantidad),',','\"precio\":',ms_json_num(NEW.precio),',','\"monto\":',ms_json_num(NEW.monto),',','\"costo_anterior\":',ms_json_num((
-        SELECT s.costo
-        FROM sinv s
-        WHERE s.codigo = NEW.codigo
-        LIMIT 1
-      )),',','\"costo_promedio_ponderado\":',ms_json_num((
-        SELECT s.costopro
-        FROM sinv s
-        WHERE s.codigo = NEW.codigo
-        LIMIT 1
-      )),',','\"costo_actual_factura\":',ms_json_num(CASE
-          WHEN NEW.cantidad IS NULL OR NEW.cantidad = 0 THEN NEW.precio
-          ELSE NEW.monto / NEW.cantidad
-        END),',','\"fecha\":',ms_json_date(NEW.fecha),',','\"operador\":',ms_json_str(NEW.operador),',','\"porcentaje\":',ms_json_num(NEW.porcentaje),',','\"fechapc\":',ms_json_date(NEW.fechapc),',','\"numerocaso\":',ms_json_str(NEW.numerocaso),',','\"csaga\":',ms_json_str(NEW.csaga),',','\"factor\":',ms_json_int(NEW.factor),',','\"numcot\":',ms_json_str(NEW.numcot),',','\"numfac\":',ms_json_str(NEW.numfac),'}'),
-    NOW(3)
-  );
-END$$
-
-CREATE TRIGGER trg_comprasdbf_au AFTER UPDATE ON comprasdbf FOR EACH ROW
-BEGIN
-  INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
-  VALUES (
-    'comprasdbf',
-    'U',
-    CONCAT('{','\"contador\":',ms_json_int(NEW.contador),',','\"numdoc\":',ms_json_str(NEW.numdoc),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"fecha\":',ms_json_date(NEW.fecha),'}'),
-    CONCAT('{','\"contador\":',ms_json_int(NEW.contador),',','\"numdoc\":',ms_json_str(NEW.numdoc),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"cantidad\":',ms_json_num(NEW.cantidad),',','\"precio\":',ms_json_num(NEW.precio),',','\"monto\":',ms_json_num(NEW.monto),',','\"costo_anterior\":',ms_json_num((
-        SELECT s.costo
-        FROM sinv s
-        WHERE s.codigo = NEW.codigo
-        LIMIT 1
-      )),',','\"costo_promedio_ponderado\":',ms_json_num((
-        SELECT s.costopro
-        FROM sinv s
-        WHERE s.codigo = NEW.codigo
-        LIMIT 1
-      )),',','\"costo_actual_factura\":',ms_json_num(CASE
-          WHEN NEW.cantidad IS NULL OR NEW.cantidad = 0 THEN NEW.precio
-          ELSE NEW.monto / NEW.cantidad
-        END),',','\"fecha\":',ms_json_date(NEW.fecha),',','\"operador\":',ms_json_str(NEW.operador),',','\"porcentaje\":',ms_json_num(NEW.porcentaje),',','\"fechapc\":',ms_json_date(NEW.fechapc),',','\"numerocaso\":',ms_json_str(NEW.numerocaso),',','\"csaga\":',ms_json_str(NEW.csaga),',','\"factor\":',ms_json_int(NEW.factor),',','\"numcot\":',ms_json_str(NEW.numcot),',','\"numfac\":',ms_json_str(NEW.numfac),'}'),
-    NOW(3)
-  );
-END$$
-
-CREATE TRIGGER trg_comprasdbf_ad AFTER DELETE ON comprasdbf FOR EACH ROW
-BEGIN
-  INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
-  VALUES (
-    'comprasdbf',
-    'D',
-    CONCAT('{','\"contador\":',ms_json_int(OLD.contador),',','\"numdoc\":',ms_json_str(OLD.numdoc),',','\"codigo\":',ms_json_str(OLD.codigo),',','\"fecha\":',ms_json_date(OLD.fecha),'}'),
-    CONCAT('{','\"contador\":',ms_json_int(OLD.contador),',','\"numdoc\":',ms_json_str(OLD.numdoc),',','\"codigo\":',ms_json_str(OLD.codigo),',','\"cantidad\":',ms_json_num(OLD.cantidad),',','\"precio\":',ms_json_num(OLD.precio),',','\"monto\":',ms_json_num(OLD.monto),',','\"costo_anterior\":',ms_json_num((
-        SELECT s.costo
-        FROM sinv s
-        WHERE s.codigo = OLD.codigo
-        LIMIT 1
-      )),',','\"costo_promedio_ponderado\":',ms_json_num((
-        SELECT s.costopro
-        FROM sinv s
-        WHERE s.codigo = OLD.codigo
-        LIMIT 1
-      )),',','\"costo_actual_factura\":',ms_json_num(CASE
-          WHEN OLD.cantidad IS NULL OR OLD.cantidad = 0 THEN OLD.precio
-          ELSE OLD.monto / OLD.cantidad
-        END),',','\"fecha\":',ms_json_date(OLD.fecha),',','\"operador\":',ms_json_str(OLD.operador),',','\"porcentaje\":',ms_json_num(OLD.porcentaje),',','\"fechapc\":',ms_json_date(OLD.fechapc),',','\"numerocaso\":',ms_json_str(OLD.numerocaso),',','\"csaga\":',ms_json_str(OLD.csaga),',','\"factor\":',ms_json_int(OLD.factor),',','\"numcot\":',ms_json_str(OLD.numcot),',','\"numfac\":',ms_json_str(OLD.numfac),'}'),
     NOW(3)
   );
 END$$

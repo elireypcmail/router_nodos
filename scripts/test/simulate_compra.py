@@ -140,7 +140,7 @@ def main() -> int:
     parser.add_argument(
         "--legacy-comprasdbf",
         action="store_true",
-        help="Modo antiguo: INSERT solo en comprasdbf (sin kardex/kardexd)",
+        help="INSERT solo en comprasdbf (sin outbox; ya no hay trg_comprasdbf_*)",
     )
     parser.add_argument(
         "--lotes",
@@ -311,7 +311,7 @@ def main() -> int:
             f"OK: ERP purchase kardex indice={indice_k}, "
             f"kardexd={indices_d} (outbox comprasdbf from kardex trigger)."
         )
-        show_recent_outbox(conn, ["comprasdbf", "kardexd"])
+        show_recent_outbox(conn, ["comprasdbf"])
     except Exception as ex:
         conn.rollback()
         print(f"Error: {ex}", file=__import__("sys").stderr)

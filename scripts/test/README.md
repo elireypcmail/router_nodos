@@ -38,7 +38,7 @@ Con la API en marcha y `HUEY_ENABLED=true` (default del provisioning), el **cons
 
 El ERP legacy registra compras/ventas en **`kardex` cabecera** (`compras` / `ventas`) y el detalle por **cubica** en **`kardexd`** (`ajustesp` / `ajustesn` con `kobs` `Compra#:` / `Vta#:`). No siempre escribe `comprasdbf` ni `ventasi`.
 
-Los triggers encolan **`comprasdbf`** / **`ventasi`** desde la fila **`kardex`** y **ignoran** `kardexd` cuando el `kobs` es de compra/venta.
+Los triggers transaccionales encolan **`comprasdbf`** / **`ventasi`** / **`kardex`** solo desde la cabecera **`kardex`**. No hay triggers en **`kardexd`**, **`comprasdbf`** ni **`ventasi`**.
 
 | Script | Tablas ERP | Outbox → hub |
 |--------|------------|--------------|
@@ -87,7 +87,7 @@ Solo `simulate_compra.py`:
 
 - `--num-compra` — número en kobs `Compra#:` (default: hora)
 - `--cod-prv` — proveedor en kobs (default: `sinv.cod_prv` → `sprv`)
-- `--legacy-comprasdbf` — INSERT directo en `comprasdbf` (modo antiguo)
+- `--legacy-comprasdbf` — INSERT directo en `comprasdbf` (ya no genera outbox; solo prueba SQL legacy)
 - `--lotes N` — N filas `kardexd` + `detalle` (requiere `N <= --cantidad`)
 - `--lotes-pct P1,P2,...` — reparto por % (misma cantidad de valores que `--lotes`)
 

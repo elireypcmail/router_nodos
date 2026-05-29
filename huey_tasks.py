@@ -21,9 +21,8 @@ logger = logging.getLogger("multishop.outbox")
 
 configure_node_logging()
 
-@huey.task(retries=settings.huey_outbox_task_retries, retry_delay=settings.huey_outbox_retry_delay_seconds)
-def send_outbox_batch() -> dict[str, Any]:
-    """Huey task: reserve a pending outbox batch and send it to the hub."""
+def run_outbox_flush_once() -> dict[str, Any]:
+    """Reserve pending rows and send one batch to the hub."""
     mysql = MySqlClient()
     if not mysql.is_configured():
         raise RuntimeError("Huey outbox requires MYSQL_* configured")
@@ -36,7 +35,7 @@ def send_outbox_batch() -> dict[str, Any]:
 
     events = repo.reserve_pending(limit=int(settings.huey_outbox_batch_size))
     if not events:
-        return {"sent": 0, "message": "no_pending"}
+        return {"sent": 0, "ignored": 0, "failed": 0, "message": "no_pending"}
 
     payload: list[dict[str, Any]] = []
     ids: list[int] = []
@@ -67,10 +66,16 @@ def send_outbox_batch() -> dict[str, Any]:
         raise
 
 
+@huey.task(retries=settings.huey_outbox_task_retries, retry_delay=settings.huey_outbox_retry_delay_seconds)
+def send_outbox_batch() -> dict[str, Any]:
+    """Huey task: reserve a pending outbox batch and send it to the hub."""
+    return run_outbox_flush_once()
+
+
 @huey.task()
 def enqueue_outbox() -> None:
     try:
-        send_outbox_batch()
+        run_outbox_flush_once()
     finally:
         # SqliteHuey (huey 2.x): use TaskWrapper.schedule(), not huey.enqueue_in().
         delay_sec = max(

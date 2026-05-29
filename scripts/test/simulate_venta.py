@@ -47,7 +47,7 @@ def main() -> int:
     parser.add_argument(
         "--legacy-ventasi",
         action="store_true",
-        help="Modo antiguo: INSERT solo en ventasi (sin kardex/kardexd)",
+        help="INSERT solo en ventasi (sin outbox; ya no hay trg_ventasi_*)",
     )
     args = parser.parse_args()
 
@@ -144,7 +144,7 @@ def main() -> int:
             f"OK: ERP sale kardex indice={indice_k}, kardexd={indice_d} "
             f"(outbox ventasi from kardex trigger)."
         )
-        show_recent_outbox(conn, ["ventasi", "kardexd"])
+        show_recent_outbox(conn, ["ventasi"])
     except Exception as ex:
         conn.rollback()
         print(f"Error: {ex}", file=__import__("sys").stderr)

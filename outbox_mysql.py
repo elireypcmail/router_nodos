@@ -292,6 +292,96 @@ class OutboxRepository:
         finally:
             conn.close()
 
+    _QUEUE_STATUSES = frozenset({"pending", "processing", "failed"})
+
+    def list_queue(
+        self,
+        *,
+        statuses: list[str] | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """List outbox rows for admin (non-sent by default)."""
+        allowed = list(statuses) if statuses else ["pending", "processing", "failed"]
+        normalized = [
+            s.strip().lower()
+            for s in allowed
+            if s and s.strip().lower() in self._QUEUE_STATUSES
+        ]
+        if not normalized:
+            normalized = ["pending", "processing", "failed"]
+        placeholders = ",".join(["%s"] * len(normalized))
+        conn = self._mysql.connect()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                f"""
+                SELECT COUNT(*) AS c
+                FROM {self._table}
+                WHERE status IN ({placeholders})
+                """,
+                tuple(normalized),
+            )
+            total_row = cur.fetchone() or {}
+            total = int(total_row.get("c") or 0)
+
+            cur.execute(
+                f"""
+                SELECT id, table_name, op, pk_json, status, attempts,
+                       last_error, created_at, sent_at
+                FROM {self._table}
+                WHERE status IN ({placeholders})
+                ORDER BY id ASC
+                LIMIT %s OFFSET %s
+                """,
+                (*normalized, limit, offset),
+            )
+            rows = cur.fetchall() or []
+            items: list[dict[str, Any]] = []
+            for r in rows:
+                items.append(
+                    {
+                        "id": int(r["id"]),
+                        "table": str(r["table_name"]),
+                        "op": str(r["op"]),
+                        "pk": json.loads(r["pk_json"]),
+                        "status": str(r["status"]),
+                        "attempts": int(r.get("attempts") or 0),
+                        "last_error": r.get("last_error"),
+                        "created_at": self._to_iso(r["created_at"]),
+                        "sent_at": self._to_iso(r["sent_at"])
+                        if r.get("sent_at")
+                        else None,
+                    }
+                )
+            return items, total
+        finally:
+            conn.close()
+
+    def delete_by_ids(self, ids: list[int]) -> int:
+        """Remove queue rows (pending/processing/failed only)."""
+        if not ids:
+            return 0
+        conn = self._mysql.connect()
+        try:
+            cur = conn.cursor()
+            placeholders = ",".join(["%s"] * len(ids))
+            cur.execute(
+                f"""
+                DELETE FROM {self._table}
+                WHERE id IN ({placeholders})
+                  AND status IN ('pending', 'processing', 'failed')
+                """,
+                tuple(ids),
+            )
+            conn.commit()
+            return int(cur.rowcount or 0)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def recent(self, status: str, limit: int = 20) -> list[dict[str, Any]]:
         conn = self._mysql.connect()
         try:

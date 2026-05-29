@@ -44,7 +44,7 @@ Con bundle de provisioning (copia `.env` y usa `wg0.conf` del bundle):
 1. Comprueba Python y crea/actualiza `venv` + `pip install -r requirements.txt`
 2. `docker compose -f ../../docker-compose.mysql.yml up -d` (contenedor `multishop-mysql-tienda`)
 3. Espera a que MySQL responda
-4. Si no existe `trg_comprasdbf_ai`, ejecuta `scripts/apply_mysql_outbox_triggers.py`
+4. Si no existe `trg_kardex_ai`, ejecuta `scripts/apply_mysql_outbox_triggers.py`
 5. Si encuentra `wg0.conf` (nodo, `vpn/`, bundle o `nodo/wg0.conf` del repo), intenta `sudo wg-quick up` (pide contraseña de Mac)
 6. Arranca `python main.py` en primer plano (logs en la misma terminal)
 
