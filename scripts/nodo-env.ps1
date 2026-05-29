@@ -139,6 +139,106 @@ function Get-MultishopNodoProcessCounts {
     return @{ Api = $api; Huey = $huey }
 }
 
+function Invoke-MultishopSchTasksQuiet {
+    param([string[]]$ArgumentList)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    $null = schtasks.exe @ArgumentList 2>&1
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $prev
+    return $code
+}
+
+function Get-MultishopScheduledTaskPlainName {
+    param([string]$Name)
+    return (($Name -replace '^\\', '').Trim())
+}
+
+function Test-MultishopScheduledTaskExists {
+    param([string]$Name)
+    $plain = Get-MultishopScheduledTaskPlainName -Name $Name
+    if (-not $plain) { return $false }
+    if (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue) {
+        $task = Get-ScheduledTask -TaskName $plain -TaskPath '\' -ErrorAction SilentlyContinue
+        if ($task) { return $true }
+    }
+    foreach ($tn in @($plain, "\$plain")) {
+        if (Invoke-MultishopSchTasksQuiet @("/Query", "/TN", $tn) -eq 0) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Remove-MultishopScheduledTaskNamed {
+    param([string]$Name)
+    $plain = Get-MultishopScheduledTaskPlainName -Name $Name
+    if (-not $plain) { return $false }
+    if (-not (Test-MultishopScheduledTaskExists -Name $plain)) {
+        return $false
+    }
+
+    $removed = $false
+    if (Get-Command Unregister-ScheduledTask -ErrorAction SilentlyContinue) {
+        try {
+            if (Get-Command Stop-ScheduledTask -ErrorAction SilentlyContinue) {
+                Stop-ScheduledTask -TaskName $plain -TaskPath '\' -ErrorAction SilentlyContinue | Out-Null
+                Start-Sleep -Milliseconds 500
+            }
+            Unregister-ScheduledTask -TaskName $plain -TaskPath '\' -Confirm:$false -ErrorAction Stop
+            $removed = $true
+        } catch {
+            $removed = $false
+        }
+    }
+
+    if (-not $removed) {
+        foreach ($tn in @($plain, "\$plain")) {
+            if (Invoke-MultishopSchTasksQuiet @("/Query", "/TN", $tn) -ne 0) { continue }
+            Invoke-MultishopSchTasksQuiet @("/End", "/TN", $tn) | Out-Null
+            Start-Sleep -Milliseconds 500
+            if (Invoke-MultishopSchTasksQuiet @("/Delete", "/TN", $tn, "/F") -eq 0) {
+                $removed = $true
+                break
+            }
+        }
+    }
+
+    if ($removed -and (Test-MultishopScheduledTaskExists -Name $plain)) {
+        return $false
+    }
+    return $removed
+}
+
+function Remove-MultishopNodoScheduledTasks {
+    param(
+        [ValidateSet('All', 'LogonOnly', 'OnStartOnly')]
+        [string]$Scope = 'All',
+
+        [switch]$Quiet
+    )
+    $names = switch ($Scope) {
+        'LogonOnly' { @('Multishop-Nodo-API-Logon', 'Multishop-Nodo-Huey-Logon') }
+        'OnStartOnly' { @('Multishop-Nodo-API', 'Multishop-Nodo-Huey') }
+        default { @(
+                'Multishop-Nodo-API',
+                'Multishop-Nodo-API-Logon',
+                'Multishop-Nodo-Huey',
+                'Multishop-Nodo-Huey-Logon'
+            ) }
+    }
+    $count = 0
+    foreach ($n in $names) {
+        if (Remove-MultishopScheduledTaskNamed -Name $n) {
+            $count++
+            if (-not $Quiet) {
+                Write-Host "  Tarea eliminada: $n"
+            }
+        }
+    }
+    return $count
+}
+
 function Invoke-MultishopStartMutex {
     param(
         [Parameter(Mandatory = $true)]

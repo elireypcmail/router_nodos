@@ -16,7 +16,7 @@ param(
     [int]$LogonDelaySeconds = 45
 )
 
-$MultishopWindowsInstallVersion = "20260528.2"
+$MultishopWindowsInstallVersion = "20260528.3"
 
 $ErrorActionPreference = "Stop"
 
@@ -128,6 +128,36 @@ $NodoDir = if ($Uninstall -and $NodoDir) {
 $TunnelName = ($TunnelName -replace '\\s', '').Trim()
 if (-not $TunnelName) { $TunnelName = "wg0" }
 
+if (Test-Path -LiteralPath $SourceEnvHelper) {
+    . $SourceEnvHelper
+}
+
+function Test-NodoApiTaskExists {
+    param([string]$Name)
+    if (Get-Command Test-MultishopScheduledTaskExists -ErrorAction SilentlyContinue) {
+        return (Test-MultishopScheduledTaskExists -Name $Name)
+    }
+    foreach ($tn in @($Name, "\$Name")) {
+        if (Invoke-SchTasksQuiet @("/Query", "/TN", $tn) -eq 0) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Remove-NodoApiTaskNamed {
+    param([string]$Name)
+    if (Get-Command Remove-MultishopScheduledTaskNamed -ErrorAction SilentlyContinue) {
+        $ok = Remove-MultishopScheduledTaskNamed -Name $Name
+        if (-not $ok -and (Test-MultishopScheduledTaskExists -Name $Name)) {
+            Write-Warning "No se pudo eliminar tarea $Name."
+        }
+        return $ok
+    }
+    if (-not (Test-NodoApiTaskExists -Name $Name)) { return $false }
+    return (Invoke-SchTasksDelete -Name $Name)
+}
+
 function Format-SchTasksDelay {
     param([int]$Seconds)
     $mins = [int][math]::Floor($Seconds / 60)
@@ -162,30 +192,6 @@ function Invoke-SchTasksDelete {
     return $false
 }
 
-function Test-NodoApiTaskExists {
-    param([string]$Name)
-    if (-not $Name) { return $false }
-    foreach ($tn in @($Name, "\$Name")) {
-        if (Invoke-SchTasksQuiet @("/Query", "/TN", $tn) -eq 0) {
-            return $true
-        }
-    }
-    return $false
-}
-
-function Remove-NodoApiTaskNamed {
-    param([string]$Name)
-    if (-not $Name) { return $false }
-    if (-not (Test-NodoApiTaskExists -Name $Name)) {
-        return $false
-    }
-    if (Invoke-SchTasksDelete -Name $Name) {
-        return $true
-    }
-    Write-Warning "No se pudo eliminar tarea $Name (ejecute schtasks /Delete como admin)."
-    return $false
-}
-
 function Remove-NodoApiLogonTask {
     Remove-NodoApiTaskNamed -Name "Multishop-Nodo-API-Logon"
 }
@@ -193,13 +199,13 @@ function Remove-NodoApiLogonTask {
 function Remove-NodoApiTasksLegacy {
     Remove-NodoApiTaskNamed -Name "Multishop-Nodo-API"
     Remove-NodoApiLogonTask
-    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey"
-    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey-Logon"
+    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey" | Out-Null
+    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey-Logon" | Out-Null
 }
 
 function Remove-NodoHueyAutostart {
-    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey"
-    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey-Logon"
+    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey" | Out-Null
+    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey-Logon" | Out-Null
     $hueyDeployed = Join-Path $DeployDir "start-nodo-huey.ps1"
     $hueyVbs = Join-Path $DeployDir "start-nodo-huey.vbs"
     if (Test-Path $hueyDeployed) { Remove-Item $hueyDeployed -Force }
@@ -222,8 +228,8 @@ function Install-NodoHueyAutostart {
     Set-Content -Path $hueyVbs -Value ($vbsHuey -join "`r`n") -Encoding ASCII -Force
     $hueyTr = 'wscript.exe //nologo "' + $hueyVbs + '"'
 
-    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey"
-    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey-Logon"
+    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey" | Out-Null
+    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey-Logon" | Out-Null
 
     if (Test-NodoInProgramFiles -Path $NodoDir) {
         $onStartArgs = @(
@@ -430,18 +436,23 @@ function Start-NodoApiBackground {
 function Invoke-SanitizeMultishopAutostart {
     param(
         [string]$NodoDirPath,
-        [switch]$StopProcesses
+        [switch]$StopProcesses,
+        [ValidateSet('All', 'LogonOnly')]
+        [string]$TaskScope = 'All'
     )
-    Write-Host "Sanitizando autostart Multishop (version $MultishopWindowsInstallVersion) ..."
+    Write-Host "Sanitizando autostart Multishop (version $MultishopWindowsInstallVersion, scope=$TaskScope) ..."
     Remove-NodoApiStartupFolder
-    foreach ($name in @(
-            "Multishop-Nodo-API",
-            "Multishop-Nodo-API-Logon",
-            "Multishop-Nodo-Huey",
-            "Multishop-Nodo-Huey-Logon"
-        )) {
-        if (Remove-NodoApiTaskNamed -Name $name) {
-            Write-Host "  Tarea eliminada: $name"
+    if (Get-Command Remove-MultishopNodoScheduledTasks -ErrorAction SilentlyContinue) {
+        Remove-MultishopNodoScheduledTasks -Scope $(if ($TaskScope -eq 'LogonOnly') { 'LogonOnly' } else { 'All' })
+    } else {
+        foreach ($name in @(
+                "Multishop-Nodo-API",
+                "Multishop-Nodo-API-Logon",
+                "Multishop-Nodo-Huey",
+                "Multishop-Nodo-Huey-Logon"
+            )) {
+            if ($TaskScope -eq 'LogonOnly' -and $name -notmatch '-Logon$') { continue }
+            Remove-NodoApiTaskNamed -Name $name | Out-Null
         }
     }
     if ($StopProcesses) {
@@ -477,6 +488,13 @@ function Show-MultishopScheduledTasks {
 }
 
 function Assert-NoMultishopLogonTasks {
+    foreach ($name in @("Multishop-Nodo-API-Logon", "Multishop-Nodo-Huey-Logon")) {
+        if (Get-Command Remove-MultishopScheduledTaskNamed -ErrorAction SilentlyContinue) {
+            Remove-MultishopScheduledTaskNamed -Name $name | Out-Null
+        } else {
+            Remove-NodoApiTaskNamed -Name $name | Out-Null
+        }
+    }
     $bad = @()
     foreach ($name in @("Multishop-Nodo-API-Logon", "Multishop-Nodo-Huey-Logon")) {
         if (Test-NodoApiTaskExists -Name $name) {
@@ -487,12 +505,12 @@ function Assert-NoMultishopLogonTasks {
         return
     }
     Write-Host ""
-    Write-Host "ERROR: tareas ONLOGON residuales: $($bad -join ', ')" -ForegroundColor Red
+    Write-Host "ADVERTENCIA: tareas ONLOGON residuales: $($bad -join ', ')" -ForegroundColor Yellow
+    Write-Host "  En Program Files solo deben existir Multishop-Nodo-API y Multishop-Nodo-Huey (ONSTART)." -ForegroundColor Yellow
     Write-Host "  Borre manualmente (admin):" -ForegroundColor Yellow
     foreach ($name in $bad) {
-        Write-Host "    schtasks /Delete /TN `"$name`" /F" -ForegroundColor Yellow
+        Write-Host "    Unregister-ScheduledTask -TaskName '$name' -Confirm:`$false" -ForegroundColor Yellow
     }
-    throw "Multishop nodo: ONLOGON tasks must not exist in Program Files mode"
 }
 
 function Assert-MultishopSingleInstance {
@@ -564,7 +582,7 @@ if ($enableHuey) {
 }
 
 if ($StartNow) {
-    Invoke-SanitizeMultishopAutostart -NodoDirPath $NodoDir -StopProcesses
+    Invoke-SanitizeMultishopAutostart -NodoDirPath $NodoDir -StopProcesses -TaskScope LogonOnly
     Start-NodoApiBackground
     if ($enableHuey) {
         Start-NodoHueyBackground

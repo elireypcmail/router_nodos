@@ -183,19 +183,21 @@ function Invoke-SchTasksQuiet {
 
 function Remove-SchTaskNamed {
     param([string]$Name)
-    if (-not $Name) { return $false }
-    $candidates = @($Name)
-    if (-not $Name.StartsWith("\")) {
-        $candidates += "\$Name"
-    }
-    foreach ($tn in $candidates) {
-        if (Invoke-SchTasksQuiet @("/Query", "/TN", $tn) -ne 0) { continue }
-        Write-Host "Eliminando tarea $tn ..."
-        $code = Invoke-SchTasksQuiet @("/Delete", "/TN", $tn, "/F")
-        if ($code -eq 0) {
+    if (Get-Command Remove-MultishopScheduledTaskNamed -ErrorAction SilentlyContinue) {
+        if (Remove-MultishopScheduledTaskNamed -Name $Name) {
+            Write-Host "Eliminando tarea $Name ..."
             return $true
         }
-        Write-Warning "schtasks /Delete fallo (codigo $code) para $tn"
+        return $false
+    }
+    if (-not $Name) { return $false }
+    foreach ($tn in @($Name, "\$Name")) {
+        if (Invoke-SchTasksQuiet @("/Query", "/TN", $tn) -ne 0) { continue }
+        Write-Host "Eliminando tarea $tn ..."
+        Invoke-SchTasksQuiet @("/End", "/TN", $tn) | Out-Null
+        if (Invoke-SchTasksQuiet @("/Delete", "/TN", $tn, "/F") -eq 0) {
+            return $true
+        }
     }
     return $false
 }

@@ -285,6 +285,14 @@ function Remove-MultishopScheduledTaskIfExists {
 
 function Remove-AllMultishopScheduledTasks {
     Write-Host "  Eliminando tareas Multishop residuales antes de autostart ..."
+    $envHelper = Join-Path $ScriptsDir 'nodo-env.ps1'
+    if (Test-Path -LiteralPath $envHelper) {
+        . $envHelper
+        if (Get-Command Remove-MultishopNodoScheduledTasks -ErrorAction SilentlyContinue) {
+            Remove-MultishopNodoScheduledTasks -Scope All | Out-Null
+            return
+        }
+    }
     foreach ($taskName in @(
             "Multishop-Nodo-API",
             "Multishop-Nodo-API-Logon",
