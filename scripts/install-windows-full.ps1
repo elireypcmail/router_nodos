@@ -621,6 +621,15 @@ if (-not $SkipApiAutostart) {
         } else {
             Write-Warning "  nodo-api-windows-install.ps1 sin version (bundle viejo)."
         }
+        Write-Host "  Eliminando tareas Multishop residuales antes de autostart ..."
+        foreach ($taskName in @(
+                "Multishop-Nodo-API",
+                "Multishop-Nodo-API-Logon",
+                "Multishop-Nodo-Huey",
+                "Multishop-Nodo-Huey-Logon"
+            )) {
+            schtasks.exe /Delete /TN $taskName /F 2>$null | Out-Null
+        }
         $envHelper = Join-Path $ScriptsDir 'nodo-env.ps1'
         if (Test-Path -LiteralPath $envHelper) {
             . $envHelper
