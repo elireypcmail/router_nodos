@@ -12,7 +12,7 @@ param(
     [switch]$StartNow
 )
 
-$MultishopWindowsInstallVersion = "20260530.3"
+$MultishopWindowsInstallVersion = "20260530.4"
 
 $ErrorActionPreference = "Stop"
 
@@ -306,9 +306,8 @@ function Install-NodoHueyAutostart {
 }
 
 function Start-NodoApiBackground {
-    Start-Process -FilePath "powershell.exe" `
-        -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", $DeployedScript) `
-        -WindowStyle Hidden
+    $psArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$DeployedScript`""
+    Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -WindowStyle Hidden
     Write-Host "API iniciada en segundo plano." -ForegroundColor Green
     Write-Host "Log: $DeployDir\nodo-api-start.log"
 }
@@ -318,9 +317,8 @@ function Start-NodoHueyBackground {
     if (-not (Test-Path -LiteralPath $hueyScript)) {
         $hueyScript = Join-Path $PSScriptRoot "start-nodo-huey.ps1"
     }
-    Start-Process -FilePath "powershell.exe" `
-        -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", $hueyScript, "-NodoDir", $NodoDir) `
-        -WindowStyle Hidden
+    $psArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$hueyScript`" -NodoDir `"$NodoDir`""
+    Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -WindowStyle Hidden
     Write-Host "Huey consumer start requested (see $DeployDir\nodo-huey-start.log)." -ForegroundColor Green
 }
 

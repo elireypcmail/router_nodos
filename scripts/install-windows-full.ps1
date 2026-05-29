@@ -671,8 +671,8 @@ if (-not $SkipApiAutostart) {
         if (-not $NoStart) {
             $args += "-StartNow"
         }
-        $proc = Start-Process -FilePath "powershell.exe" -ArgumentList $args -Wait -PassThru -NoNewWindow
-        $apiInstallExit = if ($proc) { $proc.ExitCode } else { 1 }
+        & powershell.exe @args
+        $apiInstallExit = $LASTEXITCODE
         if ($apiInstallExit -ne 0) {
             throw "nodo-api-windows-install.ps1 fallo (exit $apiInstallExit). Revise ProgramData\Multishop\*.log"
         }
