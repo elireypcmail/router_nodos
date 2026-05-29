@@ -32,7 +32,7 @@ Con `--lotes N` crea **N** filas en `detalle` y reparte la cantidad de la compra
 3. Al menos un producto en `sinv` (o pasar `--codigo SKU`).
 4. Para enviar al hub sin levantar la API: `HUB_BASE_URL` y `HUB_API_KEY` en `.env` y flag `--flush`.
 
-Con la API en marcha y `HUB_PUSH_ENABLED=true`, el `OutboxWorker` envía los `pending` automáticamente (no hace falta `--flush`).
+Con la API en marcha y `HUEY_ENABLED=true` (default del provisioning), el **consumer Huey** envía los `pending` del outbox y ejecuta jobs de sync catálogo. En dev Mac: `scripts/mac/start-dev.sh` arranca Huey en background. No hace falta `--flush` salvo pruebas aisladas.
 
 ## Scripts (flujo ERP real)
 

@@ -153,6 +153,52 @@ function Remove-NodoApiTaskNamed {
 function Remove-NodoApiTasksLegacy {
     Remove-NodoApiTaskNamed -Name "Multishop-Nodo-API"
     Remove-NodoApiTaskNamed -Name "Multishop-Nodo-API-Logon"
+    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey"
+}
+
+function Remove-NodoHueyAutostart {
+    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey"
+    $hueyDeployed = Join-Path $DeployDir "start-nodo-huey.ps1"
+    $hueyVbs = Join-Path $DeployDir "start-nodo-huey.vbs"
+    if (Test-Path $hueyDeployed) { Remove-Item $hueyDeployed -Force }
+    if (Test-Path $hueyVbs) { Remove-Item $hueyVbs -Force }
+}
+
+function Install-NodoHueyAutostart {
+    $hueyScript = Join-Path $PSScriptRoot "start-nodo-huey.ps1"
+    $hueyDeployed = Join-Path $DeployDir "start-nodo-huey.ps1"
+    if (-not (Test-Path -LiteralPath $hueyScript)) {
+        Write-Warning "No se encontro $hueyScript; Huey consumer no se registrara."
+        return
+    }
+    Copy-Item $hueyScript $hueyDeployed -Force
+    $hueyVbs = Join-Path $DeployDir "start-nodo-huey.vbs"
+    $vbsHuey = @(
+        'Set sh = CreateObject("Wscript.Shell")'
+        "sh.Run ""powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """"$hueyDeployed"""""", 0, False"
+    )
+    Set-Content -Path $hueyVbs -Value ($vbsHuey -join "`r`n") -Encoding ASCII -Force
+    $hueyTr = 'wscript.exe //nologo "' + $hueyVbs + '"'
+    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey"
+    $output = & schtasks.exe @(
+        "/Create", "/TN", "Multishop-Nodo-Huey", "/SC", "ONSTART",
+        "/TR", $hueyTr, "/RU", "SYSTEM", "/RL", "HIGHEST", "/DELAY", "0002:00", "/F"
+    ) 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "schtasks Multishop-Nodo-Huey fallo: $output"
+    } else {
+        Write-Host "Tarea Multishop-Nodo-Huey registrada (ONSTART, consumer outbox + sync jobs)."
+    }
+}
+
+function Start-NodoHueyBackground {
+    $hueyVbs = Join-Path $DeployDir "start-nodo-huey.vbs"
+    if (-not (Test-Path -LiteralPath $hueyVbs)) {
+        Write-Warning "Huey no desplegado; omitiendo arranque inmediato."
+        return
+    }
+    Start-Process -FilePath "wscript.exe" -ArgumentList @("//nologo", $hueyVbs) -WindowStyle Hidden
+    Write-Host "Huey consumer iniciado en segundo plano." -ForegroundColor Green
 }
 
 function Get-StartupFolderVbs {
@@ -287,13 +333,14 @@ function Start-NodoApiBackground {
 if ($Uninstall) {
     Assert-AdminForInstall
     Remove-NodoApiTasksLegacy
+    Remove-NodoHueyAutostart
     Remove-NodoApiStartupFolder
     if (Test-Path $DeployedVbs) { Remove-Item $DeployedVbs -Force }
     if (Test-Path $DeployedScript) { Remove-Item $DeployedScript -Force }
     if (Test-Path $DeployedEnvHelper) { Remove-Item $DeployedEnvHelper -Force }
     if (Test-Path $DirFile) { Remove-Item $DirFile -Force }
     if (Test-Path $TunnelFile) { Remove-Item $TunnelFile -Force }
-    Write-Host "Autostart API eliminado (tareas + carpeta Inicio)."
+    Write-Host "Autostart API y Huey eliminados (tareas + carpeta Inicio)."
     exit 0
 }
 
@@ -313,37 +360,26 @@ if (Test-Path -LiteralPath $envPath) {
     }
 }
 if ($enableHuey) {
-    $hueyScript = Join-Path $PSScriptRoot "start-nodo-huey.ps1"
-    $hueyDeployed = Join-Path $DeployDir "start-nodo-huey.ps1"
-    if (Test-Path -LiteralPath $hueyScript) {
-        Copy-Item $hueyScript $hueyDeployed -Force
-        $hueyVbs = Join-Path $DeployDir "start-nodo-huey.vbs"
-        $vbsHuey = @(
-            'Set sh = CreateObject("Wscript.Shell")'
-            "sh.Run ""powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """"$hueyDeployed"""""", 0, False"
-        )
-        Set-Content -Path $hueyVbs -Value ($vbsHuey -join "`r`n") -Encoding ASCII -Force
-        $hueyTr = 'wscript.exe //nologo "' + $hueyVbs + '"'
-        Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey"
-        $null = schtasks.exe @(
-            "/Create", "/TN", "Multishop-Nodo-Huey", "/SC", "ONSTART",
-            "/TR", $hueyTr, "/RU", "SYSTEM", "/RL", "HIGHEST", "/DELAY", "0002:00", "/F"
-        ) 2>&1
-        Write-Host "Tarea Multishop-Nodo-Huey registrada (ONSTART, HUEY_ENABLED=true)."
-    }
+    Install-NodoHueyAutostart
+} else {
+    Remove-NodoHueyAutostart
 }
 
 if ($StartNow) {
     Start-NodoApiBackground
+    if ($enableHuey) {
+        Start-NodoHueyBackground
+    }
 }
 
 Write-Host ""
-Write-Host "Tras REINICIAR: la API arranca al encender (ONSTART) y al iniciar sesion (~1-3 min)."
+Write-Host "Tras REINICIAR: API (ONSTART/ONLOGON) y Huey consumer (ONSTART si HUEY_ENABLED=true)."
 Write-Host "Revise: Get-Content $DeployDir\\nodo-api-start.log -Tail 20"
 Write-Host ""
 Write-Host "Probar ahora:"
 Write-Host "  wscript.exe //nologo `"$DeployedVbs`""
 Write-Host "  schtasks /Run /TN `"$TaskName`""
+Write-Host "  schtasks /Run /TN `"Multishop-Nodo-Huey`"   # si HUEY_ENABLED=true"
 $healthPort = 8443
 if (Test-Path -LiteralPath $SourceEnvHelper) {
     . $SourceEnvHelper

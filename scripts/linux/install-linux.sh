@@ -74,8 +74,30 @@ apply_outbox_triggers() {
 
 apply_outbox_triggers || echo "Aviso: no se pudo aplicar outbox. Revise MySQL y permisos TRIGGER." >&2
 
+HUEY_ENABLED=""
+if [[ -f "${NODO_DIR}/.env" ]]; then
+  while IFS='=' read -r k v; do
+    [[ -z "${k}" ]] && continue
+    [[ "${k}" =~ ^# ]] && continue
+    v="${v%\r}"
+    v="${v#\"}"
+    v="${v%\"}"
+    if [[ "${k}" == "HUEY_ENABLED" ]]; then
+      HUEY_ENABLED="${v}"
+    fi
+  done < "${NODO_DIR}/.env"
+fi
+
 echo "Nodo Linux listo. Arranque API: ${NODO_DIR}/venv/bin/python ${NODO_DIR}/main.py"
 echo ""
-echo "Huey (opcional, recomendado para reintentos de outbox):"
-echo "- En .env: HUEY_ENABLED=true (y configure HUB_* + MYSQL_*)"
-echo "- Arranque Huey consumer: ${NODO_DIR}/venv/bin/python -m huey.bin.huey_consumer huey_tasks.huey"
+if [[ "${HUEY_ENABLED}" == "true" ]]; then
+  if command -v systemctl >/dev/null 2>&1; then
+    echo "Registrando Huey consumer (systemd)..."
+    bash "${NODO_DIR}/scripts/linux/install-huey-systemd.sh"
+  else
+    echo "Huey (HUEY_ENABLED=true): arranque manual en otra terminal:"
+    echo "  ${NODO_DIR}/scripts/start-huey-consumer.sh"
+  fi
+else
+  echo "Huey desactivado (HUEY_ENABLED no es true en .env)."
+fi

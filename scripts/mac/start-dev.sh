@@ -324,8 +324,23 @@ export LOG_LEVEL="${LOG_LEVEL:-INFO}"
 export NODO_DEV_RELOAD="${NODO_DEV_RELOAD:-false}"
 
 log "Variables: MYSQL_HOST=${MYSQL_HOST} MYSQL_DATABASE=${MYSQL_DATABASE}"
-log "Hub: HUB_BASE_URL=$(load_env_var HUB_BASE_URL) HUB_PUSH_ENABLED=$(load_env_var HUB_PUSH_ENABLED)"
+log "Hub: HUB_BASE_URL=$(load_env_var HUB_BASE_URL) HUB_PUSH_ENABLED=$(load_env_var HUB_PUSH_ENABLED) HUEY_ENABLED=$(load_env_var HUEY_ENABLED)"
+
+HUEY_PID=""
+cleanup_dev() {
+  if [[ -n "${HUEY_PID}" ]]; then
+    kill "${HUEY_PID}" 2>/dev/null || true
+  fi
+}
+trap cleanup_dev EXIT INT TERM
+
+if [[ "$(load_env_var HUEY_ENABLED)" == "true" ]]; then
+  log "Iniciando Huey consumer en background..."
+  "${PYTHON_BIN}" -m huey.bin.huey_consumer huey_tasks.huey &
+  HUEY_PID=$!
+fi
+
 log "Iniciando API (Ctrl+C para salir). Logs abajo."
 echo "────────────────────────────────────────────────────────"
 
-exec "${PYTHON_BIN}" main.py
+"${PYTHON_BIN}" main.py

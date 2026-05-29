@@ -634,7 +634,7 @@ async def flush_outbox_once(batch_size: int = 50) -> int:
 def maybe_flush(flush: bool) -> None:
     if not flush:
         print(
-            "Tip: with API running and HUB_PUSH_ENABLED=true the worker sends automatically; "
+            "Tip: with API + Huey consumer running (HUEY_ENABLED=true) events send automatically; "
             "or run with --flush"
         )
         return

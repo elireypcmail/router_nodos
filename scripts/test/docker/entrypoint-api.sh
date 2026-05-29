@@ -24,5 +24,14 @@ if [ "${NODO_APPLY_OUTBOX_TRIGGERS:-true}" = "true" ]; then
   }
 fi
 
+huey_enabled=""
+if [ -f /app/.env ]; then
+  huey_enabled="$(grep -E '^HUEY_ENABLED=' /app/.env | head -n1 | cut -d= -f2- | tr -d '\r' || true)"
+fi
+if [ "${huey_enabled}" = "true" ]; then
+  echo "[nodo-api] Iniciando Huey consumer (outbox + sync jobs)..."
+  python -m huey.bin.huey_consumer huey_tasks.huey >>/app/data/huey-consumer.log 2>&1 &
+fi
+
 echo "[nodo-api] Iniciando API (${NODO_HOST:-0.0.0.0}:${NODO_PORT:-8443}, NODO_ID=${NODO_ID:-?})..."
 exec python main.py

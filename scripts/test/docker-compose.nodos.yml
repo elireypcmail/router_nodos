@@ -58,6 +58,7 @@ x-nodo-api: &nodo-api
     NODO_DEV_RELOAD: 'false'
     SYNC_DB_PATH: /app/data/sync.sqlite
     HUEY_DB_PATH: /app/data/huey.sqlite
+    HUEY_ENABLED: 'true'
     NODO_APPLY_OUTBOX_TRIGGERS: 'true'
     NODO_REFRESH_DOTENV: 'true'
 

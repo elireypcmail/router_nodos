@@ -79,7 +79,9 @@ Al salir con Ctrl+C, el script baja el túnel si lo había levantado él.
 
 ## Huey (outbox con reintentos)
 
-Si en `.env` tienes `HUEY_ENABLED=true`, en **otra terminal**:
+Si en `.env` tienes `HUEY_ENABLED=true` (default del bundle provisioning), `start-dev.sh` arranca el consumer Huey en background junto con la API.
+
+En **otra terminal** (solo si no usas `start-dev.sh`):
 
 ```bash
 cd Multishop-nodo-API
@@ -87,7 +89,7 @@ source venv/bin/activate
 python -m huey.bin.huey_consumer huey_tasks.huey
 ```
 
-Con solo `HUB_PUSH_ENABLED=true` (sin Huey), el `OutboxWorker` dentro de la API envía el outbox.
+Con `HUEY_ENABLED=false` y `HUB_PUSH_ENABLED=true`, el `OutboxWorker` dentro de la API envía el outbox (modo legacy).
 
 ## Simulaciones transaccionales
 
