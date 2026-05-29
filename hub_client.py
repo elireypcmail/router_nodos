@@ -4,8 +4,11 @@ import anyio
 import httpx
 import logging
 
+from catalog_outbox import send_catalog_outbox_batch
+from catalog_push_digest import CATALOG_TABLES
 from categoria_trace import trace, trace_exc, trace_warn
 from config import settings
+from db_mysql import MySqlClient
 from json_util import json_safe
 from node_catalog import load_node_catalog
 from outbox_send_result import OutboxSendResult
@@ -40,6 +43,9 @@ _INGEST_LABEL = {
     "sale": "sale",
     "kardex": "kardex",
     "inventory_lot": "lot",
+    "catego": "category",
+    "sprv": "provider",
+    "sinv": "inventory",
 }
 
 
@@ -70,6 +76,18 @@ class HubClient:
 
         ignored_ids: list[int] = []
         pending_events: list[tuple[int, dict]] = []
+        catalog_sent: list[int] = []
+        catalog_failed: list[int] = []
+        catalog_digest_skipped: list[int] = []
+
+        mysql = MySqlClient()
+        if mysql.is_configured() and any(
+            str(e.get("table") or "").strip().lower() in CATALOG_TABLES for e in batch
+        ):
+            catalog_result = await send_catalog_outbox_batch(self, mysql, batch)
+            catalog_sent = catalog_result.sent_ids
+            catalog_failed = catalog_result.failed_ids
+            catalog_digest_skipped = catalog_result.digest_skipped_ids
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             for e in batch:
@@ -79,6 +97,9 @@ class HubClient:
                 if outbox_id is None:
                     continue
                 outbox_id_int = int(outbox_id)
+
+                if table in CATALOG_TABLES:
+                    continue
 
                 pk = e.get("pk") or {}
                 row = e.get("row") or {}
@@ -151,8 +172,10 @@ class HubClient:
                         len(ignored_ids),
                     )
                 return OutboxSendResult(
+                    sent_ids=catalog_sent + catalog_digest_skipped,
                     ignored_ids=ignored_ids,
-                    attempted_ids=attempted_ids,
+                    failed_ids=catalog_failed,
+                    attempted_ids=attempted_ids + catalog_sent + catalog_failed,
                 )
 
             events = [ev for _, ev in pending_events]
@@ -207,10 +230,13 @@ class HubClient:
                 )
 
             return OutboxSendResult(
-                sent_ids=sent_ids,
+                sent_ids=catalog_sent + catalog_digest_skipped + sent_ids,
                 ignored_ids=ignored_ids,
-                failed_ids=failed_ids,
-                attempted_ids=attempted_ids,
+                failed_ids=catalog_failed + failed_ids,
+                attempted_ids=attempted_ids
+                + catalog_sent
+                + catalog_failed
+                + catalog_digest_skipped,
                 hub_failed_messages=hub_failed_messages,
             )
 

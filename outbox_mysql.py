@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from catalog_push_digest import CatalogPushDigestStore
 from db_mysql import MySqlClient
 from json_util import loads_outbox_json
 
@@ -51,6 +52,7 @@ class OutboxRepository:
                 """
             )
             conn.commit()
+            CatalogPushDigestStore(self._mysql).ensure_schema()
         except Exception:
             conn.rollback()
             raise
@@ -234,7 +236,7 @@ class OutboxRepository:
             conn.close()
 
     def mark_ignored(self, ids: list[int]) -> None:
-        """Non-transactional rows (sinv/catego/kardex mirror) - not sent to ingest."""
+        """Filas sin ruta al hub (p. ej. espejo kardex compra/venta)."""
         if not ids:
             return
         conn = self._mysql.connect()
