@@ -284,21 +284,16 @@ function Remove-MultishopScheduledTaskIfExists {
 }
 
 function Remove-AllMultishopScheduledTasks {
-    Write-Host "  Eliminando tareas Multishop (ONSTART + legacy Logon) ..."
+    Write-Host "  Eliminando tareas ONSTART Multishop ..."
     $envHelper = Join-Path $ScriptsDir 'nodo-env.ps1'
     if (Test-Path -LiteralPath $envHelper) {
         . $envHelper
         if (Get-Command Remove-MultishopNodoScheduledTasks -ErrorAction SilentlyContinue) {
-            Remove-MultishopNodoScheduledTasks -Scope All | Out-Null
+            Remove-MultishopNodoScheduledTasks -Quiet | Out-Null
             return
         }
     }
-    foreach ($taskName in @(
-            "Multishop-Nodo-API",
-            "Multishop-Nodo-Huey",
-            "Multishop-Nodo-API-Logon",
-            "Multishop-Nodo-Huey-Logon"
-        )) {
+    foreach ($taskName in @("Multishop-Nodo-API", "Multishop-Nodo-Huey")) {
         Remove-MultishopScheduledTaskIfExists -Name $taskName
     }
 }

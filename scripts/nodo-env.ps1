@@ -222,9 +222,7 @@ function Invoke-PrepareMultishopStartNow {
         [Parameter(Mandatory = $true)]
         [string]$NodoDirPath
     )
-    Write-Host "Preparando arranque unico (legacy off + stop + espera) ..."
-    Disable-MultishopLogonTasks | Out-Null
-    Remove-MultishopNodoScheduledTasks -Scope LogonOnly -Quiet | Out-Null
+    Write-Host "Preparando arranque (ONSTART off + stop procesos) ..."
     Set-MultishopOnStartTasksEnabled -Enabled $false
     Stop-MultishopNodoProcesses -NodoDir $NodoDirPath
     if (-not (Wait-MultishopNodoProcessesStopped -NodoDir $NodoDirPath)) {
@@ -302,17 +300,6 @@ function Disable-MultishopScheduledTaskNamed {
         }
     }
     return $disabled
-}
-
-function Disable-MultishopLogonTasks {
-    $count = 0
-    foreach ($n in @('Multishop-Nodo-API-Logon', 'Multishop-Nodo-Huey-Logon')) {
-        if (Disable-MultishopScheduledTaskNamed -Name $n) {
-            Write-Host "  Logon deshabilitada: $n"
-            $count++
-        }
-    }
-    return $count
 }
 
 function Get-MultishopSchTasksTnCandidates {
@@ -400,21 +387,9 @@ function Remove-MultishopScheduledTaskNamed {
 
 function Remove-MultishopNodoScheduledTasks {
     param(
-        [ValidateSet('All', 'LogonOnly', 'OnStartOnly')]
-        [string]$Scope = 'All',
-
         [switch]$Quiet
     )
-    $names = switch ($Scope) {
-        'LogonOnly' { @('Multishop-Nodo-API-Logon', 'Multishop-Nodo-Huey-Logon') }
-        'OnStartOnly' { @('Multishop-Nodo-API', 'Multishop-Nodo-Huey') }
-        default { @(
-                'Multishop-Nodo-API',
-                'Multishop-Nodo-API-Logon',
-                'Multishop-Nodo-Huey',
-                'Multishop-Nodo-Huey-Logon'
-            ) }
-    }
+    $names = @('Multishop-Nodo-API', 'Multishop-Nodo-Huey')
     $count = 0
     foreach ($n in $names) {
         if (Remove-MultishopScheduledTaskNamed -Name $n) {
@@ -580,50 +555,5 @@ function Test-MultishopNodoApiPortListening {
         return ($null -ne $conn)
     } catch {
         return $false
-    }
-}
-
-function Start-MultishopNodoServicesNow {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$NodoDirPath,
-        [bool]$ExpectHuey = $false
-    )
-    $deployDir = Join-Path $env:ProgramData "Multishop"
-    Invoke-PrepareMultishopStartNow -NodoDirPath $NodoDirPath
-
-    $apiScript = Join-Path $deployDir "start-nodo-api.ps1"
-    if (-not (Test-Path -LiteralPath $apiScript)) {
-        $apiScript = Join-Path $NodoDirPath "scripts\start-nodo-api.ps1"
-    }
-    if (-not (Test-Path -LiteralPath $apiScript)) {
-        throw "No se encontro start-nodo-api.ps1 (ProgramData\Multishop ni $NodoDirPath\scripts)"
-    }
-
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $apiScript
-    Write-Host "API iniciada en segundo plano." -ForegroundColor Green
-    Write-Host "Log: $deployDir\nodo-api-start.log"
-
-    if ($ExpectHuey) {
-        $hueyScript = Join-Path $deployDir "start-nodo-huey.ps1"
-        if (-not (Test-Path -LiteralPath $hueyScript)) {
-            $hueyScript = Join-Path $NodoDirPath "scripts\start-nodo-huey.ps1"
-        }
-        if (-not (Test-Path -LiteralPath $hueyScript)) {
-            throw "No se encontro start-nodo-huey.ps1"
-        }
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $hueyScript -NodoDir $NodoDirPath
-        Write-Host "Huey consumer start requested (see $deployDir\nodo-huey-start.log)." -ForegroundColor Green
-    }
-
-    Start-Sleep -Seconds 4
-    $counts = Get-MultishopNodoProcessCounts -NodoDir $NodoDirPath
-    $expectedHuey = if ($ExpectHuey) { 1 } else { 0 }
-    Write-Host "Procesos Multishop: API=$($counts.Api) Huey=$($counts.Huey) (esperado API=1 Huey=$expectedHuey)"
-    if ($counts.Api -ne 1 -or $counts.Huey -ne $expectedHuey) {
-        throw "Multishop nodo: procesos incorrectos (API=$($counts.Api) Huey=$($counts.Huey))"
-    }
-    if (-not (Test-MultishopNodoApiPortListening -NodoDir $NodoDirPath)) {
-        throw "Multishop nodo: API no escucha en el puerto configurado."
     }
 }

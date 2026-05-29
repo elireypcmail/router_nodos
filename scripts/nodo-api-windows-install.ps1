@@ -1,4 +1,4 @@
-# Tareas programadas ONSTART para API + Huey (tienda en Program Files).
+# Tareas ONSTART para API + Huey (tienda en Program Files).
 # Ejecutar PowerShell COMO ADMINISTRADOR.
 #
 #   .\nodo-api-windows-install.ps1 -NodoDir "C:\Program Files\Multishop\nodo"
@@ -12,19 +12,14 @@ param(
     [switch]$StartNow
 )
 
-$MultishopWindowsInstallVersion = "20260529.7"
+$MultishopWindowsInstallVersion = "20260530.1"
 
 $ErrorActionPreference = "Stop"
 
-$LegacyTaskNames = @(
-    "Multishop-Nodo-API-Logon",
-    "Multishop-Nodo-Huey-Logon"
-)
 $OnStartTaskNames = @(
     "Multishop-Nodo-API",
     "Multishop-Nodo-Huey"
 )
-$StartupVbsName = "Multishop-Nodo-API.vbs"
 
 function Test-IsAdmin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -162,41 +157,9 @@ function Remove-NodoApiTaskNamed {
     return $false
 }
 
-function Remove-MultishopStartupFolderLinks {
-    foreach ($root in @(
-            [Environment]::GetFolderPath("Startup"),
-            [Environment]::GetFolderPath("CommonStartup")
-        )) {
-        if (-not $root) { continue }
-        $dest = Join-Path $root $StartupVbsName
-        if (Test-Path -LiteralPath $dest) {
-            Remove-Item -LiteralPath $dest -Force
-            Write-Host "  Eliminado Inicio: $dest"
-        }
-    }
-}
-
-function Remove-LegacyMultishopAutostart {
-    Write-Host "Limpiando autostart legacy (Logon + Inicio) ..."
-    Remove-MultishopStartupFolderLinks
-    if (Get-Command Disable-MultishopLogonTasks -ErrorAction SilentlyContinue) {
-        Disable-MultishopLogonTasks | Out-Null
-    }
-    if (Get-Command Remove-MultishopNodoScheduledTasks -ErrorAction SilentlyContinue) {
-        Remove-MultishopNodoScheduledTasks -Scope LogonOnly | Out-Null
-    } else {
-        foreach ($name in $LegacyTaskNames) {
-            if (Remove-NodoApiTaskNamed -Name $name) {
-                Write-Host "  Tarea legacy eliminada: $name"
-            }
-        }
-    }
-}
-
 function Remove-AllMultishopAutostartTasks {
-    Remove-LegacyMultishopAutostart
     if (Get-Command Remove-MultishopNodoScheduledTasks -ErrorAction SilentlyContinue) {
-        Remove-MultishopNodoScheduledTasks -Scope OnStartOnly -Quiet | Out-Null
+        Remove-MultishopNodoScheduledTasks -Quiet | Out-Null
     } else {
         foreach ($name in $OnStartTaskNames) {
             Remove-NodoApiTaskNamed -Name $name | Out-Null
@@ -259,7 +222,6 @@ function Deploy-NodoApiLauncher {
             Copy-Item $hueySource (Join-Path $nodoScriptsDir "start-nodo-huey.ps1") -Force
         }
         Copy-Item $PSCommandPath (Join-Path $nodoScriptsDir "nodo-api-windows-install.ps1") -Force
-        Write-Host "Scripts sincronizados en: $nodoScriptsDir"
     }
     $vbsLines = @(
         'Set sh = CreateObject("Wscript.Shell")'
@@ -267,13 +229,12 @@ function Deploy-NodoApiLauncher {
     )
     Set-Content -Path $DeployedVbs -Value ($vbsLines -join "`r`n") -Encoding ASCII -Force
     Write-Host "NodoDir: $NodoDir"
-    Write-Host "Tunel VPN: $TunnelName"
     Write-Host "Launcher: $DeployedVbs"
 }
 
 function Install-NodoApiOnStartTask {
     if (-not (Test-NodoInProgramFiles -Path $NodoDir)) {
-        Write-Warning "Autostart ONSTART omitido: el nodo no esta en Program Files. Use -StartNow o instale con install-windows.cmd."
+        Write-Warning "Autostart ONSTART omitido: el nodo no esta en Program Files."
         return $false
     }
     if (Get-Command Set-MultishopOnStartTasksEnabled -ErrorAction SilentlyContinue) {
@@ -289,7 +250,7 @@ function Install-NodoApiOnStartTask {
         Write-Warning "schtasks ONSTART fallo: $output"
         return $false
     }
-    Write-Host "Tarea $TaskNameOnStart registrada (ONSTART SYSTEM, retraso 1:30)."
+    Write-Host "Tarea $TaskNameOnStart registrada (ONSTART, delay 1:30)."
     return $true
 }
 
@@ -321,7 +282,7 @@ function Install-NodoHueyAutostart {
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "schtasks Multishop-Nodo-Huey ONSTART failed: $output"
     } else {
-        Write-Host "Tarea Multishop-Nodo-Huey registrada (ONSTART SYSTEM, ~2 min delay)."
+        Write-Host "Tarea Multishop-Nodo-Huey registrada (ONSTART, delay 2:00)."
     }
 }
 
@@ -345,11 +306,8 @@ function Show-MultishopScheduledTasks {
     foreach ($name in $OnStartTaskNames) {
         if (Test-NodoApiTaskExists -Name $name) {
             Write-Host "  [OK] $name"
-        }
-    }
-    foreach ($name in $LegacyTaskNames) {
-        if (Test-NodoApiTaskExists -Name $name) {
-            Write-Warning "  [LEGACY] $name (ejecute cleanup-multishop-logon.ps1)"
+        } else {
+            Write-Host "  [--] $name"
         }
     }
 }
@@ -358,8 +316,7 @@ function Assert-MultishopSingleInstance {
     param(
         [Parameter(Mandatory = $true)]
         [string]$NodoDirPath,
-        [bool]$ExpectHuey,
-        [switch]$AllowSelfHeal
+        [bool]$ExpectHuey
     )
     if (-not (Get-Command Get-MultishopNodoProcessCounts -ErrorAction SilentlyContinue)) {
         return
@@ -368,25 +325,13 @@ function Assert-MultishopSingleInstance {
     $counts = Get-MultishopNodoProcessCounts -NodoDir $NodoDirPath
     $expectedApi = if ($StartNow) { 1 } else { 0 }
     $expectedHuey = if ($StartNow -and $ExpectHuey) { 1 } else { 0 }
-    Write-Host "Procesos Multishop: API=$($counts.Api) Huey=$($counts.Huey) (esperado API=$expectedApi Huey=$expectedHuey)"
-
-    $wrongCount = ($counts.Api -ne $expectedApi) -or ($counts.Huey -ne $expectedHuey)
-    if (-not $wrongCount) { return }
-
-    if ($AllowSelfHeal -and (Get-Command Invoke-PrepareMultishopStartNow -ErrorAction SilentlyContinue)) {
-        Write-Host "Corrigiendo duplicados ..." -ForegroundColor Yellow
-        Invoke-PrepareMultishopStartNow -NodoDirPath $NodoDirPath
-        Start-NodoApiBackground
-        if ($ExpectHuey) { Start-NodoHueyBackground }
-        Start-Sleep -Seconds 4
-        $counts = Get-MultishopNodoProcessCounts -NodoDir $NodoDirPath
-        Write-Host "Procesos tras correccion: API=$($counts.Api) Huey=$($counts.Huey)"
-        if ($counts.Api -eq $expectedApi -and $counts.Huey -eq $expectedHuey) {
-            Write-Host "Duplicados corregidos." -ForegroundColor Green
-            return
-        }
+    Write-Host "Procesos: API=$($counts.Api) Huey=$($counts.Huey) (esperado API=$expectedApi Huey=$expectedHuey)"
+    if ($counts.Api -ne $expectedApi -or $counts.Huey -ne $expectedHuey) {
+        throw "Multishop nodo: procesos incorrectos (API=$($counts.Api) Huey=$($counts.Huey))"
     }
-    throw "Multishop nodo: duplicate python processes (API=$($counts.Api) Huey=$($counts.Huey))"
+    if ($StartNow -and -not (Test-MultishopNodoApiPortListening -NodoDir $NodoDirPath)) {
+        throw "Multishop nodo: API no escucha en el puerto configurado."
+    }
 }
 
 if ($Uninstall) {
@@ -401,7 +346,7 @@ if ($Uninstall) {
     if (Test-Path $DeployedEnvHelper) { Remove-Item $DeployedEnvHelper -Force }
     if (Test-Path $DirFile) { Remove-Item $DirFile -Force }
     if (Test-Path $TunnelFile) { Remove-Item $TunnelFile -Force }
-    Write-Host "Autostart eliminado (ONSTART + legacy Logon/Inicio)."
+    Write-Host "Autostart eliminado."
     exit 0
 }
 
@@ -410,13 +355,9 @@ Assert-AdminForInstall
 Write-Host "nodo-api-windows-install version: $MultishopWindowsInstallVersion"
 
 if (-not (Test-NodoInProgramFiles -Path $NodoDir)) {
-    Write-Warning "El nodo no esta en Program Files. Autostart ONSTART no se registrara; use install-windows.cmd o -StartNow."
+    Write-Warning "El nodo no esta en Program Files. Autostart ONSTART no se registrara."
 }
 
-if (Get-Command Stop-MultishopNodoProcesses -ErrorAction SilentlyContinue) {
-    Stop-MultishopNodoProcesses -NodoDir $NodoDir -SkipLaunchers
-}
-Remove-LegacyMultishopAutostart
 Deploy-NodoApiLauncher
 
 $enableHuey = $false
@@ -428,17 +369,13 @@ if (Test-Path -LiteralPath $envPath) {
     }
 }
 
-if (Get-Command Set-MultishopOnStartTasksEnabled -ErrorAction SilentlyContinue) {
-    Set-MultishopOnStartTasksEnabled -Enabled $false
-}
-
 if ($StartNow) {
     if (Get-Command Invoke-PrepareMultishopStartNow -ErrorAction SilentlyContinue) {
         Invoke-PrepareMultishopStartNow -NodoDirPath $NodoDir
     }
     Start-NodoApiBackground
     if ($enableHuey) { Start-NodoHueyBackground }
-    Assert-MultishopSingleInstance -NodoDirPath $NodoDir -ExpectHuey:$enableHuey -AllowSelfHeal
+    Assert-MultishopSingleInstance -NodoDirPath $NodoDir -ExpectHuey:$enableHuey
 }
 
 $null = Install-NodoApiOnStartTask
@@ -453,12 +390,8 @@ if (Get-Command Set-MultishopOnStartTasksEnabled -ErrorAction SilentlyContinue) 
 }
 
 Show-MultishopScheduledTasks
-if (-not $StartNow) {
-    Assert-MultishopSingleInstance -NodoDirPath $NodoDir -ExpectHuey:$enableHuey
-}
 
 Write-Host ""
-Write-Host "Autostart: Multishop-Nodo-API + Multishop-Nodo-Huey (ONSTART SYSTEM)."
-Write-Host "Legacy Logon: cleanup-multishop-logon.ps1 si quedaron tareas *-Logon."
-Write-Host "Instalador version: $MultishopWindowsInstallVersion"
+Write-Host "Autostart ONSTART: Multishop-Nodo-API + Multishop-Nodo-Huey (si HUEY_ENABLED=true)."
+Write-Host "Version: $MultishopWindowsInstallVersion"
 exit 0
