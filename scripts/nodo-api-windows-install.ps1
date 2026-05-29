@@ -12,7 +12,7 @@ param(
     [switch]$StartNow
 )
 
-$MultishopWindowsInstallVersion = "20260529.5"
+$MultishopWindowsInstallVersion = "20260529.7"
 
 $ErrorActionPreference = "Stop"
 
@@ -414,7 +414,7 @@ if (-not (Test-NodoInProgramFiles -Path $NodoDir)) {
 }
 
 if (Get-Command Stop-MultishopNodoProcesses -ErrorAction SilentlyContinue) {
-    Stop-MultishopNodoProcesses -NodoDir $NodoDir
+    Stop-MultishopNodoProcesses -NodoDir $NodoDir -SkipLaunchers
 }
 Remove-LegacyMultishopAutostart
 Deploy-NodoApiLauncher
@@ -461,3 +461,4 @@ Write-Host ""
 Write-Host "Autostart: Multishop-Nodo-API + Multishop-Nodo-Huey (ONSTART SYSTEM)."
 Write-Host "Legacy Logon: cleanup-multishop-logon.ps1 si quedaron tareas *-Logon."
 Write-Host "Instalador version: $MultishopWindowsInstallVersion"
+exit 0

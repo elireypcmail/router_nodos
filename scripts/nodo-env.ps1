@@ -454,20 +454,62 @@ function Invoke-MultishopStartMutex {
     }
 }
 
+function Get-ProtectedMultishopCallerProcessIds {
+    $protected = New-Object 'System.Collections.Generic.HashSet[int]'
+    [void]$protected.Add($PID)
+    try {
+        $currentId = $PID
+        for ($i = 0; $i -lt 12; $i++) {
+            $wp = Get-CimInstance Win32_Process -Filter "ProcessId=$currentId" -ErrorAction SilentlyContinue
+            if (-not $wp) { break }
+            $parentId = [int]$wp.ParentProcessId
+            if ($parentId -le 0) { break }
+            if (-not $protected.Add($parentId)) { break }
+            $currentId = $parentId
+        }
+    } catch {
+        # ignore
+    }
+    return @($protected)
+}
+
+function Test-IsMultishopNodoServiceLauncher {
+    param([AllowNull()][string]$CommandLine)
+    if ([string]::IsNullOrWhiteSpace($CommandLine)) {
+        return $false
+    }
+    $cmdLower = $CommandLine.ToLowerInvariant()
+
+    if ($cmdLower -match '\bwscript(\.exe)?\b' -and $cmdLower -match 'programdata\\multishop\\start-nodo-(api|huey)\.vbs') {
+        return $true
+    }
+
+    if ($cmdLower -notmatch '\bpowershell(\.exe)?\b') {
+        return $false
+    }
+
+    if ($cmdLower -match 'start-nodo-(api|huey)\.ps1') {
+        return $true
+    }
+
+    if ($cmdLower -match 'programdata\\multishop\\start-nodo-(api|huey)\.ps1') {
+        return $true
+    }
+
+    return $false
+}
+
 function Stop-MultishopNodoLaunchers {
     param([string]$NodoDir)
-    $nodoLower = $NodoDir.TrimEnd('\').ToLowerInvariant()
+    $protectedIds = Get-ProtectedMultishopCallerProcessIds
     foreach ($procName in @('wscript.exe', 'powershell.exe')) {
         foreach ($wp in Get-CimInstance Win32_Process -Filter "Name='$procName'" -ErrorAction SilentlyContinue) {
+            $procId = [int]$wp.ProcessId
+            if ($protectedIds -contains $procId) { continue }
             $cmd = ($wp.CommandLine -as [string])
-            if (-not $cmd) { continue }
-            $cmdLower = $cmd.ToLowerInvariant()
-            $isLauncher = $false
-            if ($cmdLower -match 'multishop|start-nodo-api|start-nodo-huey') { $isLauncher = $true }
-            if ($nodoLower -and $cmdLower -like "*$nodoLower*") { $isLauncher = $true }
-            if (-not $isLauncher) { continue }
-            Write-Host "Stopping Multishop launcher PID $($wp.ProcessId) ($procName) ..."
-            Stop-Process -Id $wp.ProcessId -Force -ErrorAction SilentlyContinue
+            if (-not (Test-IsMultishopNodoServiceLauncher -CommandLine $cmd)) { continue }
+            Write-Host "Stopping Multishop launcher PID $procId ($procName) ..."
+            Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
         }
     }
 }
@@ -475,13 +517,17 @@ function Stop-MultishopNodoLaunchers {
 function Stop-MultishopNodoProcesses {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$NodoDir
+        [string]$NodoDir,
+
+        [switch]$SkipLaunchers
     )
     $nodoDir = $NodoDir.TrimEnd('\')
     $apiPort = Get-MultishopNodoApiPort -NodoDir $nodoDir
     $stoppedIds = @{}
 
-    Stop-MultishopNodoLaunchers -NodoDir $nodoDir
+    if (-not $SkipLaunchers) {
+        Stop-MultishopNodoLaunchers -NodoDir $nodoDir
+    }
 
     $pythonProcs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -in @('python.exe', 'pythonw.exe') }

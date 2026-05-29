@@ -663,14 +663,6 @@ if (-not $SkipApiAutostart) {
             Write-Warning "  nodo-api-windows-install.ps1 sin version (bundle viejo)."
         }
         Remove-AllMultishopScheduledTasks
-        $envHelper = Join-Path $ScriptsDir 'nodo-env.ps1'
-        if (Test-Path -LiteralPath $envHelper) {
-            . $envHelper
-            if (Get-Command Stop-MultishopNodoProcesses -ErrorAction SilentlyContinue) {
-                Write-Host "  Deteniendo procesos Multishop antes de registrar autostart ..."
-                Stop-MultishopNodoProcesses -NodoDir $NodoDir
-            }
-        }
         $args = @(
             "-NoProfile",
             "-ExecutionPolicy", "Bypass",
@@ -685,6 +677,22 @@ if (-not $SkipApiAutostart) {
             $args += "-StartNow"
         }
         & powershell.exe @args | Out-Host
+        $apiInstallExit = $LASTEXITCODE
+        if ($apiInstallExit -ne 0) {
+            throw "nodo-api-windows-install.ps1 fallo (exit $apiInstallExit). Revise ProgramData\Multishop\*.log"
+        }
+        if (-not $NoStart) {
+            $envHelper = Join-Path $ScriptsDir 'nodo-env.ps1'
+            if (Test-Path -LiteralPath $envHelper) {
+                . $envHelper
+                Start-Sleep -Seconds 2
+                $counts = Get-MultishopNodoProcessCounts -NodoDir $NodoDir
+                Write-Host "  Verificacion post-install: API=$($counts.Api) Huey=$($counts.Huey)"
+                if ($counts.Api -lt 1) {
+                    throw "La API no arranco tras -StartNow. Revise C:\ProgramData\Multishop\nodo-api-start.log y nodo-api.err.log"
+                }
+            }
+        }
     }
 }
 
