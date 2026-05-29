@@ -233,7 +233,7 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
                             local_ccates=local_ccates,
                             local_prv=local_prv,
                         )
-                    upsert_sinv(cur, prepare_sinv_upsert(row))
+                    upsert_sinv(cur, row)
                 conn.commit()
             except Exception:
                 conn.rollback()

@@ -372,25 +372,221 @@ def next_compras_contador(conn: pymysql.connections.Connection) -> int:
         return int(row.get("n") or 1)
 
 
-def show_recent_outbox(
-    conn: pymysql.connections.Connection,
-    table_name: str,
-    limit: int = 3,
-) -> None:
+def next_kardex_contador(conn: pymysql.connections.Connection) -> int:
+    with conn.cursor() as cur:
+        cur.execute("SELECT COALESCE(MAX(contador), 0) + 1 AS n FROM kardex")
+        row = cur.fetchone() or {}
+        return int(row.get("n") or 1)
+
+
+def lookup_provider(
+    conn: pymysql.connections.Connection, cod_prv: str | None
+) -> tuple[str, str]:
+    code = (cod_prv or "").strip()
+    if not code:
+        return "", ""
     with conn.cursor() as cur:
         cur.execute(
-            """
+            "SELECT cod_prv, nom_prv FROM sprv WHERE cod_prv = %s LIMIT 1",
+            (code,),
+        )
+        row = cur.fetchone() or {}
+    return str(row.get("cod_prv") or code), str(row.get("nom_prv") or "").strip()
+
+
+def read_sinv_costs(
+    conn: pymysql.connections.Connection, codigo: str
+) -> tuple[float, float]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COALESCE(costo, 0) AS costo, COALESCE(costopro, 0) AS costopro "
+            "FROM sinv WHERE codigo = %s LIMIT 1",
+            (codigo.strip(),),
+        )
+        row = cur.fetchone() or {}
+    return float(row.get("costo") or 0), float(row.get("costopro") or 0)
+
+
+def erp_hora_label() -> str:
+    return datetime.now().strftime("%I:%M:%S %p").replace("AM", "a. m.").replace("PM", "p. m.")
+
+
+def format_kobs_compra(
+    num_compra: str,
+    cod_prv: str,
+    nom_prv: str = "",
+    *,
+    ind: str | None = None,
+    operador: str = "SUPERVISOR",
+) -> str:
+    prv = f"{cod_prv} {nom_prv}".strip() if nom_prv else cod_prv
+    ind_part = ind or test_suffix()[:5]
+    return (
+        f"Compra#: {num_compra} Proveedor: {prv} Ind: {ind_part} "
+        f"{erp_hora_label()}  Relizado por: {operador}"
+    )
+
+
+def format_kobs_venta(
+    numero: str,
+    *,
+    cliente: str = "V25497333 CLIENTE PRUEBA",
+    caja: str = "10",
+    operador: str = "CAJA01",
+) -> str:
+    return (
+        f"Vta#: {numero} Cliente: {cliente}  Caja:{caja} "
+        f"Hora:{erp_hora_label()}  Atendido por: {operador} /"
+    )
+
+
+def format_kobs_ajuste(nro: str, *, accion: str = "*Aumento") -> str:
+    fecha = datetime.now().strftime("%d/%m/%Y")
+    return (
+        f"Ajuste Nro: {nro} de Fecha {fecha} - Hora: {erp_hora_label()}  "
+        f"Accion:  {accion}"
+    )
+
+
+def insert_kardex_header(
+    cur: pymysql.cursors.Cursor,
+    *,
+    codigo: str,
+    fecha: date,
+    compras: float = 0,
+    ventas: float = 0,
+    ajustesp: float = 0,
+    ajustesn: float = 0,
+    devoc: float = 0,
+    devov: float = 0,
+    existenciai: float = 0,
+    entradas: float = 0,
+    salidas: float = 0,
+    existenciaf: float = 0,
+    costo: float = 0,
+    costopro: float = 0,
+    kobs: str,
+    cajero: str = "TEST",
+    numero: str = "",
+    contador: int | None = None,
+) -> int:
+    cur.execute(
+        """
+        INSERT INTO kardex (
+          codigo, fecha, existenciai, entradas, salidas, existenciaf,
+          compras, ventas, devoc, devov, ajustesp, ajustesn,
+          costo, costopro, kobs, cajero, numero, contador
+        ) VALUES (
+          %s, %s, %s, %s, %s, %s,
+          %s, %s, %s, %s, %s, %s,
+          %s, %s, %s, %s, %s, %s
+        )
+        """,
+        (
+            codigo.strip(),
+            fecha,
+            existenciai,
+            entradas,
+            salidas,
+            existenciaf,
+            compras,
+            ventas,
+            devoc,
+            devov,
+            ajustesp,
+            ajustesn,
+            costo,
+            costopro,
+            kobs,
+            cajero[:10],
+            numero[:15],
+            contador,
+        ),
+    )
+    cur.execute("SELECT LAST_INSERT_ID() AS indice")
+    row = cur.fetchone() or {}
+    return int(row.get("indice") or 0)
+
+
+def insert_kardexd_line(
+    cur: pymysql.cursors.Cursor,
+    *,
+    codigo: str,
+    fecha: date,
+    cubica: str,
+    ajustesp: float = 0,
+    ajustesn: float = 0,
+    devoc: float = 0,
+    devov: float = 0,
+    existenciai: float = 0,
+    entradas: float = 0,
+    salidas: float = 0,
+    existenciaf: float = 0,
+    costo: float = 0,
+    costopro: float = 0,
+    kobs: str,
+    cajero: str = "TEST",
+    numero: str = "",
+    contador: int | None = None,
+) -> int:
+    cur.execute(
+        """
+        INSERT INTO kardexd (
+          codigo, fecha, cubica, existenciai, entradas, salidas, existenciaf,
+          compras, ventas, devoc, devov, ajustesp, ajustesn,
+          costo, costopro, kobs, cajero, numero, contador
+        ) VALUES (
+          %s, %s, %s, %s, %s, %s, %s,
+          0, 0, %s, %s, %s, %s,
+          %s, %s, %s, %s, %s, %s
+        )
+        """,
+        (
+            codigo.strip(),
+            fecha,
+            cubica[:10],
+            existenciai,
+            entradas,
+            salidas,
+            existenciaf,
+            devoc,
+            devov,
+            ajustesp,
+            ajustesn,
+            costo,
+            costopro,
+            kobs,
+            cajero[:10],
+            numero[:15],
+            contador,
+        ),
+    )
+    cur.execute("SELECT LAST_INSERT_ID() AS indice")
+    row = cur.fetchone() or {}
+    return int(row.get("indice") or 0)
+
+
+def show_recent_outbox(
+    conn: pymysql.connections.Connection,
+    table_name: str | list[str],
+    limit: int = 3,
+) -> None:
+    names = [table_name] if isinstance(table_name, str) else list(table_name)
+    placeholders = ", ".join(["%s"] * len(names))
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
             SELECT id, table_name, op, status, created_at
             FROM sync_outbox
-            WHERE table_name = %s
+            WHERE table_name IN ({placeholders})
             ORDER BY id DESC
             LIMIT %s
             """,
-            (table_name, limit),
+            (*names, limit),
         )
         rows = cur.fetchall() or []
     if not rows:
-        print("  (no recent sync_outbox rows; triggers applied?)")
+        print(f"  (no recent sync_outbox for {names}; triggers applied?)")
         return
     for r in rows:
         print(

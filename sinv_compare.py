@@ -29,6 +29,27 @@ _NUMERIC_FIELDS = frozenset({"precio1", "pg1", "stockmin", "stockmax", "porvg"})
 _INT_FIELDS = frozenset({"recipe", "cfrio", "activo"})
 
 
+def _norm_flag01(value: object, *, default: int = 0) -> int:
+    """Normaliza flags 0/1 (bool, '1', '0', true/false)."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, (int, float)):
+        return 1 if int(value) == 1 else 0
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    if text in {"1", "true", "si", "sí", "yes"}:
+        return 1
+    if text in {"0", "false", "no"}:
+        return 0
+    try:
+        return 1 if int(float(text)) == 1 else 0
+    except (TypeError, ValueError):
+        return default
+
+
 def _norm_num(value: object) -> float:
     if value is None:
         return 0.0
@@ -58,7 +79,8 @@ def normalize_sinv_snapshot(row: dict[str, Any]) -> dict[str, Any]:
         if key in _NUMERIC_FIELDS:
             out[key] = _norm_num(raw)
         elif key in _INT_FIELDS:
-            out[key] = int(_norm_num(raw))
+            default = 1 if key == "activo" else 0
+            out[key] = _norm_flag01(raw, default=default)
         else:
             out[key] = _norm_str(raw)
     return out
@@ -77,6 +99,8 @@ def sinv_diff_fields(hub_row: dict, node_row: dict) -> list[str]:
 
 # Texto vacío en tienda que el pull puede rellenar desde el hub sin warning.
 SINV_FILL_EMPTY_TEXT_FIELDS = frozenset({"barra", "referencia", "componente"})
+# Flags 0/1: el hub manda; no generar conflicto en pull (p. ej. activo).
+SINV_HUB_WINS_FLAG_FIELDS = frozenset({"activo", "recipe", "cfrio"})
 
 
 def sinv_empty_field_patch(hub_row: dict, node_row: dict) -> dict[str, Any] | None:
@@ -102,6 +126,10 @@ def sinv_empty_field_patch(hub_row: dict, node_row: dict) -> dict[str, Any] | No
             if str(hub_val or "").strip():
                 patch[key] = hub_val
                 changed = True
+            continue
+        if key in SINV_HUB_WINS_FLAG_FIELDS:
+            patch[key] = hub_val
+            changed = True
             continue
         return None
 

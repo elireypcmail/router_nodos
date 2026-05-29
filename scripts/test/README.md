@@ -34,14 +34,20 @@ Con `--lotes N` crea **N** filas en `detalle` y reparte la cantidad de la compra
 
 Con la API en marcha y `HUB_PUSH_ENABLED=true`, el `OutboxWorker` envía los `pending` automáticamente (no hace falta `--flush`).
 
-## Scripts
+## Scripts (flujo ERP real)
 
-| Script | Tabla | Evento hub |
-|--------|-------|------------|
-| `simulate_compra.py` | `comprasdbf` | `purchase` |
-| `simulate_venta.py` | `ventasi` | `sale` |
-| `simulate_kardex_devolucion.py` | `kardex` | `kardex` (`--tipo devov` o `devoc`) |
-| `simulate_kardex_ajuste.py` | `kardex` | `kardex` (`--direccion entrada` o `salida`) |
+El ERP legacy registra compras/ventas en **`kardex` cabecera** (`compras` / `ventas`) y el detalle por **cubica** en **`kardexd`** (`ajustesp` / `ajustesn` con `kobs` `Compra#:` / `Vta#:`). No siempre escribe `comprasdbf` ni `ventasi`.
+
+Los triggers encolan **`comprasdbf`** / **`ventasi`** desde la fila **`kardex`** y **ignoran** `kardexd` cuando el `kobs` es de compra/venta.
+
+| Script | Tablas ERP | Outbox → hub |
+|--------|------------|--------------|
+| `simulate_compra.py` | `kardex` + `kardexd` | `comprasdbf` → `purchase` |
+| `simulate_venta.py` | `kardex` + `kardexd` | `ventasi` → `sale` |
+| `simulate_kardex_ajuste.py` | `kardex` (cabecera) | `kardex` → ajuste |
+| `simulate_kardex_devolucion.py` | `kardex` (cabecera) | `kardex` → devolución |
+
+Modo legacy (tablas antiguas del simulador): `--legacy-comprasdbf` / `--legacy-ventasi`.
 
 ## Uso
 
@@ -79,8 +85,17 @@ Opciones comunes (todos los scripts):
 
 Solo `simulate_compra.py`:
 
-- `--lotes N` — N lotes en `detalle` (requiere `N <= --cantidad`)
+- `--num-compra` — número en kobs `Compra#:` (default: hora)
+- `--cod-prv` — proveedor en kobs (default: `sinv.cod_prv` → `sprv`)
+- `--legacy-comprasdbf` — INSERT directo en `comprasdbf` (modo antiguo)
+- `--lotes N` — N filas `kardexd` + `detalle` (requiere `N <= --cantidad`)
 - `--lotes-pct P1,P2,...` — reparto por % (misma cantidad de valores que `--lotes`)
+
+Solo `simulate_venta.py`:
+
+- `--numero` — ticket/factura en kobs `Vta#:`
+- `--caja` / `--cliente` — texto en kobs
+- `--legacy-ventasi` — INSERT directo en `ventasi` (modo antiguo)
 
 Ejemplos:
 

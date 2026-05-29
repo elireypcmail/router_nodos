@@ -92,6 +92,36 @@ DROP TRIGGER IF EXISTS trg_kardexd_ad;
 DELIMITER $$
 CREATE TRIGGER trg_kardex_ai AFTER INSERT ON kardex FOR EACH ROW
 BEGIN
+  IF IFNULL(NEW.compras, 0) <> 0 THEN
+    INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'comprasdbf',
+      'I',
+      CONCAT('{','\"contador\":',ms_json_int(IFNULL(NEW.contador, NEW.indice)),',','\"numdoc\":',ms_json_str(IFNULL(NEW.numero, '')),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"fecha\":',ms_json_date(NEW.fecha),'}'),
+      CONCAT('{','\"contador\":',ms_json_int(IFNULL(NEW.contador, NEW.indice)),',','\"numdoc\":',ms_json_str(IFNULL(NEW.numero, '')),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"cantidad\":',ms_json_num(NEW.compras),',','\"precio\":',ms_json_num(NEW.costo),',','\"monto\":',ms_json_num(IFNULL(NEW.compras, 0) * IFNULL(NEW.costo, 0)),',','\"costo_anterior\":',ms_json_num((
+        SELECT s.costo
+        FROM sinv s
+        WHERE s.codigo = NEW.codigo
+        LIMIT 1
+      )),',','\"costo_promedio_ponderado\":',ms_json_num((
+        SELECT s.costopro
+        FROM sinv s
+        WHERE s.codigo = NEW.codigo
+        LIMIT 1
+      )),',','\"costo_actual_factura\":',ms_json_num(NEW.costo),',','\"fecha\":',ms_json_date(NEW.fecha),',','\"kardex_indice\":',ms_json_int(NEW.indice),'}'),
+      NOW(3)
+    );
+  END IF;
+  IF IFNULL(NEW.ventas, 0) <> 0 THEN
+    INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'ventasi',
+      'I',
+      CONCAT('{','\"numero\":',ms_json_str(NEW.numero),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"contador\":',ms_json_int(IFNULL(NEW.contador, NEW.indice)),',','\"ccaja\":',ms_json_str(NEW.cajero),'}'),
+      CONCAT('{','\"numero\":',ms_json_str(NEW.numero),',','\"fecha\":',ms_json_date(NEW.fecha),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"cantidad\":',ms_json_num(NEW.ventas),',','\"contador\":',ms_json_int(IFNULL(NEW.contador, NEW.indice)),',','\"ccaja\":',ms_json_str(NEW.cajero),',','\"kardex_indice\":',ms_json_int(NEW.indice),'}'),
+      NOW(3)
+    );
+  END IF;
   IF IFNULL(NEW.compras, 0) = 0
      AND IFNULL(NEW.ventas, 0) = 0
      AND (IFNULL(NEW.ajustesp, 0) <> 0
@@ -111,6 +141,36 @@ END$$
 
 CREATE TRIGGER trg_kardex_au AFTER UPDATE ON kardex FOR EACH ROW
 BEGIN
+  IF IFNULL(NEW.compras, 0) <> 0 THEN
+    INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'comprasdbf',
+      'U',
+      CONCAT('{','\"contador\":',ms_json_int(IFNULL(NEW.contador, NEW.indice)),',','\"numdoc\":',ms_json_str(IFNULL(NEW.numero, '')),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"fecha\":',ms_json_date(NEW.fecha),'}'),
+      CONCAT('{','\"contador\":',ms_json_int(IFNULL(NEW.contador, NEW.indice)),',','\"numdoc\":',ms_json_str(IFNULL(NEW.numero, '')),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"cantidad\":',ms_json_num(NEW.compras),',','\"precio\":',ms_json_num(NEW.costo),',','\"monto\":',ms_json_num(IFNULL(NEW.compras, 0) * IFNULL(NEW.costo, 0)),',','\"costo_anterior\":',ms_json_num((
+        SELECT s.costo
+        FROM sinv s
+        WHERE s.codigo = NEW.codigo
+        LIMIT 1
+      )),',','\"costo_promedio_ponderado\":',ms_json_num((
+        SELECT s.costopro
+        FROM sinv s
+        WHERE s.codigo = NEW.codigo
+        LIMIT 1
+      )),',','\"costo_actual_factura\":',ms_json_num(NEW.costo),',','\"fecha\":',ms_json_date(NEW.fecha),',','\"kardex_indice\":',ms_json_int(NEW.indice),'}'),
+      NOW(3)
+    );
+  END IF;
+  IF IFNULL(NEW.ventas, 0) <> 0 THEN
+    INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'ventasi',
+      'U',
+      CONCAT('{','\"numero\":',ms_json_str(NEW.numero),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"contador\":',ms_json_int(IFNULL(NEW.contador, NEW.indice)),',','\"ccaja\":',ms_json_str(NEW.cajero),'}'),
+      CONCAT('{','\"numero\":',ms_json_str(NEW.numero),',','\"fecha\":',ms_json_date(NEW.fecha),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"cantidad\":',ms_json_num(NEW.ventas),',','\"contador\":',ms_json_int(IFNULL(NEW.contador, NEW.indice)),',','\"ccaja\":',ms_json_str(NEW.cajero),',','\"kardex_indice\":',ms_json_int(NEW.indice),'}'),
+      NOW(3)
+    );
+  END IF;
   IF IFNULL(NEW.compras, 0) = 0
      AND IFNULL(NEW.ventas, 0) = 0
      AND (IFNULL(NEW.ajustesp, 0) <> 0
@@ -130,6 +190,36 @@ END$$
 
 CREATE TRIGGER trg_kardex_ad AFTER DELETE ON kardex FOR EACH ROW
 BEGIN
+  IF IFNULL(OLD.compras, 0) <> 0 THEN
+    INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'comprasdbf',
+      'D',
+      CONCAT('{','\"contador\":',ms_json_int(IFNULL(OLD.contador, OLD.indice)),',','\"numdoc\":',ms_json_str(IFNULL(OLD.numero, '')),',','\"codigo\":',ms_json_str(OLD.codigo),',','\"fecha\":',ms_json_date(OLD.fecha),'}'),
+      CONCAT('{','\"contador\":',ms_json_int(IFNULL(OLD.contador, OLD.indice)),',','\"numdoc\":',ms_json_str(IFNULL(OLD.numero, '')),',','\"codigo\":',ms_json_str(OLD.codigo),',','\"cantidad\":',ms_json_num(OLD.compras),',','\"precio\":',ms_json_num(OLD.costo),',','\"monto\":',ms_json_num(IFNULL(OLD.compras, 0) * IFNULL(OLD.costo, 0)),',','\"costo_anterior\":',ms_json_num((
+        SELECT s.costo
+        FROM sinv s
+        WHERE s.codigo = OLD.codigo
+        LIMIT 1
+      )),',','\"costo_promedio_ponderado\":',ms_json_num((
+        SELECT s.costopro
+        FROM sinv s
+        WHERE s.codigo = OLD.codigo
+        LIMIT 1
+      )),',','\"costo_actual_factura\":',ms_json_num(OLD.costo),',','\"fecha\":',ms_json_date(OLD.fecha),',','\"kardex_indice\":',ms_json_int(OLD.indice),'}'),
+      NOW(3)
+    );
+  END IF;
+  IF IFNULL(OLD.ventas, 0) <> 0 THEN
+    INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'ventasi',
+      'D',
+      CONCAT('{','\"numero\":',ms_json_str(OLD.numero),',','\"codigo\":',ms_json_str(OLD.codigo),',','\"contador\":',ms_json_int(IFNULL(OLD.contador, OLD.indice)),',','\"ccaja\":',ms_json_str(OLD.cajero),'}'),
+      CONCAT('{','\"numero\":',ms_json_str(OLD.numero),',','\"fecha\":',ms_json_date(OLD.fecha),',','\"codigo\":',ms_json_str(OLD.codigo),',','\"cantidad\":',ms_json_num(OLD.ventas),',','\"contador\":',ms_json_int(IFNULL(OLD.contador, OLD.indice)),',','\"ccaja\":',ms_json_str(OLD.cajero),',','\"kardex_indice\":',ms_json_int(OLD.indice),'}'),
+      NOW(3)
+    );
+  END IF;
   IF IFNULL(OLD.compras, 0) = 0
      AND IFNULL(OLD.ventas, 0) = 0
      AND (IFNULL(OLD.ajustesp, 0) <> 0
@@ -149,7 +239,8 @@ END$$
 
 CREATE TRIGGER trg_kardexd_ai AFTER INSERT ON kardexd FOR EACH ROW
 BEGIN
-  IF IFNULL(NEW.compras, 0) = 0
+  IF (NEW.kobs NOT LIKE 'Compra#:%' AND NEW.kobs NOT LIKE 'Vta#:%')
+     AND IFNULL(NEW.compras, 0) = 0
      AND IFNULL(NEW.ventas, 0) = 0
      AND (IFNULL(NEW.ajustesp, 0) <> 0
           OR IFNULL(NEW.ajustesn, 0) <> 0
@@ -168,7 +259,8 @@ END$$
 
 CREATE TRIGGER trg_kardexd_au AFTER UPDATE ON kardexd FOR EACH ROW
 BEGIN
-  IF IFNULL(NEW.compras, 0) = 0
+  IF (NEW.kobs NOT LIKE 'Compra#:%' AND NEW.kobs NOT LIKE 'Vta#:%')
+     AND IFNULL(NEW.compras, 0) = 0
      AND IFNULL(NEW.ventas, 0) = 0
      AND (IFNULL(NEW.ajustesp, 0) <> 0
           OR IFNULL(NEW.ajustesn, 0) <> 0
@@ -187,7 +279,8 @@ END$$
 
 CREATE TRIGGER trg_kardexd_ad AFTER DELETE ON kardexd FOR EACH ROW
 BEGIN
-  IF IFNULL(OLD.compras, 0) = 0
+  IF (OLD.kobs NOT LIKE 'Compra#:%' AND OLD.kobs NOT LIKE 'Vta#:%')
+     AND IFNULL(OLD.compras, 0) = 0
      AND IFNULL(OLD.ventas, 0) = 0
      AND (IFNULL(OLD.ajustesp, 0) <> 0
           OR IFNULL(OLD.ajustesn, 0) <> 0

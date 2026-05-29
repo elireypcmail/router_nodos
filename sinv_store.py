@@ -89,12 +89,24 @@ def enrich_sinv_from_hub(normalized: dict[str, Any], raw_row: dict) -> dict[str,
     return out
 
 
+def _hub_row_has_activo(raw_row: dict) -> bool:
+    if "activo" not in raw_row:
+        return False
+    val = raw_row.get("activo")
+    if val is None:
+        return False
+    return str(val).strip() != ""
+
+
 def prepare_sinv_upsert(row: dict) -> dict[str, Any]:
     """Normaliza fila hub/PGMQ → snapshot sinv + campos locales derivados."""
     from sinv_compare import normalize_sinv_snapshot
 
     clean = {k: v for k, v in row.items() if k not in SINV_SYNC_META_KEYS}
+    has_activo = _hub_row_has_activo(clean)
     normalized = normalize_sinv_snapshot(clean)
+    if not has_activo:
+        normalized["activo"] = 1
     return enrich_sinv_from_hub(normalized, clean)
 
 

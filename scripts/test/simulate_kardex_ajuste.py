@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""INSERT en kardex con ajuste (ajustesp / ajustesn) -> outbox kardex -> hub."""
+"""Simula ajuste inventario ERP: kardex cabecera (ajustesp/ajustesn) -> outbox kardex."""
 
 from __future__ import annotations
 
@@ -9,8 +9,11 @@ from _common import (
     add_common_args,
     apply_sinv_existencia_delta,
     connect_dict,
+    format_kobs_ajuste,
+    insert_kardex_header,
     maybe_flush,
     pick_product,
+    read_sinv_costs,
     read_sinv_existencia,
     require_mysql,
     show_recent_outbox,
@@ -20,7 +23,9 @@ from _common import (
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Simula kardex con ajuste de inventario")
+    parser = argparse.ArgumentParser(
+        description="Simula ajuste inventario ERP (solo kardex cabecera, kobs Ajuste Nro:)"
+    )
     add_common_args(parser)
     parser.add_argument(
         "--direccion",
@@ -42,47 +47,50 @@ def main() -> int:
         ajustesp = qty if args.direccion == "entrada" else 0.0
         ajustesn = qty if args.direccion == "salida" else 0.0
         suf = test_suffix()
-        numero = f"KA{suf}"[:15]
-        contador = int(suf) % 999999 or 1
+        nro_ajuste = f"{int(suf):06d}"[:12]
+        accion = "*Aumento" if args.direccion == "entrada" else "*Disminucion"
         fecha = today()
-        kobs = f"MULTISHOP-TEST-AJUSTE-{args.direccion.upper()}"
+        kobs = format_kobs_ajuste(nro_ajuste, accion=accion)
 
         delta = ajustesp - ajustesn
         ex_antes = read_sinv_existencia(conn, codigo)
+        costo, costopro = read_sinv_costs(conn, codigo)
+        ex_despues = ex_antes + delta
+        entradas = ajustesp
+        salidas = ajustesn
+
         print(f"Product: {codigo} (sinv stock={ex_antes})")
         print(
             f"INSERT kardex: ajustesp={ajustesp} ajustesn={ajustesn} "
-            f"numero={numero} fecha={fecha}"
+            f"kobs={kobs[:50]}..."
         )
         if not args.no_update_sinv and delta != 0:
-            print(f"UPDATE sinv: stock += {delta} (simulates local ERP)")
+            print(f"UPDATE sinv: stock += {delta}")
 
         if args.dry_run:
             return 0
 
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO kardex (
-                  codigo, fecha, compras, ventas, devoc, devov,
-                  ajustesp, ajustesn, entradas, salidas,
-                  kobs, cajero, numero, contador
-                ) VALUES (
-                  %s, %s, 0, 0, 0, 0,
-                  %s, %s, 0, 0,
-                  %s, 'TEST', %s, %s
-                )
-                """,
-                (codigo, fecha, ajustesp, ajustesn, kobs, numero, contador),
+            indice = insert_kardex_header(
+                cur,
+                codigo=codigo,
+                fecha=fecha,
+                ajustesp=ajustesp,
+                ajustesn=ajustesn,
+                existenciai=ex_antes,
+                entradas=entradas,
+                salidas=salidas,
+                existenciaf=ex_despues,
+                costo=costo,
+                costopro=costopro,
+                kobs=kobs,
+                cajero="TEST",
             )
-            cur.execute("SELECT LAST_INSERT_ID() AS indice")
-            row = cur.fetchone() or {}
-            indice = row.get("indice")
         if not args.no_update_sinv and delta != 0:
             ex0, ex1 = apply_sinv_existencia_delta(conn, codigo, delta)
             print(f"sinv.stock: {ex0} -> {ex1}")
         conn.commit()
-        print(f"OK: kardex inserted index={indice}.")
+        print(f"OK: ERP adjustment kardex indice={indice}.")
         show_recent_outbox(conn, "kardex")
     except Exception as ex:
         conn.rollback()

@@ -9,8 +9,10 @@ from _common import (
     add_common_args,
     apply_sinv_existencia_delta,
     connect_dict,
+    insert_kardex_header,
     maybe_flush,
     pick_product,
+    read_sinv_costs,
     read_sinv_existencia,
     require_mysql,
     show_recent_outbox,
@@ -47,7 +49,7 @@ def main() -> int:
         numero = f"KD{suf}"[:15]
         contador = int(suf) % 999999 or 1
         fecha = today()
-        kobs = f"MULTISHOP-TEST-DEV-{args.tipo.upper()}"
+        kobs = f"Devolución cliente #{suf}" if args.tipo == "devov" else f"Devolución proveedor #{suf}"
 
         delta = qty if args.tipo == "devov" else -qty
         ex_antes = read_sinv_existencia(conn, codigo)
@@ -63,23 +65,25 @@ def main() -> int:
             return 0
 
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO kardex (
-                  codigo, fecha, compras, ventas, devoc, devov,
-                  ajustesp, ajustesn, entradas, salidas,
-                  kobs, cajero, numero, contador
-                ) VALUES (
-                  %s, %s, 0, 0, %s, %s,
-                  0, 0, 0, 0,
-                  %s, 'TEST', %s, %s
-                )
-                """,
-                (codigo, fecha, devoc, devov, kobs, numero, contador),
+            costo, costopro = read_sinv_costs(conn, codigo)
+            ex_despues = ex_antes + delta
+            indice = insert_kardex_header(
+                cur,
+                codigo=codigo,
+                fecha=fecha,
+                devoc=devoc,
+                devov=devov,
+                existenciai=ex_antes,
+                entradas=devov,
+                salidas=devoc,
+                existenciaf=ex_despues,
+                costo=costo,
+                costopro=costopro,
+                kobs=kobs,
+                cajero="TEST",
+                numero=numero,
+                contador=contador,
             )
-            cur.execute("SELECT LAST_INSERT_ID() AS indice")
-            row = cur.fetchone() or {}
-            indice = row.get("indice")
         if not args.no_update_sinv:
             ex0, ex1 = apply_sinv_existencia_delta(conn, codigo, delta)
             print(f"sinv.stock: {ex0} -> {ex1}")
