@@ -262,6 +262,39 @@ function Get-DefaultInstallRoot {
     return Join-Path ${env:ProgramFiles} "Multishop\\nodo"
 }
 
+function Invoke-SchTasksQuiet {
+    param([string[]]$ArgumentList)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    $null = schtasks.exe @ArgumentList 2>&1
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $prev
+    return $code
+}
+
+function Remove-MultishopScheduledTaskIfExists {
+    param([string]$Name)
+    if (-not $Name) { return }
+    foreach ($tn in @($Name, "\$Name")) {
+        if (Invoke-SchTasksQuiet @("/Query", "/TN", $tn) -ne 0) { continue }
+        Write-Host "  Eliminando tarea $tn ..."
+        Invoke-SchTasksQuiet @("/Delete", "/TN", $tn, "/F") | Out-Null
+        return
+    }
+}
+
+function Remove-AllMultishopScheduledTasks {
+    Write-Host "  Eliminando tareas Multishop residuales antes de autostart ..."
+    foreach ($taskName in @(
+            "Multishop-Nodo-API",
+            "Multishop-Nodo-API-Logon",
+            "Multishop-Nodo-Huey",
+            "Multishop-Nodo-Huey-Logon"
+        )) {
+        Remove-MultishopScheduledTaskIfExists -Name $taskName
+    }
+}
+
 function Install-NodoToProgramFiles {
     param(
         [string]$SourceDir,
@@ -621,15 +654,7 @@ if (-not $SkipApiAutostart) {
         } else {
             Write-Warning "  nodo-api-windows-install.ps1 sin version (bundle viejo)."
         }
-        Write-Host "  Eliminando tareas Multishop residuales antes de autostart ..."
-        foreach ($taskName in @(
-                "Multishop-Nodo-API",
-                "Multishop-Nodo-API-Logon",
-                "Multishop-Nodo-Huey",
-                "Multishop-Nodo-Huey-Logon"
-            )) {
-            schtasks.exe /Delete /TN $taskName /F 2>$null | Out-Null
-        }
+        Remove-AllMultishopScheduledTasks
         $envHelper = Join-Path $ScriptsDir 'nodo-env.ps1'
         if (Test-Path -LiteralPath $envHelper) {
             . $envHelper
