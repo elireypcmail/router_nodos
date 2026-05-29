@@ -12,7 +12,7 @@ param(
     [switch]$StartNow
 )
 
-$MultishopWindowsInstallVersion = "20260529.1"
+$MultishopWindowsInstallVersion = "20260529.2"
 
 $ErrorActionPreference = "Stop"
 
@@ -342,24 +342,24 @@ function Assert-MultishopSingleInstance {
     if (-not (Get-Command Get-MultishopNodoProcessCounts -ErrorAction SilentlyContinue)) {
         return
     }
-    Start-Sleep -Seconds 2
+    Start-Sleep -Seconds 4
     $counts = Get-MultishopNodoProcessCounts -NodoDir $NodoDirPath
     $expectedApi = if ($StartNow) { 1 } else { 0 }
     $expectedHuey = if ($StartNow -and $ExpectHuey) { 1 } else { 0 }
     Write-Host "Procesos Multishop: API=$($counts.Api) Huey=$($counts.Huey) (esperado API=$expectedApi Huey=$expectedHuey)"
 
-    $duplicated = ($counts.Api -gt 1) -or ($ExpectHuey -and $counts.Huey -gt 1)
-    if (-not $duplicated) { return }
+    $wrongCount = ($counts.Api -ne $expectedApi) -or ($counts.Huey -ne $expectedHuey)
+    if (-not $wrongCount) { return }
 
     if ($AllowSelfHeal -and (Get-Command Invoke-PrepareMultishopStartNow -ErrorAction SilentlyContinue)) {
         Write-Host "Corrigiendo duplicados ..." -ForegroundColor Yellow
         Invoke-PrepareMultishopStartNow -NodoDirPath $NodoDirPath
         Start-NodoApiBackground
         if ($ExpectHuey) { Start-NodoHueyBackground }
-        Start-Sleep -Seconds 2
+        Start-Sleep -Seconds 4
         $counts = Get-MultishopNodoProcessCounts -NodoDir $NodoDirPath
         Write-Host "Procesos tras correccion: API=$($counts.Api) Huey=$($counts.Huey)"
-        if ($counts.Api -le 1 -and (-not $ExpectHuey -or $counts.Huey -le 1)) {
+        if ($counts.Api -eq $expectedApi -and $counts.Huey -eq $expectedHuey) {
             Write-Host "Duplicados corregidos." -ForegroundColor Green
             return
         }
@@ -396,7 +396,6 @@ if (Get-Command Stop-MultishopNodoProcesses -ErrorAction SilentlyContinue) {
 }
 Remove-LegacyMultishopAutostart
 Deploy-NodoApiLauncher
-$null = Install-NodoApiOnStartTask
 
 $enableHuey = $false
 $envPath = Join-Path $NodoDir ".env"
@@ -406,10 +405,9 @@ if (Test-Path -LiteralPath $envPath) {
         $enableHuey = $true
     }
 }
-if ($enableHuey) {
-    Install-NodoHueyAutostart
-} else {
-    Remove-NodoHueyAutostart
+
+if (Get-Command Set-MultishopOnStartTasksEnabled -ErrorAction SilentlyContinue) {
+    Set-MultishopOnStartTasksEnabled -Enabled $false
 }
 
 if ($StartNow) {
@@ -418,10 +416,24 @@ if ($StartNow) {
     }
     Start-NodoApiBackground
     if ($enableHuey) { Start-NodoHueyBackground }
+    Assert-MultishopSingleInstance -NodoDirPath $NodoDir -ExpectHuey:$enableHuey -AllowSelfHeal
+}
+
+$null = Install-NodoApiOnStartTask
+if ($enableHuey) {
+    Install-NodoHueyAutostart
+} else {
+    Remove-NodoHueyAutostart
+}
+
+if (Get-Command Set-MultishopOnStartTasksEnabled -ErrorAction SilentlyContinue) {
+    Set-MultishopOnStartTasksEnabled -Enabled $true
 }
 
 Show-MultishopScheduledTasks
-Assert-MultishopSingleInstance -NodoDirPath $NodoDir -ExpectHuey:$enableHuey -AllowSelfHeal
+if (-not $StartNow) {
+    Assert-MultishopSingleInstance -NodoDirPath $NodoDir -ExpectHuey:$enableHuey
+}
 
 Write-Host ""
 Write-Host "Autostart: Multishop-Nodo-API + Multishop-Nodo-Huey (ONSTART SYSTEM)."

@@ -92,13 +92,22 @@ function Test-MultishopNodoApiProcessRunning {
         [Parameter(Mandatory = $true)]
         [string]$NodoDir
     )
+    $counts = Get-MultishopNodoLeaderCounts -NodoDir $NodoDir
+    if ($counts.Api -lt 1) { return 0 }
     foreach ($wp in Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue) {
         $cmd = ($wp.CommandLine -as [string])
         if (-not $cmd) { continue }
+        if ($cmd -notmatch 'main\.py') { continue }
         if (-not (Test-IsMultishopNodoProcess -CommandLine $cmd -NodoDir $NodoDir)) { continue }
-        if ($cmd -match 'main\.py') {
-            return [int]$wp.ProcessId
+        $parentId = [int]$wp.ParentProcessId
+        if ($parentId -gt 0) {
+            $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$parentId" -ErrorAction SilentlyContinue
+            $parentCmd = ($parent.CommandLine -as [string])
+            if ($parentCmd -and (Test-IsMultishopNodoProcess -CommandLine $parentCmd -NodoDir $NodoDir) -and $parentCmd -match 'main\.py') {
+                continue
+            }
         }
+        return [int]$wp.ProcessId
     }
     return 0
 }
@@ -108,13 +117,22 @@ function Test-MultishopHueyProcessRunning {
         [Parameter(Mandatory = $true)]
         [string]$NodoDir
     )
+    $counts = Get-MultishopNodoLeaderCounts -NodoDir $NodoDir
+    if ($counts.Huey -lt 1) { return 0 }
     foreach ($wp in Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue) {
         $cmd = ($wp.CommandLine -as [string])
         if (-not $cmd) { continue }
+        if ($cmd -notmatch 'huey_consumer') { continue }
         if (-not (Test-IsMultishopNodoProcess -CommandLine $cmd -NodoDir $NodoDir)) { continue }
-        if ($cmd -match 'huey_consumer') {
-            return [int]$wp.ProcessId
+        $parentId = [int]$wp.ParentProcessId
+        if ($parentId -gt 0) {
+            $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$parentId" -ErrorAction SilentlyContinue
+            $parentCmd = ($parent.CommandLine -as [string])
+            if ($parentCmd -and (Test-IsMultishopNodoProcess -CommandLine $parentCmd -NodoDir $NodoDir) -and $parentCmd -match 'huey_consumer') {
+                continue
+            }
         }
+        return [int]$wp.ProcessId
     }
     return 0
 }
@@ -124,19 +142,94 @@ function Get-MultishopNodoProcessCounts {
         [Parameter(Mandatory = $true)]
         [string]$NodoDir
     )
-    $api = 0
-    $huey = 0
+    return (Get-MultishopNodoLeaderCounts -NodoDir $NodoDir)
+}
+
+function Get-MultishopNodoLeaderCounts {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDir
+    )
+    $nodoLower = $NodoDir.TrimEnd('\').ToLowerInvariant()
+    $matches = @()
     foreach ($wp in Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue) {
         $cmd = ($wp.CommandLine -as [string])
         if (-not $cmd) { continue }
-        if (-not (Test-IsMultishopNodoProcess -CommandLine $cmd -NodoDir $NodoDir)) { continue }
-        if ($cmd -match 'main\.py') {
-            $api++
-        } elseif ($cmd -match 'huey_consumer') {
-            $huey++
+        if ($cmd.ToLowerInvariant() -notlike "*$nodoLower*") { continue }
+        $kind = $null
+        if ($cmd -match 'main\.py') { $kind = 'api' }
+        elseif ($cmd -match 'huey_consumer') { $kind = 'huey' }
+        if (-not $kind) { continue }
+        $matches += [PSCustomObject]@{
+            ProcessId = [int]$wp.ProcessId
+            ParentProcessId = [int]$wp.ParentProcessId
+            Kind = $kind
+            CommandLine = $cmd
         }
     }
+
+    $api = 0
+    $huey = 0
+    foreach ($m in $matches) {
+        $parentIsNodoPython = $false
+        if ($m.ParentProcessId -gt 0) {
+            $parent = $matches | Where-Object { $_.ProcessId -eq $m.ParentProcessId } | Select-Object -First 1
+            if ($parent) {
+                $parentIsNodoPython = $true
+            }
+        }
+        if ($parentIsNodoPython) { continue }
+        if ($m.Kind -eq 'api') { $api++ } else { $huey++ }
+    }
     return @{ Api = $api; Huey = $huey }
+}
+
+function Wait-MultishopNodoProcessesStopped {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDir,
+        [int]$TimeoutSec = 25
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        $counts = Get-MultishopNodoLeaderCounts -NodoDir $NodoDir
+        if ($counts.Api -eq 0 -and $counts.Huey -eq 0) {
+            return $true
+        }
+        Stop-MultishopNodoProcesses -NodoDir $NodoDir
+        Start-Sleep -Seconds 1
+    }
+    return $false
+}
+
+function Set-MultishopOnStartTasksEnabled {
+    param([bool]$Enabled)
+    foreach ($name in @('Multishop-Nodo-API', 'Multishop-Nodo-Huey')) {
+        if (-not (Test-MultishopScheduledTaskExists -Name $name)) { continue }
+        if ($Enabled) {
+            if (Get-Command Enable-ScheduledTask -ErrorAction SilentlyContinue) {
+                Enable-ScheduledTask -TaskName $name -TaskPath '\' -ErrorAction SilentlyContinue | Out-Null
+            }
+            Invoke-MultishopSchTasksQuiet @("/Change", "/TN", $name, "/ENABLE") | Out-Null
+        } else {
+            Disable-MultishopScheduledTaskNamed -Name $name | Out-Null
+        }
+    }
+}
+
+function Invoke-PrepareMultishopStartNow {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDirPath
+    )
+    Write-Host "Preparando arranque unico (legacy off + stop + espera) ..."
+    Disable-MultishopLogonTasks | Out-Null
+    Remove-MultishopNodoScheduledTasks -Scope LogonOnly -Quiet | Out-Null
+    Set-MultishopOnStartTasksEnabled -Enabled $false
+    Stop-MultishopNodoProcesses -NodoDir $NodoDirPath
+    if (-not (Wait-MultishopNodoProcessesStopped -NodoDir $NodoDirPath)) {
+        Write-Warning "Algunos procesos Multishop siguen activos tras espera; continuando."
+    }
 }
 
 function Invoke-MultishopSchTasksQuiet {
@@ -202,19 +295,6 @@ function Disable-MultishopLogonTasks {
         }
     }
     return $count
-}
-
-function Invoke-PrepareMultishopStartNow {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$NodoDirPath
-    )
-    Write-Host "Preparando arranque unico (Logon off + detener procesos duplicados) ..."
-    Disable-MultishopLogonTasks | Out-Null
-    Remove-MultishopNodoScheduledTasks -Scope LogonOnly -Quiet | Out-Null
-    Stop-MultishopNodoProcesses -NodoDir $NodoDirPath
-    Start-Sleep -Seconds 2
-    Stop-MultishopNodoProcesses -NodoDir $NodoDirPath
 }
 
 function Remove-MultishopScheduledTaskNamed {

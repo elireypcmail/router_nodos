@@ -73,7 +73,7 @@ function Start-MultishopHueyConsumer {
     Write-HueyStartLog "Starting: $venvPython -m huey.bin.huey_consumer huey_tasks.huey (cwd $NodoDirPath)"
 
     $proc = Start-Process -FilePath $venvPython `
-        -ArgumentList @("-m", "huey.bin.huey_consumer", "huey_tasks.huey") `
+        -ArgumentList @("-m", "huey.bin.huey_consumer", "-w", "1", "huey_tasks.huey") `
         -WorkingDirectory $NodoDirPath `
         -WindowStyle Hidden `
         -RedirectStandardOutput $logOut `
