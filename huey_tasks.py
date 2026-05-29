@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import timedelta
 import logging
 from typing import Any
 
@@ -70,11 +69,14 @@ def send_outbox_batch() -> dict[str, Any]:
 
 @huey.task()
 def enqueue_outbox() -> None:
-    send_outbox_batch()
-    huey.enqueue_in(
-        timedelta(seconds=float(settings.huey_outbox_enqueue_interval_seconds)),
-        enqueue_outbox,
-    )
+    try:
+        send_outbox_batch()
+    finally:
+        # SqliteHuey (huey 2.x): use TaskWrapper.schedule(), not huey.enqueue_in().
+        delay_sec = max(
+            1, int(float(settings.huey_outbox_enqueue_interval_seconds))
+        )
+        enqueue_outbox.schedule(delay=delay_sec)
 
 
 @huey.task(retries=3, retry_delay=30)
