@@ -119,6 +119,26 @@ function Test-MultishopHueyProcessRunning {
     return 0
 }
 
+function Get-MultishopNodoProcessCounts {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDir
+    )
+    $api = 0
+    $huey = 0
+    foreach ($wp in Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue) {
+        $cmd = ($wp.CommandLine -as [string])
+        if (-not $cmd) { continue }
+        if (-not (Test-IsMultishopNodoProcess -CommandLine $cmd -NodoDir $NodoDir)) { continue }
+        if ($cmd -match 'main\.py') {
+            $api++
+        } elseif ($cmd -match 'huey_consumer') {
+            $huey++
+        }
+    }
+    return @{ Api = $api; Huey = $huey }
+}
+
 function Invoke-MultishopStartMutex {
     param(
         [Parameter(Mandatory = $true)]

@@ -613,6 +613,22 @@ if (-not $SkipApiAutostart) {
     if (Test-Path -LiteralPath $apiAuto) {
         Write-Host ""
         Write-Host "Registrando autostart API (tareas ONSTART + ONLOGON) ..." -ForegroundColor Cyan
+        $ver = Select-String -Path $apiAuto -Pattern 'MultishopWindowsInstallVersion\s*=\s*"([^"]+)"' |
+            ForEach-Object { $_.Matches[0].Groups[1].Value } |
+            Select-Object -First 1
+        if ($ver) {
+            Write-Host "  nodo-api-windows-install.ps1 version: $ver"
+        } else {
+            Write-Warning "  nodo-api-windows-install.ps1 sin version (bundle viejo)."
+        }
+        $envHelper = Join-Path $ScriptsDir 'nodo-env.ps1'
+        if (Test-Path -LiteralPath $envHelper) {
+            . $envHelper
+            if (Get-Command Stop-MultishopNodoProcesses -ErrorAction SilentlyContinue) {
+                Write-Host "  Deteniendo procesos Multishop antes de registrar autostart ..."
+                Stop-MultishopNodoProcesses -NodoDir $NodoDir
+            }
+        }
         $args = @(
             "-NoProfile",
             "-ExecutionPolicy", "Bypass",
