@@ -25,7 +25,15 @@ BEGIN
   IF str IS NULL THEN
     RETURN NULL;
   END IF;
-  RETURN REPLACE(REPLACE(REPLACE(REPLACE(str, '\\\\', '\\\\\\\\'), '"', '\\\\"'), CHAR(10), '\\\\n'), CHAR(13), '\\\\r');
+  RETURN REPLACE(
+    REPLACE(
+      REPLACE(
+        REPLACE(
+          REPLACE(str, '\\\\', '\\\\\\\\'),
+          '"', '\\\\"'),
+        CHAR(10), '\\\\n'),
+      CHAR(13), '\\\\r'),
+    CHAR(9), '\\\\t');
 END$$
 
 CREATE FUNCTION ms_json_str(str TEXT)

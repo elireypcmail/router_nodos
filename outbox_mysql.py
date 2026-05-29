@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from db_mysql import MySqlClient
+from json_util import loads_outbox_json
 
 
 @dataclass(frozen=True)
@@ -121,13 +122,23 @@ class OutboxRepository:
             rows = cur.fetchall() or []
             events: list[OutboxEvent] = []
             for r in rows:
+                oid = int(r["id"])
                 events.append(
                     OutboxEvent(
-                        id=int(r["id"]),
+                        id=oid,
                         table_name=str(r["table_name"]),
                         op=str(r["op"]),
-                        pk=json.loads(r["pk_json"]),
-                        row=json.loads(r["row_json"]) if r.get("row_json") else None,
+                        pk=loads_outbox_json(
+                            r["pk_json"], context=f"outbox_id={oid} pk_json"
+                        ),
+                        row=(
+                            loads_outbox_json(
+                                r["row_json"],
+                                context=f"outbox_id={oid} row_json",
+                            )
+                            if r.get("row_json")
+                            else None
+                        ),
                         created_at=self._to_iso(r["created_at"]),
                     )
                 )
@@ -173,13 +184,23 @@ class OutboxRepository:
 
             events: list[OutboxEvent] = []
             for r in rows:
+                oid = int(r["id"])
                 events.append(
                     OutboxEvent(
-                        id=int(r["id"]),
+                        id=oid,
                         table_name=str(r["table_name"]),
                         op=str(r["op"]),
-                        pk=json.loads(r["pk_json"]),
-                        row=json.loads(r["row_json"]) if r.get("row_json") else None,
+                        pk=loads_outbox_json(
+                            r["pk_json"], context=f"outbox_id={oid} pk_json"
+                        ),
+                        row=(
+                            loads_outbox_json(
+                                r["row_json"],
+                                context=f"outbox_id={oid} row_json",
+                            )
+                            if r.get("row_json")
+                            else None
+                        ),
                         created_at=self._to_iso(r["created_at"]),
                     )
                 )
@@ -344,7 +365,10 @@ class OutboxRepository:
                         "id": int(r["id"]),
                         "table": str(r["table_name"]),
                         "op": str(r["op"]),
-                        "pk": json.loads(r["pk_json"]),
+                        "pk": loads_outbox_json(
+                            r["pk_json"],
+                            context=f"outbox_id={int(r['id'])} pk_json",
+                        ),
                         "status": str(r["status"]),
                         "attempts": int(r.get("attempts") or 0),
                         "last_error": r.get("last_error"),
@@ -404,7 +428,10 @@ class OutboxRepository:
                         "id": int(r["id"]),
                         "table": str(r["table_name"]),
                         "op": str(r["op"]),
-                        "pk": json.loads(r["pk_json"]),
+                        "pk": loads_outbox_json(
+                            r["pk_json"],
+                            context=f"outbox_id={int(r['id'])} pk_json",
+                        ),
                         "created_at": self._to_iso(r["created_at"]),
                         "attempts": int(r.get("attempts") or 0),
                         "last_error": r.get("last_error"),
