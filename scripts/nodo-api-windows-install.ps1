@@ -12,7 +12,7 @@ param(
     [switch]$StartNow
 )
 
-$MultishopWindowsInstallVersion = "20260530.1"
+$MultishopWindowsInstallVersion = "20260530.2"
 
 $ErrorActionPreference = "Stop"
 
@@ -200,28 +200,53 @@ function Test-NodoInProgramFiles {
     return $false
 }
 
+function Copy-ItemIfDifferent {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+        [Parameter(Mandatory = $true)]
+        [string]$Destination
+    )
+    if (-not (Test-Path -LiteralPath $Source)) {
+        return $false
+    }
+    $src = (Resolve-Path -LiteralPath $Source).Path
+    $destParent = Split-Path -Parent $Destination
+    if ($destParent -and -not (Test-Path -LiteralPath $destParent)) {
+        New-Item -ItemType Directory -Path $destParent -Force | Out-Null
+    }
+    if (Test-Path -LiteralPath $Destination) {
+        $dst = (Resolve-Path -LiteralPath $Destination).Path
+        if ($src -ieq $dst) {
+            return $false
+        }
+    }
+    Copy-Item -LiteralPath $src -Destination $Destination -Force
+    return $true
+}
+
 function Deploy-NodoApiLauncher {
     Ensure-MultishopDeployDir -Path $DeployDir
     Set-Content -LiteralPath $DirFile -Value $NodoDir -Encoding ASCII -NoNewline -Force
     Set-Content -LiteralPath $TunnelFile -Value $TunnelName -Encoding ASCII -NoNewline -Force
-    Copy-Item $SourceScript $DeployedScript -Force
+    Copy-ItemIfDifferent -Source $SourceScript -Destination $DeployedScript | Out-Null
     if (Test-Path -LiteralPath $SourceEnvHelper) {
-        Copy-Item $SourceEnvHelper $DeployedEnvHelper -Force
+        Copy-ItemIfDifferent -Source $SourceEnvHelper -Destination $DeployedEnvHelper | Out-Null
     }
     $hueySource = Join-Path $PSScriptRoot "start-nodo-huey.ps1"
     if (Test-Path -LiteralPath $hueySource) {
-        Copy-Item $hueySource (Join-Path $DeployDir "start-nodo-huey.ps1") -Force
+        Copy-ItemIfDifferent -Source $hueySource -Destination (Join-Path $DeployDir "start-nodo-huey.ps1") | Out-Null
     }
     $nodoScriptsDir = Join-Path $NodoDir "scripts"
     if (Test-Path -LiteralPath $nodoScriptsDir) {
-        Copy-Item $SourceScript (Join-Path $nodoScriptsDir "start-nodo-api.ps1") -Force
+        Copy-ItemIfDifferent -Source $SourceScript -Destination (Join-Path $nodoScriptsDir "start-nodo-api.ps1") | Out-Null
         if (Test-Path -LiteralPath $SourceEnvHelper) {
-            Copy-Item $SourceEnvHelper (Join-Path $nodoScriptsDir "nodo-env.ps1") -Force
+            Copy-ItemIfDifferent -Source $SourceEnvHelper -Destination (Join-Path $nodoScriptsDir "nodo-env.ps1") | Out-Null
         }
         if (Test-Path -LiteralPath $hueySource) {
-            Copy-Item $hueySource (Join-Path $nodoScriptsDir "start-nodo-huey.ps1") -Force
+            Copy-ItemIfDifferent -Source $hueySource -Destination (Join-Path $nodoScriptsDir "start-nodo-huey.ps1") | Out-Null
         }
-        Copy-Item $PSCommandPath (Join-Path $nodoScriptsDir "nodo-api-windows-install.ps1") -Force
+        Copy-ItemIfDifferent -Source $PSCommandPath -Destination (Join-Path $nodoScriptsDir "nodo-api-windows-install.ps1") | Out-Null
     }
     $vbsLines = @(
         'Set sh = CreateObject("Wscript.Shell")'
