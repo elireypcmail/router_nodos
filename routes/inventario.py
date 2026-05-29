@@ -212,7 +212,8 @@ def _upsert_item(body: InventarioUpsertRequest) -> None:
     conn = mysql.connect()
     try:
         cur = conn.cursor()
-        upsert_sinv(cur, body.model_dump())
+        payload = body.model_dump(exclude_unset=True)
+        upsert_sinv(cur, payload, patch_keys=set(payload.keys()))
         conn.commit()
     except Exception:
         conn.rollback()

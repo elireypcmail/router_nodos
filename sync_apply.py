@@ -4,7 +4,7 @@ from typing import Any
 
 from categoria_trace import trace, trace_exc
 from db_mysql import MySqlClient
-from sinv_store import delete_sinv, upsert_sinv
+from sinv_store import delete_sinv, prepare_sinv_upsert, upsert_sinv
 from sprv_store import delete_sprv, upsert_sprv
 from sync_store import SyncEvent
 
@@ -134,7 +134,7 @@ class SyncApplier:
             if event.action == "delete":
                 delete_sinv(cur, codigo)
             else:
-                upsert_sinv(cur, row)
+                upsert_sinv(cur, prepare_sinv_upsert(row))
             conn.commit()
         except Exception:
             conn.rollback()

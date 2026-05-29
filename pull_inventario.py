@@ -14,8 +14,18 @@ from pull_inventory_deps import (
     inventory_missing_refs,
 )
 from pull_worker import pull_all_products
-from sinv_compare import sinv_diff_fields, sinv_snapshots_equal
-from sinv_store import SINV_HUB_FIELDS, upsert_sinv
+from sinv_compare import (
+    sinv_diff_fields,
+    sinv_empty_field_patch,
+    sinv_snapshots_equal,
+)
+from sinv_store import (
+    SINV_PULL_FETCH_FIELDS,
+    augment_sinv_patch,
+    prepare_sinv_upsert,
+    sinv_local_empty_patch,
+    upsert_sinv,
+)
 from pull_catalog_common import chunked
 
 
@@ -26,7 +36,7 @@ def fetch_sinv_snapshots_by_codigos(
     if not codigos:
         return {}
 
-    col_list = ", ".join(SINV_HUB_FIELDS)
+    col_list = ", ".join(SINV_PULL_FETCH_FIELDS)
 
     def load():
         conn = mysql.connect()
@@ -61,7 +71,7 @@ def _process_inventory_pull(
     *,
     hub_catego: dict[str, dict],
     hub_prv: dict[str, dict],
-) -> tuple[int, int, list[dict], list[dict]]:
+) -> tuple[int, int, int, list[dict], list[dict]]:
     local_sinv = fetch_sinv_snapshots_by_codigos(mysql, list(hub_by_codigo.keys()))
     all_ccates = [
         str(it.get("ccate") or "").strip()
@@ -77,11 +87,13 @@ def _process_inventory_pull(
     local_prv = fetch_codes_existing(mysql, "sprv", "cod_prv", all_prv)
 
     to_insert: list[dict] = []
+    to_patch: list[dict] = []
     conflicts: list[dict] = []
     missing_deps: list[dict] = []
     unchanged = 0
 
     for codigo, hub_row in hub_by_codigo.items():
+        hub_row = prepare_sinv_upsert(hub_row)
         missing = inventory_missing_refs(
             hub_row,
             local_ccates=local_ccates,
@@ -108,8 +120,18 @@ def _process_inventory_pull(
         if node_row is None:
             to_insert.append(hub_row)
             continue
+
+        local_patch = sinv_local_empty_patch(hub_row, node_row)
         if sinv_snapshots_equal(hub_row, node_row):
-            unchanged += 1
+            if local_patch:
+                to_patch.append(local_patch)
+            else:
+                unchanged += 1
+            continue
+
+        patch = sinv_empty_field_patch(hub_row, node_row)
+        if patch:
+            to_patch.append(augment_sinv_patch(patch))
             continue
         conflicts.append(
             {
@@ -124,7 +146,8 @@ def _process_inventory_pull(
         )
 
     inserted = 0
-    if to_insert:
+    patched = 0
+    if to_insert or to_patch:
         conn = mysql.connect()
         try:
             cur = conn.cursor()
@@ -139,6 +162,10 @@ def _process_inventory_pull(
                 )
                 upsert_sinv(cur, row)
                 inserted += 1
+            for patch in to_patch:
+                keys = {k for k in patch if k != "codigo"}
+                upsert_sinv(cur, patch, patch_keys=keys)
+                patched += 1
             conn.commit()
         except Exception:
             conn.rollback()
@@ -146,7 +173,7 @@ def _process_inventory_pull(
         finally:
             conn.close()
 
-    return inserted, unchanged, conflicts, missing_deps
+    return inserted, patched, unchanged, conflicts, missing_deps
 
 
 async def run_inventory_pull_from_hub(
@@ -201,7 +228,7 @@ async def run_inventory_pull_from_hub(
         hub, missing_ccates, missing_prvs
     )
 
-    inserted, unchanged, conflicts, missing_deps = await anyio.to_thread.run_sync(
+    inserted, patched, unchanged, conflicts, missing_deps = await anyio.to_thread.run_sync(
         lambda: _process_inventory_pull(
             mysql,
             hub_by_codigo,
@@ -218,6 +245,7 @@ async def run_inventory_pull_from_hub(
     return {
         "pulled": len(hub_by_codigo),
         "inserted": inserted,
+        "patched": patched,
         "unchanged": unchanged,
         "conflicts": len(conflicts),
         "missing_dependencies": len(missing_deps),

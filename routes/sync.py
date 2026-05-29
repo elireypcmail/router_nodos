@@ -27,7 +27,7 @@ from pull_inventory_deps import (
     fetch_row_dependencies_from_hub,
 )
 from pull_catalog_common import fetch_codes_existing
-from sinv_store import delete_sinv, upsert_sinv
+from sinv_store import delete_sinv, prepare_sinv_upsert, upsert_sinv
 from sprv_store import delete_sprv, upsert_sprv
 from sync_models import SyncApplyRequest
 from sync_store import SyncEvent
@@ -233,7 +233,7 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
                             local_ccates=local_ccates,
                             local_prv=local_prv,
                         )
-                    upsert_sinv(cur, row)
+                    upsert_sinv(cur, prepare_sinv_upsert(row))
                 conn.commit()
             except Exception:
                 conn.rollback()

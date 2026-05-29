@@ -73,3 +73,36 @@ def sinv_diff_fields(hub_row: dict, node_row: dict) -> list[str]:
     hub_n = normalize_sinv_snapshot(hub_row)
     node_n = normalize_sinv_snapshot(node_row)
     return [k for k in SINV_HUB_FIELDS if hub_n.get(k) != node_n.get(k)]
+
+
+# Texto vacío en tienda que el pull puede rellenar desde el hub sin warning.
+SINV_FILL_EMPTY_TEXT_FIELDS = frozenset({"barra", "referencia", "componente"})
+
+
+def sinv_empty_field_patch(hub_row: dict, node_row: dict) -> dict[str, Any] | None:
+    """
+    Si el hub tiene datos y la tienda los tiene vacíos (p. ej. barra), devuelve
+    fila parcial para upsert. None si hay conflicto real o no hay nada que rellenar.
+    """
+    hub_n = normalize_sinv_snapshot(hub_row)
+    node_n = normalize_sinv_snapshot(node_row)
+    patch: dict[str, Any] = {"codigo": hub_n["codigo"]}
+    changed = False
+
+    for key in SINV_HUB_FIELDS:
+        if key == "codigo":
+            continue
+        hub_val = hub_n.get(key)
+        node_val = node_n.get(key)
+        if hub_val == node_val:
+            continue
+        if key in SINV_FILL_EMPTY_TEXT_FIELDS:
+            if str(node_val or "").strip():
+                return None
+            if str(hub_val or "").strip():
+                patch[key] = hub_val
+                changed = True
+            continue
+        return None
+
+    return patch if changed else None

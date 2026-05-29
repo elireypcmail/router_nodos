@@ -63,7 +63,7 @@ async def run_inventory_pull_from_file(
         hub, missing_ccates, missing_prvs
     )
 
-    inserted, unchanged, conflicts, missing_deps = await anyio.to_thread.run_sync(
+    inserted, patched, unchanged, conflicts, missing_deps = await anyio.to_thread.run_sync(
         lambda: _process_inventory_pull(
             mysql,
             hub_by_codigo,
@@ -84,6 +84,7 @@ async def run_inventory_pull_from_file(
     return {
         "pulled": total,
         "inserted": inserted,
+        "patched": patched,
         "unchanged": unchanged,
         "conflicts": len(conflicts),
         "missing_dependencies": len(missing_deps),
