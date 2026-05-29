@@ -150,14 +150,20 @@ function Remove-NodoApiTaskNamed {
     }
 }
 
+function Remove-NodoApiLogonTask {
+    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-API-Logon"
+}
+
 function Remove-NodoApiTasksLegacy {
     Remove-NodoApiTaskNamed -Name "Multishop-Nodo-API"
-    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-API-Logon"
+    Remove-NodoApiLogonTask
     Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey"
+    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey-Logon"
 }
 
 function Remove-NodoHueyAutostart {
     Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey"
+    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey-Logon"
     $hueyDeployed = Join-Path $DeployDir "start-nodo-huey.ps1"
     $hueyVbs = Join-Path $DeployDir "start-nodo-huey.vbs"
     if (Test-Path $hueyDeployed) { Remove-Item $hueyDeployed -Force }
@@ -168,7 +174,7 @@ function Install-NodoHueyAutostart {
     $hueyScript = Join-Path $PSScriptRoot "start-nodo-huey.ps1"
     $hueyDeployed = Join-Path $DeployDir "start-nodo-huey.ps1"
     if (-not (Test-Path -LiteralPath $hueyScript)) {
-        Write-Warning "No se encontro $hueyScript; Huey consumer no se registrara."
+        Write-Warning "Missing $hueyScript; Huey consumer task will not be registered."
         return
     }
     Copy-Item $hueyScript $hueyDeployed -Force
@@ -179,26 +185,51 @@ function Install-NodoHueyAutostart {
     )
     Set-Content -Path $hueyVbs -Value ($vbsHuey -join "`r`n") -Encoding ASCII -Force
     $hueyTr = 'wscript.exe //nologo "' + $hueyVbs + '"'
+
     Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey"
-    $output = & schtasks.exe @(
+    $onStartArgs = @(
         "/Create", "/TN", "Multishop-Nodo-Huey", "/SC", "ONSTART",
         "/TR", $hueyTr, "/RU", "SYSTEM", "/RL", "HIGHEST", "/DELAY", "0002:00", "/F"
-    ) 2>&1
+    )
+    $onStartOut = & schtasks.exe @onStartArgs 2>&1
     if ($LASTEXITCODE -ne 0) {
-        Write-Warning "schtasks Multishop-Nodo-Huey fallo: $output"
+        Write-Warning "schtasks Multishop-Nodo-Huey ONSTART failed: $onStartOut"
     } else {
-        Write-Host "Tarea Multishop-Nodo-Huey registrada (ONSTART, consumer outbox + sync jobs)."
+        Write-Host "Task Multishop-Nodo-Huey registered (ONSTART, ~2 min delay)."
+    }
+
+    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey-Logon"
+    $runUser = "$env:USERDOMAIN\$env:USERNAME"
+    $logonDelay = Format-SchTasksDelay -Seconds 60
+    $onLogonArgs = @(
+        "/Create", "/TN", "Multishop-Nodo-Huey-Logon", "/SC", "ONLOGON",
+        "/TR", $hueyTr, "/RU", $runUser, "/RL", "HIGHEST", "/DELAY", $logonDelay, "/IT", "/F"
+    )
+    $onLogonOut = & schtasks.exe @onLogonArgs 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "schtasks Multishop-Nodo-Huey-Logon failed: $onLogonOut"
+    } else {
+        Write-Host "Task Multishop-Nodo-Huey-Logon registered (ONLOGON, delay $logonDelay)."
     }
 }
 
 function Start-NodoHueyBackground {
-    $hueyVbs = Join-Path $DeployDir "start-nodo-huey.vbs"
-    if (-not (Test-Path -LiteralPath $hueyVbs)) {
-        Write-Warning "Huey no desplegado; omitiendo arranque inmediato."
+    $hueyScript = Join-Path $DeployDir "start-nodo-huey.ps1"
+    if (-not (Test-Path -LiteralPath $hueyScript)) {
+        $hueyScript = Join-Path $PSScriptRoot "start-nodo-huey.ps1"
+    }
+    if (-not (Test-Path -LiteralPath $hueyScript)) {
+        Write-Warning "Huey launcher not found; skipping immediate start."
         return
     }
-    Start-Process -FilePath "wscript.exe" -ArgumentList @("//nologo", $hueyVbs) -WindowStyle Hidden
-    Write-Host "Huey consumer iniciado en segundo plano." -ForegroundColor Green
+    try {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $hueyScript -NodoDir $NodoDir
+        Write-Host "Huey consumer start requested (see $DeployDir\nodo-huey-start.log)." -ForegroundColor Green
+    } catch {
+        Write-Host "Could not start Huey: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "See $DeployDir\nodo-huey-start.log and nodo-huey.err.log"
+        throw
+    }
 }
 
 function Get-StartupFolderVbs {
@@ -293,9 +324,9 @@ function Install-NodoApiScheduledTask {
         throw "Comando /TR demasiado largo ($($trCmd.Length) chars, max 261)"
     }
 
-    Remove-NodoApiTasksLegacy
+    Remove-NodoApiLogonTask
 
-    $runUser = "$env:USERDOMAIN\\$env:USERNAME"
+    $runUser = "$env:USERDOMAIN\$env:USERNAME"
     $delay = Format-SchTasksDelay -Seconds $LogonDelaySeconds
     $schArgs = @(
         "/Create",
@@ -373,7 +404,8 @@ if ($StartNow) {
 }
 
 Write-Host ""
-Write-Host "Tras REINICIAR: API (ONSTART/ONLOGON) y Huey consumer (ONSTART si HUEY_ENABLED=true)."
+Write-Host "Tras REINICIAR: API ONSTART (SYSTEM) + ONLOGON (usuario); sin carpeta Inicio (evita duplicados)."
+Write-Host "Huey consumer: ONSTART + ONLOGON si HUEY_ENABLED=true."
 Write-Host "Revise: Get-Content $DeployDir\\nodo-api-start.log -Tail 20"
 Write-Host ""
 Write-Host "Probar ahora:"

@@ -612,7 +612,7 @@ if (-not $SkipApiAutostart) {
     $apiAuto = Join-Path $ScriptsDir 'nodo-api-windows-install.ps1'
     if (Test-Path -LiteralPath $apiAuto) {
         Write-Host ""
-        Write-Host "Registrando autostart API (tareas + carpeta Inicio) ..." -ForegroundColor Cyan
+        Write-Host "Registrando autostart API (tareas ONSTART + ONLOGON) ..." -ForegroundColor Cyan
         $args = @(
             "-NoProfile",
             "-ExecutionPolicy", "Bypass",

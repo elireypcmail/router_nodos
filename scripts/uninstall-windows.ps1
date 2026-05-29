@@ -40,7 +40,8 @@ $LocalAppDataDir = Join-Path $env:LOCALAPPDATA "Multishop"
 $ApiTaskNames = @(
     "Multishop-Nodo-API",
     "Multishop-Nodo-API-Logon",
-    "Multishop-Nodo-Huey"
+    "Multishop-Nodo-Huey",
+    "Multishop-Nodo-Huey-Logon"
 )
 $WgResumeTaskNames = @(
     "Multishop-WG-Resume",

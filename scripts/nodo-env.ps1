@@ -75,7 +75,7 @@ function Test-IsMultishopNodoProcess {
     if ($cmdLower -notlike "*$nodoLower*") {
         return $false
     }
-    if ($cmdLower -match 'main\.py') {
+    if ($cmdLower -match '(^|\s|")main\.py(\s|$|")') {
         return $true
     }
     if ($cmdLower -match 'huey\.bin\.huey_consumer') {
@@ -85,6 +85,22 @@ function Test-IsMultishopNodoProcess {
         return $true
     }
     return $false
+}
+
+function Test-MultishopNodoApiProcessRunning {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDir
+    )
+    foreach ($wp in Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue) {
+        $cmd = ($wp.CommandLine -as [string])
+        if (-not $cmd) { continue }
+        if (-not (Test-IsMultishopNodoProcess -CommandLine $cmd -NodoDir $NodoDir)) { continue }
+        if ($cmd -match 'main\.py') {
+            return [int]$wp.ProcessId
+        }
+    }
+    return 0
 }
 
 function Stop-MultishopNodoProcesses {

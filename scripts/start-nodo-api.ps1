@@ -122,6 +122,14 @@ function Start-MultishopNodoApi {
 
         $apiPort = Get-MultishopNodoApiPort -NodoDir $NodoDir
 
+        if (Get-Command Test-MultishopNodoApiProcessRunning -ErrorAction SilentlyContinue) {
+            $existingPid = Test-MultishopNodoApiProcessRunning -NodoDir $NodoDir
+            if ($existingPid -gt 0) {
+                Write-NodoApiLog "API ya corre (PID $existingPid); no se inicia otra instancia."
+                return
+            }
+        }
+
         if (Test-NodoApiPortOpen -Port $apiPort) {
             Write-NodoApiLog "API ya escucha en puerto $apiPort; no se inicia otra instancia."
             return
