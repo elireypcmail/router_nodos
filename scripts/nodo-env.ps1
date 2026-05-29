@@ -60,3 +60,77 @@ function Get-MultishopNodoApiPort {
     Write-Warning "NODO_PORT invalido en .env ($raw); usando $DefaultPort"
     return $DefaultPort
 }
+
+function Test-IsMultishopNodoProcess {
+    param(
+        [AllowNull()][string]$CommandLine,
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDir
+    )
+    if ([string]::IsNullOrWhiteSpace($CommandLine)) {
+        return $false
+    }
+    $cmdLower = $CommandLine.ToLowerInvariant()
+    $nodoLower = $NodoDir.TrimEnd('\').ToLowerInvariant()
+    if ($cmdLower -notlike "*$nodoLower*") {
+        return $false
+    }
+    if ($cmdLower -match 'main\.py') {
+        return $true
+    }
+    if ($cmdLower -match 'huey\.bin\.huey_consumer') {
+        return $true
+    }
+    if ($cmdLower -match 'huey_consumer') {
+        return $true
+    }
+    return $false
+}
+
+function Stop-MultishopNodoProcesses {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDir
+    )
+    $nodoDir = $NodoDir.TrimEnd('\')
+    $apiPort = Get-MultishopNodoApiPort -NodoDir $nodoDir
+    $stoppedIds = @{}
+
+    $pythonProcs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -in @('python.exe', 'pythonw.exe') }
+
+    foreach ($wp in $pythonProcs) {
+        if (-not (Test-IsMultishopNodoProcess -CommandLine $wp.CommandLine -NodoDir $nodoDir)) {
+            continue
+        }
+        Write-Host "Stopping Multishop nodo PID $($wp.ProcessId) ..."
+        Stop-Process -Id $wp.ProcessId -Force -ErrorAction SilentlyContinue
+        $stoppedIds[$wp.ProcessId] = $true
+    }
+
+    try {
+        $listeners = @(
+            Get-NetTCPConnection -LocalPort $apiPort -State Listen -ErrorAction SilentlyContinue
+        ) | Where-Object { $_ }
+        foreach ($conn in $listeners) {
+            $procId = $conn.OwningProcess
+            if (-not $procId -or $stoppedIds.ContainsKey($procId)) {
+                continue
+            }
+            $wp = Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction SilentlyContinue
+            if ($wp -and (Test-IsMultishopNodoProcess -CommandLine $wp.CommandLine -NodoDir $nodoDir)) {
+                Write-Host "Stopping Multishop API PID $procId (port $apiPort) ..."
+                Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+                $stoppedIds[$procId] = $true
+            } else {
+                Write-Host "Skipping PID $procId on port $apiPort (not Multishop nodo API)."
+            }
+        }
+    } catch {
+        # Get-NetTCPConnection may be unavailable on some Windows editions
+    }
+
+    if ($stoppedIds.Count -gt 0) {
+        Start-Sleep -Seconds 2
+    }
+}

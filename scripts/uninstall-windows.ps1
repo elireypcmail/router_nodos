@@ -39,7 +39,8 @@ $LocalAppDataDir = Join-Path $env:LOCALAPPDATA "Multishop"
 
 $ApiTaskNames = @(
     "Multishop-Nodo-API",
-    "Multishop-Nodo-API-Logon"
+    "Multishop-Nodo-API-Logon",
+    "Multishop-Nodo-Huey"
 )
 $WgResumeTaskNames = @(
     "Multishop-WG-Resume",
@@ -180,43 +181,16 @@ function Remove-SchTaskNamed {
 
 function Stop-NodoApiProcesses {
     param([string]$NodoDirPath)
-    $venvRoot = Join-Path $NodoDirPath "venv"
-    $venvPy = Join-Path $venvRoot "Scripts\python.exe"
-    $stopped = 0
-    $apiPort = 8443
-    if (Get-Command Get-MultishopNodoApiPort -ErrorAction SilentlyContinue) {
-        $apiPort = Get-MultishopNodoApiPort -NodoDir $NodoDirPath
+    $envHelper = Join-Path $ScriptsDir "nodo-env.ps1"
+    if (-not (Test-Path -LiteralPath $envHelper)) {
+        $envHelper = Join-Path $ProgramDataDir "nodo-env.ps1"
     }
-
-    try {
-        $listeners = Get-NetTCPConnection -LocalPort $apiPort -State Listen -ErrorAction SilentlyContinue
-        foreach ($conn in $listeners) {
-            if (-not $conn.OwningProcess) { continue }
-            Write-Host "Deteniendo PID $($conn.OwningProcess) (puerto $apiPort / NODO_PORT) ..."
-            Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue
-            $stopped++
-        }
-    } catch {
-        # Get-NetTCPConnection puede fallar en algunas ediciones Windows
+    if (Test-Path -LiteralPath $envHelper) {
+        . $envHelper
+        Stop-MultishopNodoProcesses -NodoDir $NodoDirPath
+        return
     }
-
-    foreach ($proc in Get-Process python, pythonw -ErrorAction SilentlyContinue) {
-        $procPath = $null
-        try { $procPath = $proc.Path } catch { continue }
-        if (-not $procPath) { continue }
-        $underVenv = $procPath.StartsWith($venvRoot, [StringComparison]::OrdinalIgnoreCase)
-        $isVenvPy = $procPath -ieq $venvPy
-        $underNodo = $procPath.StartsWith($NodoDirPath, [StringComparison]::OrdinalIgnoreCase)
-        if ($isVenvPy -or $underVenv -or $underNodo) {
-            Write-Host "Deteniendo Python PID $($proc.Id) ..."
-            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-            $stopped++
-        }
-    }
-
-    if ($stopped -gt 0) {
-        Start-Sleep -Seconds 2
-    }
+    Write-Warning "nodo-env.ps1 not found; skipping targeted process stop."
 }
 
 function Remove-NodoApiAutostart {
