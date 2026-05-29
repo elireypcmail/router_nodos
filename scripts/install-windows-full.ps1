@@ -671,8 +671,8 @@ if (-not $SkipApiAutostart) {
         if (-not $NoStart) {
             $args += "-StartNow"
         }
-        & powershell.exe @args | Out-Host
-        $apiInstallExit = $LASTEXITCODE
+        $proc = Start-Process -FilePath "powershell.exe" -ArgumentList $args -Wait -PassThru -NoNewWindow
+        $apiInstallExit = if ($proc) { $proc.ExitCode } else { 1 }
         if ($apiInstallExit -ne 0) {
             throw "nodo-api-windows-install.ps1 fallo (exit $apiInstallExit). Revise ProgramData\Multishop\*.log"
         }
@@ -683,11 +683,15 @@ if (-not $SkipApiAutostart) {
                 Start-Sleep -Seconds 2
                 $counts = Get-MultishopNodoProcessCounts -NodoDir $NodoDir
                 Write-Host "  Verificacion post-install: API=$($counts.Api) Huey=$($counts.Huey)"
+                if ($counts.Api -gt 1 -or $counts.Huey -gt 1) {
+                    Write-Warning "Procesos duplicados (API=$($counts.Api) Huey=$($counts.Huey)). Re-ejecute nodo-api-windows-install.ps1 -StartNow para consolidar."
+                }
                 if ($counts.Api -lt 1) {
                     throw "La API no arranco tras -StartNow. Revise C:\ProgramData\Multishop\nodo-api-start.log y nodo-api.err.log"
                 }
             }
         }
+        Write-Host "  Autostart registrado." -ForegroundColor Green
     }
 }
 

@@ -249,14 +249,7 @@ function Get-MultishopScheduledTaskEntries {
     param([string]$Name)
     $plain = Get-MultishopScheduledTaskPlainName -Name $Name
     if (-not $plain) { return @() }
-    $found = @()
-    if (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue) {
-        $found = @(Get-ScheduledTask -ErrorAction SilentlyContinue |
-            Where-Object { $_.TaskName -eq $plain })
-    }
-    if ($found.Count -gt 0) {
-        return $found
-    }
+
     foreach ($tn in @($plain, "\$plain")) {
         if (Invoke-MultishopSchTasksQuiet @("/Query", "/TN", $tn) -eq 0) {
             return @([PSCustomObject]@{
@@ -264,6 +257,11 @@ function Get-MultishopScheduledTaskEntries {
                     TaskPath = '\'
                 })
         }
+    }
+
+    if (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue) {
+        $task = Get-ScheduledTask -TaskName $plain -TaskPath '\' -ErrorAction SilentlyContinue
+        if ($task) { return @($task) }
     }
     return @()
 }

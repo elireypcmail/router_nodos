@@ -12,7 +12,7 @@ param(
     [switch]$StartNow
 )
 
-$MultishopWindowsInstallVersion = "20260530.2"
+$MultishopWindowsInstallVersion = "20260530.3"
 
 $ErrorActionPreference = "Stop"
 
@@ -262,9 +262,6 @@ function Install-NodoApiOnStartTask {
         Write-Warning "Autostart ONSTART omitido: el nodo no esta en Program Files."
         return $false
     }
-    if (Get-Command Set-MultishopOnStartTasksEnabled -ErrorAction SilentlyContinue) {
-        Set-MultishopOnStartTasksEnabled -Enabled $false
-    }
     $trCmd = 'wscript.exe //nologo "' + $DeployedVbs + '"'
     Remove-NodoApiTaskNamed -Name $TaskNameOnStart | Out-Null
     $output = & schtasks.exe @(
@@ -282,9 +279,6 @@ function Install-NodoApiOnStartTask {
 function Install-NodoHueyAutostart {
     if (-not (Test-NodoInProgramFiles -Path $NodoDir)) {
         return
-    }
-    if (Get-Command Set-MultishopOnStartTasksEnabled -ErrorAction SilentlyContinue) {
-        Set-MultishopOnStartTasksEnabled -Enabled $false
     }
     $hueyScript = Join-Path $PSScriptRoot "start-nodo-huey.ps1"
     if (-not (Test-Path -LiteralPath $hueyScript)) {
@@ -312,7 +306,9 @@ function Install-NodoHueyAutostart {
 }
 
 function Start-NodoApiBackground {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $DeployedScript
+    Start-Process -FilePath "powershell.exe" `
+        -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", $DeployedScript) `
+        -WindowStyle Hidden
     Write-Host "API iniciada en segundo plano." -ForegroundColor Green
     Write-Host "Log: $DeployDir\nodo-api-start.log"
 }
@@ -322,7 +318,9 @@ function Start-NodoHueyBackground {
     if (-not (Test-Path -LiteralPath $hueyScript)) {
         $hueyScript = Join-Path $PSScriptRoot "start-nodo-huey.ps1"
     }
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $hueyScript -NodoDir $NodoDir
+    Start-Process -FilePath "powershell.exe" `
+        -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", $hueyScript, "-NodoDir", $NodoDir) `
+        -WindowStyle Hidden
     Write-Host "Huey consumer start requested (see $DeployDir\nodo-huey-start.log)." -ForegroundColor Green
 }
 
@@ -408,10 +406,6 @@ if ($enableHuey) {
     Install-NodoHueyAutostart
 } else {
     Remove-NodoHueyAutostart
-}
-
-if (Get-Command Set-MultishopOnStartTasksEnabled -ErrorAction SilentlyContinue) {
-    Set-MultishopOnStartTasksEnabled -Enabled $true
 }
 
 Show-MultishopScheduledTasks
