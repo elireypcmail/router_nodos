@@ -284,7 +284,7 @@ function Remove-MultishopScheduledTaskIfExists {
 }
 
 function Remove-AllMultishopScheduledTasks {
-    Write-Host "  Eliminando tareas Multishop residuales antes de autostart ..."
+    Write-Host "  Eliminando tareas Multishop (ONSTART + legacy Logon) ..."
     $envHelper = Join-Path $ScriptsDir 'nodo-env.ps1'
     if (Test-Path -LiteralPath $envHelper) {
         . $envHelper
@@ -295,8 +295,8 @@ function Remove-AllMultishopScheduledTasks {
     }
     foreach ($taskName in @(
             "Multishop-Nodo-API",
-            "Multishop-Nodo-API-Logon",
             "Multishop-Nodo-Huey",
+            "Multishop-Nodo-API-Logon",
             "Multishop-Nodo-Huey-Logon"
         )) {
         Remove-MultishopScheduledTaskIfExists -Name $taskName
@@ -653,7 +653,7 @@ if (-not $SkipApiAutostart) {
     $apiAuto = Join-Path $ScriptsDir 'nodo-api-windows-install.ps1'
     if (Test-Path -LiteralPath $apiAuto) {
         Write-Host ""
-        Write-Host "Registrando autostart API (tareas ONSTART + ONLOGON) ..." -ForegroundColor Cyan
+        Write-Host "Registrando autostart API (solo ONSTART en Program Files) ..." -ForegroundColor Cyan
         $ver = Select-String -Path $apiAuto -Pattern 'MultishopWindowsInstallVersion\s*=\s*"([^"]+)"' |
             ForEach-Object { $_.Matches[0].Groups[1].Value } |
             Select-Object -First 1

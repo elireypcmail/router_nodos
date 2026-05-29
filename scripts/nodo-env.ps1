@@ -170,6 +170,53 @@ function Test-MultishopScheduledTaskExists {
     return $false
 }
 
+function Disable-MultishopScheduledTaskNamed {
+    param([string]$Name)
+    $plain = Get-MultishopScheduledTaskPlainName -Name $Name
+    if (-not $plain) { return $false }
+    if (-not (Test-MultishopScheduledTaskExists -Name $plain)) { return $false }
+
+    $disabled = $false
+    if (Get-Command Disable-ScheduledTask -ErrorAction SilentlyContinue) {
+        try {
+            Disable-ScheduledTask -TaskName $plain -TaskPath '\' -ErrorAction Stop | Out-Null
+            $disabled = $true
+        } catch {
+            $disabled = $false
+        }
+    }
+    foreach ($tn in @($plain, "\$plain")) {
+        if (Invoke-MultishopSchTasksQuiet @("/Change", "/TN", $tn, "/DISABLE") -eq 0) {
+            $disabled = $true
+        }
+    }
+    return $disabled
+}
+
+function Disable-MultishopLogonTasks {
+    $count = 0
+    foreach ($n in @('Multishop-Nodo-API-Logon', 'Multishop-Nodo-Huey-Logon')) {
+        if (Disable-MultishopScheduledTaskNamed -Name $n) {
+            Write-Host "  Logon deshabilitada: $n"
+            $count++
+        }
+    }
+    return $count
+}
+
+function Invoke-PrepareMultishopStartNow {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDirPath
+    )
+    Write-Host "Preparando arranque unico (Logon off + detener procesos duplicados) ..."
+    Disable-MultishopLogonTasks | Out-Null
+    Remove-MultishopNodoScheduledTasks -Scope LogonOnly -Quiet | Out-Null
+    Stop-MultishopNodoProcesses -NodoDir $NodoDirPath
+    Start-Sleep -Seconds 2
+    Stop-MultishopNodoProcesses -NodoDir $NodoDirPath
+}
+
 function Remove-MultishopScheduledTaskNamed {
     param([string]$Name)
     $plain = Get-MultishopScheduledTaskPlainName -Name $Name
@@ -177,6 +224,8 @@ function Remove-MultishopScheduledTaskNamed {
     if (-not (Test-MultishopScheduledTaskExists -Name $plain)) {
         return $false
     }
+
+    Disable-MultishopScheduledTaskNamed -Name $plain | Out-Null
 
     $removed = $false
     if (Get-Command Unregister-ScheduledTask -ErrorAction SilentlyContinue) {

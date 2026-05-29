@@ -39,8 +39,9 @@ $LocalAppDataDir = Join-Path $env:LOCALAPPDATA "Multishop"
 
 $ApiTaskNames = @(
     "Multishop-Nodo-API",
-    "Multishop-Nodo-API-Logon",
     "Multishop-Nodo-Huey",
+    # legacy (instaladores viejos):
+    "Multishop-Nodo-API-Logon",
     "Multishop-Nodo-Huey-Logon"
 )
 $WgResumeTaskNames = @(
@@ -498,7 +499,7 @@ function Show-UninstallPlan {
     Write-Host ""
     Write-Host "Se realizaran estas acciones:"
     Write-Host "  1. Detener API Python (puerto NODO_PORT en .env y venv del nodo)"
-    Write-Host "  2. Quitar tareas: $($ApiTaskNames -join ', ')"
+    Write-Host "  2. Quitar tareas ONSTART: Multishop-Nodo-API, Multishop-Nodo-Huey (+ legacy *-Logon si existen)"
     Write-Host "  3. Quitar tareas: $($WgResumeTaskNames -join ', ')"
     Write-Host "  4. Quitar acceso directo en carpeta Inicio ($StartupVbsName)"
     if (-not $KeepVpn) {
