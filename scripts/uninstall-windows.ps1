@@ -73,7 +73,10 @@ function Test-NodoProjectRoot {
 }
 
 function Resolve-NodoInstallDir {
-    param([string]$InputPath = "")
+    param(
+        [string]$InputPath = "",
+        [switch]$AllowMissing
+    )
     $candidates = @()
     if ($InputPath) {
         $candidates += $InputPath
@@ -108,6 +111,13 @@ function Resolve-NodoInstallDir {
 
     if (Test-Path -LiteralPath $DefaultInstallRoot) {
         return (Resolve-Path -LiteralPath $DefaultInstallRoot).Path.TrimEnd('\\')
+    }
+
+    if ($AllowMissing) {
+        if ($InputPath) {
+            return $InputPath.TrimEnd('\\')
+        }
+        return $DefaultInstallRoot.TrimEnd('\\')
     }
 
     throw "No se encontro la instalacion del nodo (main.py). Use -NodoDir con la ruta correcta."
@@ -173,10 +183,50 @@ function Invoke-SchTasksQuiet {
 
 function Remove-SchTaskNamed {
     param([string]$Name)
-    if (-not $Name) { return }
-    if (Invoke-SchTasksQuiet @("/Query", "/TN", $Name) -eq 0) {
-        Write-Host "Eliminando tarea $Name ..."
-        Invoke-SchTasksQuiet @("/Delete", "/TN", $Name, "/F") | Out-Null
+    if (-not $Name) { return $false }
+    $candidates = @($Name)
+    if (-not $Name.StartsWith("\")) {
+        $candidates += "\$Name"
+    }
+    foreach ($tn in $candidates) {
+        if (Invoke-SchTasksQuiet @("/Query", "/TN", $tn) -ne 0) { continue }
+        Write-Host "Eliminando tarea $tn ..."
+        $code = Invoke-SchTasksQuiet @("/Delete", "/TN", $tn, "/F")
+        if ($code -eq 0) {
+            return $true
+        }
+        Write-Warning "schtasks /Delete fallo (codigo $code) para $tn"
+    }
+    return $false
+}
+
+function Remove-AllMultishopAutostartTasks {
+    $removed = 0
+    foreach ($name in $ApiTaskNames) {
+        if (Remove-SchTaskNamed -Name $name) {
+            $removed++
+        }
+    }
+    foreach ($name in $WgResumeTaskNames) {
+        if (Remove-SchTaskNamed -Name $name) {
+            $removed++
+        }
+    }
+    Write-Host "Tareas Multishop eliminadas: $removed"
+}
+
+function Remove-NodoApiStartupLinks {
+    $startupRoots = @(
+        [Environment]::GetFolderPath("Startup"),
+        [Environment]::GetFolderPath("CommonStartup")
+    )
+    foreach ($startup in $startupRoots) {
+        if (-not $startup) { continue }
+        $dest = Join-Path $startup $StartupVbsName
+        if (Test-Path -LiteralPath $dest) {
+            Remove-Item -LiteralPath $dest -Force
+            Write-Host "Eliminado $dest"
+        }
     }
 }
 
@@ -198,17 +248,27 @@ function Remove-NodoApiAutostart {
     param([string]$InstallRoot)
     $apiScript = Join-Path $ScriptsDir "nodo-api-windows-install.ps1"
     if (Test-Path -LiteralPath $apiScript) {
-        Write-Host "--- Autostart API (nodo-api-windows-install.ps1) ---"
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $apiScript -Uninstall -NodoDir $InstallRoot
+        Write-Host "--- Launchers ProgramData (nodo-api-windows-install.ps1 -Uninstall) ---"
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $apiScript -Uninstall -NodoDir $InstallRoot 2>&1 | Out-Host
+        $ErrorActionPreference = $prev
     } else {
-        Write-Warning "No se encontro nodo-api-windows-install.ps1; eliminando tareas manualmente."
-        foreach ($name in $ApiTaskNames) {
-            Remove-SchTaskNamed -Name $name
-        }
-        $startup = Join-Path ([Environment]::GetFolderPath("Startup")) $StartupVbsName
-        if (Test-Path -LiteralPath $startup) {
-            Remove-Item -LiteralPath $startup -Force
-            Write-Host "Eliminado $startup"
+        Write-Warning "No se encontro nodo-api-windows-install.ps1; omitiendo limpieza ProgramData via script."
+        $toRemove = @(
+            (Join-Path $ProgramDataDir "start-nodo-api.ps1"),
+            (Join-Path $ProgramDataDir "start-nodo-api.vbs"),
+            (Join-Path $ProgramDataDir "start-nodo-huey.ps1"),
+            (Join-Path $ProgramDataDir "start-nodo-huey.vbs"),
+            (Join-Path $ProgramDataDir "nodo-env.ps1"),
+            (Join-Path $ProgramDataDir "nodo-dir.txt"),
+            (Join-Path $ProgramDataDir "tunnel-name.txt")
+        )
+        foreach ($f in $toRemove) {
+            if (Test-Path -LiteralPath $f) {
+                Remove-Item -LiteralPath $f -Force
+                Write-Host "Eliminado $f"
+            }
         }
     }
 }
@@ -470,7 +530,7 @@ Assert-Admin
 $TunnelName = ($TunnelName -replace '\\s', '').Trim()
 if (-not $TunnelName) { $TunnelName = "wg0" }
 
-$NodoInstallDir = Resolve-NodoInstallDir -InputPath $NodoDir
+$NodoInstallDir = Resolve-NodoInstallDir -InputPath $NodoDir -AllowMissing
 Invoke-RelaunchFromTempIfNeeded -InstallRoot $NodoInstallDir
 
 Show-UninstallPlan -InstallRoot $NodoInstallDir -Tunnel $TunnelName
@@ -480,25 +540,24 @@ if (-not (Confirm-UninstallContinue)) {
 }
 
 Write-Host ""
-Write-Host "[1/5] Deteniendo procesos API ..." -ForegroundColor Cyan
+Write-Host "[1/5] Quitando tareas programadas Multishop ..." -ForegroundColor Cyan
+Remove-AllMultishopAutostartTasks
+Remove-NodoApiStartupLinks
+
+Write-Host ""
+Write-Host "[2/5] Deteniendo procesos API ..." -ForegroundColor Cyan
 Stop-NodoApiProcesses -NodoDirPath $NodoInstallDir
 
 Write-Host ""
-Write-Host "[2/5] Quitando autostart API ..." -ForegroundColor Cyan
+Write-Host "[3/5] Quitando autostart API (launchers ProgramData) ..." -ForegroundColor Cyan
 Remove-NodoApiAutostart -InstallRoot $NodoInstallDir
-foreach ($name in $ApiTaskNames) {
-    Remove-SchTaskNamed -Name $name
-}
 
 Write-Host ""
-Write-Host "[3/5] Quitando tareas VPN resume/hibernacion ..." -ForegroundColor Cyan
+Write-Host "[4/5] Quitando tareas VPN resume/hibernacion ..." -ForegroundColor Cyan
 Remove-WgResumeTasks -Tunnel $TunnelName
-foreach ($name in $WgResumeTaskNames) {
-    Remove-SchTaskNamed -Name $name
-}
 
 Write-Host ""
-Write-Host "[4/5] WireGuard y datos Multishop ..." -ForegroundColor Cyan
+Write-Host "[5/5] WireGuard, datos Multishop y archivos del nodo ..." -ForegroundColor Cyan
 if (-not $KeepVpn) {
     Remove-WireGuardVpn -PrimaryName $TunnelName
 } else {
@@ -506,12 +565,23 @@ if (-not $KeepVpn) {
 }
 Remove-MultishopDataDirs
 
-Write-Host ""
-Write-Host "[5/5] Archivos del nodo ..." -ForegroundColor Cyan
 if (-not $KeepProgramFiles) {
     Remove-NodoInstallTree -InstallRoot $NodoInstallDir
 } else {
     Write-Host "Carpeta del nodo conservada (-KeepProgramFiles)."
+}
+
+$leftTasks = @()
+foreach ($name in ($ApiTaskNames + $WgResumeTaskNames)) {
+    if (Invoke-SchTasksQuiet @("/Query", "/TN", $name) -eq 0) {
+        $leftTasks += $name
+    }
+}
+if ($leftTasks.Count -gt 0) {
+    Write-Warning "Tareas residuales (elimine manualmente como admin): $($leftTasks -join ', ')"
+    Write-Host "  schtasks /Delete /TN `"Multishop-Nodo-API`" /F" -ForegroundColor Yellow
+} else {
+    Write-Host "Sin tareas Multishop residuales." -ForegroundColor Green
 }
 
 Write-Host ""

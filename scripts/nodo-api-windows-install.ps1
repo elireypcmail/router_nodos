@@ -114,11 +114,17 @@ $DeployedScript = Join-Path $DeployDir "start-nodo-api.ps1"
 $DeployedEnvHelper = Join-Path $DeployDir "nodo-env.ps1"
 $DeployedVbs = Join-Path $DeployDir "start-nodo-api.vbs"
 
-if (-not (Test-Path $SourceScript)) {
-    Write-Error "No se encontro $SourceScript"
+if (-not $Uninstall) {
+    if (-not (Test-Path $SourceScript)) {
+        Write-Error "No se encontro $SourceScript"
+    }
 }
 
-$NodoDir = Resolve-NodoProjectDir -InputPath $NodoDir
+$NodoDir = if ($Uninstall -and $NodoDir) {
+    $NodoDir.TrimEnd('\')
+} else {
+    Resolve-NodoProjectDir -InputPath $NodoDir
+}
 $TunnelName = ($TunnelName -replace '\\s', '').Trim()
 if (-not $TunnelName) { $TunnelName = "wg0" }
 
