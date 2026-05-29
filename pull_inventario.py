@@ -7,6 +7,12 @@ from typing import Any
 from db_mysql import MySqlClient
 from hub_client import HubClient
 from pull_catalog_common import fetch_codes_existing
+from pull_inventory_deps import (
+    apply_inventory_row_dependencies,
+    collect_missing_dep_codes,
+    fetch_hub_dependency_rows,
+    inventory_missing_refs,
+)
 from pull_worker import pull_all_products
 from sinv_compare import sinv_diff_fields, sinv_snapshots_equal
 from sinv_store import SINV_HUB_FIELDS, upsert_sinv
@@ -49,24 +55,98 @@ def fetch_sinv_snapshots_by_codigos(
     return load()
 
 
-def _inventory_missing_refs(
-    hub_row: dict,
+def _process_inventory_pull(
+    mysql: MySqlClient,
+    hub_by_codigo: dict[str, dict],
     *,
-    local_ccates: set[str],
-    local_prv: set[str],
-) -> dict[str, Any] | None:
-    ccate = str(hub_row.get("ccate") or "").strip()
-    cod_prv = str(hub_row.get("cod_prv") or "").strip()
-    missing_category = bool(ccate) and ccate not in local_ccates
-    missing_provider = bool(cod_prv) and cod_prv not in local_prv
-    if not missing_category and not missing_provider:
-        return None
-    return {
-        "ccate": ccate,
-        "cod_prv": cod_prv,
-        "missingCategory": missing_category,
-        "missingProvider": missing_provider,
-    }
+    hub_catego: dict[str, dict],
+    hub_prv: dict[str, dict],
+) -> tuple[int, int, list[dict], list[dict]]:
+    local_sinv = fetch_sinv_snapshots_by_codigos(mysql, list(hub_by_codigo.keys()))
+    all_ccates = [
+        str(it.get("ccate") or "").strip()
+        for it in hub_by_codigo.values()
+        if str(it.get("ccate") or "").strip()
+    ]
+    all_prv = [
+        str(it.get("cod_prv") or "").strip()
+        for it in hub_by_codigo.values()
+        if str(it.get("cod_prv") or "").strip()
+    ]
+    local_ccates = fetch_codes_existing(mysql, "catego", "ccate", all_ccates)
+    local_prv = fetch_codes_existing(mysql, "sprv", "cod_prv", all_prv)
+
+    to_insert: list[dict] = []
+    conflicts: list[dict] = []
+    missing_deps: list[dict] = []
+    unchanged = 0
+
+    for codigo, hub_row in hub_by_codigo.items():
+        missing = inventory_missing_refs(
+            hub_row,
+            local_ccates=local_ccates,
+            local_prv=local_prv,
+            hub_catego=hub_catego,
+            hub_prv=hub_prv,
+        )
+        if missing:
+            missing_deps.append(
+                {
+                    "direction": "pull",
+                    "entityType": "inventory",
+                    "warningType": "missing_dependency",
+                    "codigo": codigo,
+                    "hubSnapshot": hub_row,
+                    "nodeSnapshot": None,
+                    "diffFields": [],
+                    "missingRefs": missing,
+                }
+            )
+            continue
+
+        node_row = local_sinv.get(codigo)
+        if node_row is None:
+            to_insert.append(hub_row)
+            continue
+        if sinv_snapshots_equal(hub_row, node_row):
+            unchanged += 1
+            continue
+        conflicts.append(
+            {
+                "direction": "pull",
+                "entityType": "inventory",
+                "warningType": "conflict",
+                "codigo": codigo,
+                "hubSnapshot": hub_row,
+                "nodeSnapshot": node_row,
+                "diffFields": sinv_diff_fields(hub_row, node_row),
+            }
+        )
+
+    inserted = 0
+    if to_insert:
+        conn = mysql.connect()
+        try:
+            cur = conn.cursor()
+            for row in to_insert:
+                apply_inventory_row_dependencies(
+                    cur,
+                    row,
+                    hub_catego=hub_catego,
+                    hub_prv=hub_prv,
+                    local_ccates=local_ccates,
+                    local_prv=local_prv,
+                )
+                upsert_sinv(cur, row)
+                inserted += 1
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    return inserted, unchanged, conflicts, missing_deps
 
 
 async def run_inventory_pull_from_hub(
@@ -109,77 +189,25 @@ async def run_inventory_pull_from_hub(
         if cod_prv:
             all_prv.append(cod_prv)
 
-    def process():
-        local_sinv = fetch_sinv_snapshots_by_codigos(mysql, list(hub_by_codigo.keys()))
-        local_ccates = fetch_codes_existing(mysql, "catego", "ccate", all_ccates)
-        local_prv = fetch_codes_existing(mysql, "sprv", "cod_prv", all_prv)
-
-        to_insert: list[dict] = []
-        conflicts: list[dict] = []
-        missing_deps: list[dict] = []
-        unchanged = 0
-
-        for codigo, hub_row in hub_by_codigo.items():
-            missing = _inventory_missing_refs(
-                hub_row,
-                local_ccates=local_ccates,
-                local_prv=local_prv,
-            )
-            if missing:
-                missing_deps.append(
-                    {
-                        "direction": "pull",
-                        "entityType": "inventory",
-                        "warningType": "missing_dependency",
-                        "codigo": codigo,
-                        "hubSnapshot": hub_row,
-                        "nodeSnapshot": None,
-                        "diffFields": [],
-                        "missingRefs": missing,
-                    }
-                )
-                continue
-
-            node_row = local_sinv.get(codigo)
-            if node_row is None:
-                to_insert.append(hub_row)
-                continue
-            if sinv_snapshots_equal(hub_row, node_row):
-                unchanged += 1
-                continue
-            conflicts.append(
-                {
-                    "direction": "pull",
-                    "entityType": "inventory",
-                    "warningType": "conflict",
-                    "codigo": codigo,
-                    "hubSnapshot": hub_row,
-                    "nodeSnapshot": node_row,
-                    "diffFields": sinv_diff_fields(hub_row, node_row),
-                }
-            )
-
-        inserted = 0
-        if to_insert:
-            conn = mysql.connect()
-            try:
-                cur = conn.cursor()
-                for row in to_insert:
-                    upsert_sinv(cur, row)
-                    inserted += 1
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                conn.close()
-
-        return inserted, unchanged, conflicts, missing_deps
-
     import anyio
 
+    def scan_missing_codes():
+        local_ccates = fetch_codes_existing(mysql, "catego", "ccate", all_ccates)
+        local_prv = fetch_codes_existing(mysql, "sprv", "cod_prv", all_prv)
+        return collect_missing_dep_codes(hub_by_codigo, local_ccates, local_prv)
+
+    missing_ccates, missing_prvs = await anyio.to_thread.run_sync(scan_missing_codes)
+    hub_catego, hub_prv = await fetch_hub_dependency_rows(
+        hub, missing_ccates, missing_prvs
+    )
+
     inserted, unchanged, conflicts, missing_deps = await anyio.to_thread.run_sync(
-        process
+        lambda: _process_inventory_pull(
+            mysql,
+            hub_by_codigo,
+            hub_catego=hub_catego,
+            hub_prv=hub_prv,
+        )
     )
 
     reports = conflicts + missing_deps

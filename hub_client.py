@@ -239,6 +239,27 @@ class HubClient:
             trace_exc("hub.get_categoria.failed", exc, url=url, ccate=ccate)
             raise
 
+    async def get_proveedor_in_hub(self, cod_prv: str) -> dict | None:
+        """None si no existe en el hub (404)."""
+        cod_prv = str(cod_prv or "").strip()
+        url = f"{self._base}{settings.hub_nodo_proveedores_path}/{cod_prv}"
+        headers = {"Authorization": f"Bearer {settings.nodo_api_token}"}
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(url, headers=headers)
+                if resp.status_code == 404:
+                    return None
+                resp.raise_for_status()
+                data = resp.json()
+                if isinstance(data, dict):
+                    return data
+                raise RuntimeError("Unexpected hub response when fetching provider")
+        except httpx.HTTPStatusError:
+            raise
+        except Exception as exc:
+            trace_exc("hub.get_proveedor.failed", exc, url=url, cod_prv=cod_prv)
+            raise
+
     async def create_categoria_in_hub(self, payload: dict) -> dict:
         url = f"{self._base}{settings.hub_nodo_categorias_path}"
         ccate = payload.get("ccate")
@@ -434,3 +455,62 @@ class HubClient:
             )
             return data
         raise RuntimeError("Unexpected hub response on push batch")
+
+    async def get_sync_job(self, job_id: str) -> dict:
+        url = f"{self._base}{settings.hub_nodo_sync_jobs_path}/{job_id}"
+        headers = {"Authorization": f"Bearer {settings.nodo_api_token}"}
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, dict):
+                return data
+            return {"jobId": job_id}
+
+    async def patch_sync_job_progress(
+        self, job_id: str, body: dict
+    ) -> dict:
+        url = f"{self._base}{settings.hub_nodo_sync_jobs_path}/{job_id}/progress"
+        headers = {
+            "Authorization": f"Bearer {settings.nodo_api_token}",
+            "Content-Type": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.patch(url, json=json_safe(body), headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, dict):
+                return data
+            return {"ok": True}
+
+    async def upload_sync_job_file(self, job_id: str, file_path) -> dict:
+        from pathlib import Path
+
+        path = Path(file_path)
+        url = f"{self._base}{settings.hub_nodo_sync_jobs_path}/{job_id}/upload"
+        headers = {
+            "Authorization": f"Bearer {settings.nodo_api_token}",
+            "Content-Type": "application/gzip",
+        }
+        async with httpx.AsyncClient(timeout=600.0) as client:
+            with path.open("rb") as fh:
+                resp = await client.post(url, content=fh.read(), headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, dict):
+                return data
+            return {"ok": True}
+
+    async def download_sync_job_file(self, job_id: str, dest_path) -> None:
+        from pathlib import Path
+
+        path = Path(dest_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        url = f"{self._base}{settings.hub_nodo_sync_jobs_path}/{job_id}/download"
+        headers = {"Authorization": f"Bearer {settings.nodo_api_token}"}
+        async with httpx.AsyncClient(timeout=600.0) as client:
+            async with client.stream("GET", url, headers=headers) as resp:
+                resp.raise_for_status()
+                with path.open("wb") as fh:
+                    async for chunk in resp.aiter_bytes():
+                        fh.write(chunk)

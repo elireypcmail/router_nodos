@@ -304,6 +304,35 @@ Install-NodoApiStartupFolder
 Install-NodoApiOnStartTask
 Install-NodoApiScheduledTask
 
+$envPath = Join-Path $NodoDir ".env"
+$enableHuey = $false
+if (Test-Path -LiteralPath $envPath) {
+    $envText = Get-Content -LiteralPath $envPath -Raw
+    if ($envText -match '(?m)^\s*HUEY_ENABLED\s*=\s*true\s*$') {
+        $enableHuey = $true
+    }
+}
+if ($enableHuey) {
+    $hueyScript = Join-Path $PSScriptRoot "start-nodo-huey.ps1"
+    $hueyDeployed = Join-Path $DeployDir "start-nodo-huey.ps1"
+    if (Test-Path -LiteralPath $hueyScript) {
+        Copy-Item $hueyScript $hueyDeployed -Force
+        $hueyVbs = Join-Path $DeployDir "start-nodo-huey.vbs"
+        $vbsHuey = @(
+            'Set sh = CreateObject("Wscript.Shell")'
+            "sh.Run ""powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """"$hueyDeployed"""""", 0, False"
+        )
+        Set-Content -Path $hueyVbs -Value ($vbsHuey -join "`r`n") -Encoding ASCII -Force
+        $hueyTr = 'wscript.exe //nologo "' + $hueyVbs + '"'
+        Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey"
+        $null = schtasks.exe @(
+            "/Create", "/TN", "Multishop-Nodo-Huey", "/SC", "ONSTART",
+            "/TR", $hueyTr, "/RU", "SYSTEM", "/RL", "HIGHEST", "/DELAY", "0002:00", "/F"
+        ) 2>&1
+        Write-Host "Tarea Multishop-Nodo-Huey registrada (ONSTART, HUEY_ENABLED=true)."
+    }
+}
+
 if ($StartNow) {
     Start-NodoApiBackground
 }

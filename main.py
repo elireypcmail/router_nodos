@@ -109,6 +109,13 @@ async def lifespan(_app: FastAPI):
         huey_tasks.enqueue_outbox()
 
     try:
+        from sync_job_recovery import recover_stale_local_jobs
+
+        await recover_stale_local_jobs()
+    except Exception as exc:
+        logger.warning("sync job recovery skipped: %s", exc)
+
+    try:
         yield
     finally:
         if sync_worker:

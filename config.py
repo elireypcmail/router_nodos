@@ -49,7 +49,9 @@ class Settings(BaseSettings):
     hub_nodo_catalog_push_inventario_path: str = (
         "/api/nodo/catalog-push/inventario/batch"
     )
+    hub_nodo_sync_jobs_path: str = "/api/nodo/sync-jobs"
     hub_nodo_categorias_path: str = "/api/nodo/categorias"
+    hub_nodo_proveedores_path: str = "/api/nodo/proveedores"
 
     hub_push_enabled: bool = False
     hub_push_interval_seconds: float = 1.0
@@ -62,6 +64,10 @@ class Settings(BaseSettings):
     huey_outbox_batch_size: int = 200
     huey_outbox_task_retries: int = 30
     huey_outbox_retry_delay_seconds: int = 10
+
+    nodo_sync_jobs_dir: str = "./data/sync-jobs"
+    catalog_sync_progress_throttle_ms: int = 2000
+    huey_catalog_sync_enabled: bool = True
 
     mysql_host: str = ""
     mysql_port: int = 3306

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 
 import anyio
 from pydantic import BaseModel, ConfigDict, Field
@@ -21,6 +22,11 @@ from sync_apply_trace import (
     log_apply_start,
     log_apply_value_error,
 )
+from pull_inventory_deps import (
+    apply_inventory_row_dependencies,
+    fetch_row_dependencies_from_hub,
+)
+from pull_catalog_common import fetch_codes_existing
 from sinv_store import delete_sinv, upsert_sinv
 from sprv_store import delete_sprv, upsert_sprv
 from sync_models import SyncApplyRequest
@@ -192,6 +198,14 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
         if not isinstance(row, dict):
             raise HTTPException(status_code=422, detail="payload.row must be an object")
 
+        hub_catego: dict = {}
+        hub_prv: dict = {}
+        if action != "delete" and settings.hub_base_url.strip():
+            hub = HubClient()
+            hub_catego, hub_prv = await fetch_row_dependencies_from_hub(
+                hub, mysql, row
+            )
+
         def apply_row():
             conn = mysql.connect()
             try:
@@ -202,6 +216,23 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
                         raise RuntimeError("inventory row requires codigo")
                     delete_sinv(cur, codigo)
                 else:
+                    if hub_catego or hub_prv:
+                        ccate = str(row.get("ccate") or "").strip()
+                        cod_prv = str(row.get("cod_prv") or "").strip()
+                        local_ccates = fetch_codes_existing(
+                            mysql, "catego", "ccate", [ccate] if ccate else []
+                        )
+                        local_prv = fetch_codes_existing(
+                            mysql, "sprv", "cod_prv", [cod_prv] if cod_prv else []
+                        )
+                        apply_inventory_row_dependencies(
+                            cur,
+                            row,
+                            hub_catego=hub_catego,
+                            hub_prv=hub_prv,
+                            local_ccates=local_ccates,
+                            local_prv=local_prv,
+                        )
                     upsert_sinv(cur, row)
                 conn.commit()
             except Exception:
@@ -712,6 +743,56 @@ async def sync_push_inicial(_: None = Depends(verify_bearer)):
         "proveedores": prv,
         "inventario": inv,
     }
+
+
+@router.post("/jobs/{job_id}/push/start", status_code=202)
+async def start_catalog_push_job(job_id: str, _: None = Depends(verify_bearer)):
+    if not settings.huey_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="HUEY_ENABLED required for async catalog sync jobs",
+        )
+    from huey_tasks import catalog_push_job
+    from sync_job_store import save_job
+
+    save_job(job_id, {"job_id": job_id, "direction": "push", "status": "pending"})
+    catalog_push_job(job_id)
+    return JSONResponse(
+        status_code=202,
+        content={"jobId": job_id, "status": "pending", "message": "push job enqueued"},
+    )
+
+
+@router.post("/jobs/{job_id}/pull/start", status_code=202)
+async def start_catalog_pull_job(job_id: str, _: None = Depends(verify_bearer)):
+    if not settings.huey_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="HUEY_ENABLED required for async catalog sync jobs",
+        )
+    from huey_tasks import catalog_pull_job
+    from sync_job_store import save_job
+
+    save_job(job_id, {"job_id": job_id, "direction": "pull", "status": "pending"})
+    catalog_pull_job(job_id)
+    return JSONResponse(
+        status_code=202,
+        content={"jobId": job_id, "status": "pending", "message": "pull job enqueued"},
+    )
+
+
+@router.get("/jobs/{job_id}")
+async def get_catalog_job(job_id: str, _: None = Depends(verify_bearer)):
+    from sync_job_store import load_job
+
+    local = load_job(job_id)
+    if local:
+        return local
+    try:
+        hub = HubClient()
+        return await hub.get_sync_job(job_id)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/categorias")

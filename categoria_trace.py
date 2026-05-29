@@ -19,8 +19,9 @@ def is_categoria_entity(entity: str) -> bool:
 
 
 def is_categoria_http_path(path: str) -> bool:
+    """Rutas REST/sync de categorías. /api/sync/events es genérico → no incluir."""
     p = (path or "").lower()
-    return "/categorias" in p or p.rstrip("/") == "/api/sync/events"
+    return "/categorias" in p
 
 
 def _format_fields(fields: dict[str, Any]) -> str:
