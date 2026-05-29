@@ -75,7 +75,16 @@ Disable-MultishopLogonTasks | Out-Null
 
 Write-Host ""
 Write-Host "[3/4] Eliminando tareas ONLOGON e Inicio ..."
-$removed = Remove-MultishopNodoScheduledTasks -Scope LogonOnly
+$removed = 0
+foreach ($taskName in @("Multishop-Nodo-API-Logon", "Multishop-Nodo-Huey-Logon")) {
+    if (Remove-MultishopScheduledTaskNamed -Name $taskName -VerboseFail) {
+        Write-Host "  Tarea eliminada: $taskName"
+        $removed++
+    }
+}
+if ($removed -eq 0) {
+    $null = Remove-MultishopNodoScheduledTasks -Scope LogonOnly -Quiet
+}
 Remove-MultishopStartupVbs
 
 Write-Host ""
@@ -111,16 +120,18 @@ if ($leftLogon.Count -gt 0) {
 if ($StartNow) {
     Write-Host ""
     Write-Host "Arrancando API + Huey (un solo par de procesos) ..."
-    Invoke-PrepareMultishopStartNow -NodoDirPath $NodoDir
-    $installScript = Join-Path $PSScriptRoot "nodo-api-windows-install.ps1"
-    if (-not (Test-Path -LiteralPath $installScript)) {
-        $installScript = Join-Path $NodoDir "scripts\nodo-api-windows-install.ps1"
+    $expectHuey = $false
+    $envPath = Join-Path $NodoDir ".env"
+    if (Test-Path -LiteralPath $envPath) {
+        $envText = Get-Content -LiteralPath $envPath -Raw
+        if ($envText -match '(?m)^\s*HUEY_ENABLED\s*=\s*true\s*$') {
+            $expectHuey = $true
+        }
     }
-    if (Test-Path -LiteralPath $installScript) {
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installScript `
-            -NodoDir $NodoDir -StartNow
+    if (Get-Command Start-MultishopNodoServicesNow -ErrorAction SilentlyContinue) {
+        Start-MultishopNodoServicesNow -NodoDirPath $NodoDir -ExpectHuey:$expectHuey
     } else {
-        Write-Warning "No se encontro nodo-api-windows-install.ps1; arranque manual requerido."
+        Write-Warning "Start-MultishopNodoServicesNow no disponible; actualice nodo-env.ps1."
     }
 } else {
     $counts = Get-MultishopNodoProcessCounts -NodoDir $NodoDir

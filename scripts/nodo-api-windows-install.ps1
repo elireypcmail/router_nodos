@@ -12,7 +12,7 @@ param(
     [switch]$StartNow
 )
 
-$MultishopWindowsInstallVersion = "20260529.2"
+$MultishopWindowsInstallVersion = "20260529.4"
 
 $ErrorActionPreference = "Stop"
 
@@ -245,6 +245,22 @@ function Deploy-NodoApiLauncher {
     if (Test-Path -LiteralPath $SourceEnvHelper) {
         Copy-Item $SourceEnvHelper $DeployedEnvHelper -Force
     }
+    $hueySource = Join-Path $PSScriptRoot "start-nodo-huey.ps1"
+    if (Test-Path -LiteralPath $hueySource) {
+        Copy-Item $hueySource (Join-Path $DeployDir "start-nodo-huey.ps1") -Force
+    }
+    $nodoScriptsDir = Join-Path $NodoDir "scripts"
+    if (Test-Path -LiteralPath $nodoScriptsDir) {
+        Copy-Item $SourceScript (Join-Path $nodoScriptsDir "start-nodo-api.ps1") -Force
+        if (Test-Path -LiteralPath $SourceEnvHelper) {
+            Copy-Item $SourceEnvHelper (Join-Path $nodoScriptsDir "nodo-env.ps1") -Force
+        }
+        if (Test-Path -LiteralPath $hueySource) {
+            Copy-Item $hueySource (Join-Path $nodoScriptsDir "start-nodo-huey.ps1") -Force
+        }
+        Copy-Item $PSCommandPath (Join-Path $nodoScriptsDir "nodo-api-windows-install.ps1") -Force
+        Write-Host "Scripts sincronizados en: $nodoScriptsDir"
+    }
     $vbsLines = @(
         'Set sh = CreateObject("Wscript.Shell")'
         "sh.Run ""powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """"$DeployedScript"""""", 0, False"
@@ -259,6 +275,9 @@ function Install-NodoApiOnStartTask {
     if (-not (Test-NodoInProgramFiles -Path $NodoDir)) {
         Write-Warning "Autostart ONSTART omitido: el nodo no esta en Program Files. Use -StartNow o instale con install-windows.cmd."
         return $false
+    }
+    if (Get-Command Set-MultishopOnStartTasksEnabled -ErrorAction SilentlyContinue) {
+        Set-MultishopOnStartTasksEnabled -Enabled $false
     }
     $trCmd = 'wscript.exe //nologo "' + $DeployedVbs + '"'
     Remove-NodoApiTaskNamed -Name $TaskNameOnStart | Out-Null
@@ -277,6 +296,9 @@ function Install-NodoApiOnStartTask {
 function Install-NodoHueyAutostart {
     if (-not (Test-NodoInProgramFiles -Path $NodoDir)) {
         return
+    }
+    if (Get-Command Set-MultishopOnStartTasksEnabled -ErrorAction SilentlyContinue) {
+        Set-MultishopOnStartTasksEnabled -Enabled $false
     }
     $hueyScript = Join-Path $PSScriptRoot "start-nodo-huey.ps1"
     if (-not (Test-Path -LiteralPath $hueyScript)) {

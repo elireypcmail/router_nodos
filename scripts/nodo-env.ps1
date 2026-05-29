@@ -151,7 +151,7 @@ function Get-MultishopNodoLeaderCounts {
         [string]$NodoDir
     )
     $nodoLower = $NodoDir.TrimEnd('\').ToLowerInvariant()
-    $matches = @()
+    $nodoPythonProcs = @()
     foreach ($wp in Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue) {
         $cmd = ($wp.CommandLine -as [string])
         if (-not $cmd) { continue }
@@ -160,7 +160,7 @@ function Get-MultishopNodoLeaderCounts {
         if ($cmd -match 'main\.py') { $kind = 'api' }
         elseif ($cmd -match 'huey_consumer') { $kind = 'huey' }
         if (-not $kind) { continue }
-        $matches += [PSCustomObject]@{
+        $nodoPythonProcs += [PSCustomObject]@{
             ProcessId = [int]$wp.ProcessId
             ParentProcessId = [int]$wp.ParentProcessId
             Kind = $kind
@@ -170,10 +170,10 @@ function Get-MultishopNodoLeaderCounts {
 
     $api = 0
     $huey = 0
-    foreach ($m in $matches) {
+    foreach ($m in $nodoPythonProcs) {
         $parentIsNodoPython = $false
         if ($m.ParentProcessId -gt 0) {
-            $parent = $matches | Where-Object { $_.ProcessId -eq $m.ParentProcessId } | Select-Object -First 1
+            $parent = $nodoPythonProcs | Where-Object { $_.ProcessId -eq $m.ParentProcessId } | Select-Object -First 1
             if ($parent) {
                 $parentIsNodoPython = $true
             }
@@ -247,40 +247,58 @@ function Get-MultishopScheduledTaskPlainName {
     return (($Name -replace '^\\', '').Trim())
 }
 
-function Test-MultishopScheduledTaskExists {
+function Get-MultishopScheduledTaskEntries {
     param([string]$Name)
     $plain = Get-MultishopScheduledTaskPlainName -Name $Name
-    if (-not $plain) { return $false }
+    if (-not $plain) { return @() }
+    $found = @()
     if (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue) {
-        $task = Get-ScheduledTask -TaskName $plain -TaskPath '\' -ErrorAction SilentlyContinue
-        if ($task) { return $true }
+        $found = @(Get-ScheduledTask -ErrorAction SilentlyContinue |
+            Where-Object { $_.TaskName -eq $plain })
+    }
+    if ($found.Count -gt 0) {
+        return $found
     }
     foreach ($tn in @($plain, "\$plain")) {
         if (Invoke-MultishopSchTasksQuiet @("/Query", "/TN", $tn) -eq 0) {
-            return $true
+            return @([PSCustomObject]@{
+                    TaskName = $plain
+                    TaskPath = '\'
+                })
         }
     }
-    return $false
+    return @()
+}
+
+function Test-MultishopScheduledTaskExists {
+    param([string]$Name)
+    return ((Get-MultishopScheduledTaskEntries -Name $Name).Count -gt 0)
 }
 
 function Disable-MultishopScheduledTaskNamed {
     param([string]$Name)
     $plain = Get-MultishopScheduledTaskPlainName -Name $Name
     if (-not $plain) { return $false }
-    if (-not (Test-MultishopScheduledTaskExists -Name $plain)) { return $false }
+    $entries = Get-MultishopScheduledTaskEntries -Name $plain
+    if ($entries.Count -eq 0) { return $false }
 
     $disabled = $false
-    if (Get-Command Disable-ScheduledTask -ErrorAction SilentlyContinue) {
-        try {
-            Disable-ScheduledTask -TaskName $plain -TaskPath '\' -ErrorAction Stop | Out-Null
-            $disabled = $true
-        } catch {
-            $disabled = $false
+    foreach ($entry in $entries) {
+        $taskName = $entry.TaskName
+        $taskPath = if ($entry.TaskPath) { $entry.TaskPath } else { '\' }
+        if (Get-Command Disable-ScheduledTask -ErrorAction SilentlyContinue) {
+            try {
+                Disable-ScheduledTask -TaskName $taskName -TaskPath $taskPath -ErrorAction Stop | Out-Null
+                $disabled = $true
+            } catch {
+                # fallback schtasks
+            }
         }
-    }
-    foreach ($tn in @($plain, "\$plain")) {
-        if (Invoke-MultishopSchTasksQuiet @("/Change", "/TN", $tn, "/DISABLE") -eq 0) {
-            $disabled = $true
+        foreach ($tn in @("$taskPath$taskName", $taskName, "\$taskName") | Select-Object -Unique) {
+            if (-not $tn) { continue }
+            if (Invoke-MultishopSchTasksQuiet @("/Change", "/TN", $tn, "/DISABLE") -eq 0) {
+                $disabled = $true
+            }
         }
     }
     return $disabled
@@ -298,45 +316,73 @@ function Disable-MultishopLogonTasks {
 }
 
 function Remove-MultishopScheduledTaskNamed {
-    param([string]$Name)
+    param(
+        [string]$Name,
+        [switch]$VerboseFail
+    )
     $plain = Get-MultishopScheduledTaskPlainName -Name $Name
     if (-not $plain) { return $false }
-    if (-not (Test-MultishopScheduledTaskExists -Name $plain)) {
+    $entries = Get-MultishopScheduledTaskEntries -Name $plain
+    if ($entries.Count -eq 0) {
         return $false
     }
 
     Disable-MultishopScheduledTaskNamed -Name $plain | Out-Null
+    $removedAny = $false
+    $lastErr = ""
 
-    $removed = $false
-    if (Get-Command Unregister-ScheduledTask -ErrorAction SilentlyContinue) {
-        try {
-            if (Get-Command Stop-ScheduledTask -ErrorAction SilentlyContinue) {
-                Stop-ScheduledTask -TaskName $plain -TaskPath '\' -ErrorAction SilentlyContinue | Out-Null
-                Start-Sleep -Milliseconds 500
+    foreach ($entry in $entries) {
+        $taskName = $entry.TaskName
+        $taskPath = if ($entry.TaskPath) { $entry.TaskPath } else { '\' }
+
+        if (Get-Command Stop-ScheduledTask -ErrorAction SilentlyContinue) {
+            Stop-ScheduledTask -TaskName $taskName -TaskPath $taskPath -ErrorAction SilentlyContinue | Out-Null
+            Start-Sleep -Milliseconds 400
+        }
+
+        $entryRemoved = $false
+        if (Get-Command Unregister-ScheduledTask -ErrorAction SilentlyContinue) {
+            try {
+                Unregister-ScheduledTask -TaskName $taskName -TaskPath $taskPath -Confirm:$false -ErrorAction Stop
+                $entryRemoved = $true
+            } catch {
+                $lastErr = $_.Exception.Message
             }
-            Unregister-ScheduledTask -TaskName $plain -TaskPath '\' -Confirm:$false -ErrorAction Stop
-            $removed = $true
-        } catch {
-            $removed = $false
+        }
+
+        if (-not $entryRemoved) {
+            $tnCandidates = @(
+                "$taskPath$taskName".Replace('//', '/'),
+                "$taskPath$taskName",
+                $taskName,
+                "\$taskName"
+            ) | Select-Object -Unique
+            foreach ($tn in $tnCandidates) {
+                if (-not $tn) { continue }
+                Invoke-MultishopSchTasksQuiet @("/End", "/TN", $tn) | Out-Null
+                Start-Sleep -Milliseconds 400
+                $out = schtasks.exe @("/Delete", "/TN", $tn, "/F") 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    $entryRemoved = $true
+                    break
+                }
+                $lastErr = ($out | Out-String).Trim()
+            }
+        }
+
+        if ($entryRemoved) {
+            $removedAny = $true
         }
     }
 
-    if (-not $removed) {
-        foreach ($tn in @($plain, "\$plain")) {
-            if (Invoke-MultishopSchTasksQuiet @("/Query", "/TN", $tn) -ne 0) { continue }
-            Invoke-MultishopSchTasksQuiet @("/End", "/TN", $tn) | Out-Null
-            Start-Sleep -Milliseconds 500
-            if (Invoke-MultishopSchTasksQuiet @("/Delete", "/TN", $tn, "/F") -eq 0) {
-                $removed = $true
-                break
-            }
-        }
+    if (-not $removedAny -and $VerboseFail -and $lastErr) {
+        Write-Warning "No se pudo eliminar tarea $plain : $lastErr"
     }
 
-    if ($removed -and (Test-MultishopScheduledTaskExists -Name $plain)) {
+    if ($removedAny -and (Test-MultishopScheduledTaskExists -Name $plain)) {
         return $false
     }
-    return $removed
+    return $removedAny
 }
 
 function Remove-MultishopNodoScheduledTasks {
@@ -395,6 +441,24 @@ function Invoke-MultishopStartMutex {
     }
 }
 
+function Stop-MultishopNodoLaunchers {
+    param([string]$NodoDir)
+    $nodoLower = $NodoDir.TrimEnd('\').ToLowerInvariant()
+    foreach ($procName in @('wscript.exe', 'powershell.exe')) {
+        foreach ($wp in Get-CimInstance Win32_Process -Filter "Name='$procName'" -ErrorAction SilentlyContinue) {
+            $cmd = ($wp.CommandLine -as [string])
+            if (-not $cmd) { continue }
+            $cmdLower = $cmd.ToLowerInvariant()
+            $isLauncher = $false
+            if ($cmdLower -match 'multishop|start-nodo-api|start-nodo-huey') { $isLauncher = $true }
+            if ($nodoLower -and $cmdLower -like "*$nodoLower*") { $isLauncher = $true }
+            if (-not $isLauncher) { continue }
+            Write-Host "Stopping Multishop launcher PID $($wp.ProcessId) ($procName) ..."
+            Stop-Process -Id $wp.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Stop-MultishopNodoProcesses {
     param(
         [Parameter(Mandatory = $true)]
@@ -403,6 +467,8 @@ function Stop-MultishopNodoProcesses {
     $nodoDir = $NodoDir.TrimEnd('\')
     $apiPort = Get-MultishopNodoApiPort -NodoDir $nodoDir
     $stoppedIds = @{}
+
+    Stop-MultishopNodoLaunchers -NodoDir $nodoDir
 
     $pythonProcs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -in @('python.exe', 'pythonw.exe') }
@@ -440,5 +506,65 @@ function Stop-MultishopNodoProcesses {
 
     if ($stoppedIds.Count -gt 0) {
         Start-Sleep -Seconds 2
+        Stop-MultishopNodoLaunchers -NodoDir $nodoDir
+    }
+}
+
+function Test-MultishopNodoApiPortListening {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDir
+    )
+    $port = Get-MultishopNodoApiPort -NodoDir $NodoDir
+    try {
+        $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+        return ($null -ne $conn)
+    } catch {
+        return $false
+    }
+}
+
+function Start-MultishopNodoServicesNow {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDirPath,
+        [bool]$ExpectHuey = $false
+    )
+    $deployDir = Join-Path $env:ProgramData "Multishop"
+    Invoke-PrepareMultishopStartNow -NodoDirPath $NodoDirPath
+
+    $apiScript = Join-Path $deployDir "start-nodo-api.ps1"
+    if (-not (Test-Path -LiteralPath $apiScript)) {
+        $apiScript = Join-Path $NodoDirPath "scripts\start-nodo-api.ps1"
+    }
+    if (-not (Test-Path -LiteralPath $apiScript)) {
+        throw "No se encontro start-nodo-api.ps1 (ProgramData\Multishop ni $NodoDirPath\scripts)"
+    }
+
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $apiScript
+    Write-Host "API iniciada en segundo plano." -ForegroundColor Green
+    Write-Host "Log: $deployDir\nodo-api-start.log"
+
+    if ($ExpectHuey) {
+        $hueyScript = Join-Path $deployDir "start-nodo-huey.ps1"
+        if (-not (Test-Path -LiteralPath $hueyScript)) {
+            $hueyScript = Join-Path $NodoDirPath "scripts\start-nodo-huey.ps1"
+        }
+        if (-not (Test-Path -LiteralPath $hueyScript)) {
+            throw "No se encontro start-nodo-huey.ps1"
+        }
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $hueyScript -NodoDir $NodoDirPath
+        Write-Host "Huey consumer start requested (see $deployDir\nodo-huey-start.log)." -ForegroundColor Green
+    }
+
+    Start-Sleep -Seconds 4
+    $counts = Get-MultishopNodoProcessCounts -NodoDir $NodoDirPath
+    $expectedHuey = if ($ExpectHuey) { 1 } else { 0 }
+    Write-Host "Procesos Multishop: API=$($counts.Api) Huey=$($counts.Huey) (esperado API=1 Huey=$expectedHuey)"
+    if ($counts.Api -ne 1 -or $counts.Huey -ne $expectedHuey) {
+        throw "Multishop nodo: procesos incorrectos (API=$($counts.Api) Huey=$($counts.Huey))"
+    }
+    if (-not (Test-MultishopNodoApiPortListening -NodoDir $NodoDirPath)) {
+        throw "Multishop nodo: API no escucha en el puerto configurado."
     }
 }
