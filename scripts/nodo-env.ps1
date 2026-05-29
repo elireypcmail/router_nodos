@@ -315,6 +315,23 @@ function Disable-MultishopLogonTasks {
     return $count
 }
 
+function Get-MultishopSchTasksTnCandidates {
+    param(
+        [string]$TaskPath,
+        [string]$TaskName
+    )
+    $candidates = New-Object 'System.Collections.Generic.List[string]'
+    $plain = Get-MultishopScheduledTaskPlainName -Name $TaskName
+    if (-not $plain) { return @() }
+    if ($TaskPath -and $TaskPath -ne '\') {
+        $full = ($TaskPath.TrimEnd('\') + '\' + $plain)
+        [void]$candidates.Add($full)
+    }
+    [void]$candidates.Add("\$plain")
+    [void]$candidates.Add($plain)
+    return @($candidates | Select-Object -Unique)
+}
+
 function Remove-MultishopScheduledTaskNamed {
     param(
         [string]$Name,
@@ -322,14 +339,17 @@ function Remove-MultishopScheduledTaskNamed {
     )
     $plain = Get-MultishopScheduledTaskPlainName -Name $Name
     if (-not $plain) { return $false }
-    $entries = Get-MultishopScheduledTaskEntries -Name $plain
-    if ($entries.Count -eq 0) {
+    if (-not (Test-MultishopScheduledTaskExists -Name $plain)) {
         return $false
     }
 
     Disable-MultishopScheduledTaskNamed -Name $plain | Out-Null
     $removedAny = $false
     $lastErr = ""
+    $entries = Get-MultishopScheduledTaskEntries -Name $plain
+    if ($entries.Count -eq 0) {
+        $entries = @([PSCustomObject]@{ TaskName = $plain; TaskPath = '\' })
+    }
 
     foreach ($entry in $entries) {
         $taskName = $entry.TaskName
@@ -351,22 +371,15 @@ function Remove-MultishopScheduledTaskNamed {
         }
 
         if (-not $entryRemoved) {
-            $tnCandidates = @(
-                "$taskPath$taskName".Replace('//', '/'),
-                "$taskPath$taskName",
-                $taskName,
-                "\$taskName"
-            ) | Select-Object -Unique
-            foreach ($tn in $tnCandidates) {
+            foreach ($tn in (Get-MultishopSchTasksTnCandidates -TaskPath $taskPath -TaskName $taskName)) {
                 if (-not $tn) { continue }
+                if (Invoke-MultishopSchTasksQuiet @("/Query", "/TN", $tn) -ne 0) { continue }
                 Invoke-MultishopSchTasksQuiet @("/End", "/TN", $tn) | Out-Null
                 Start-Sleep -Milliseconds 400
-                $out = schtasks.exe @("/Delete", "/TN", $tn, "/F") 2>&1
-                if ($LASTEXITCODE -eq 0) {
+                if (Invoke-MultishopSchTasksQuiet @("/Delete", "/TN", $tn, "/F") -eq 0) {
                     $entryRemoved = $true
                     break
                 }
-                $lastErr = ($out | Out-String).Trim()
             }
         }
 
@@ -375,12 +388,12 @@ function Remove-MultishopScheduledTaskNamed {
         }
     }
 
-    if (-not $removedAny -and $VerboseFail -and $lastErr) {
-        Write-Warning "No se pudo eliminar tarea $plain : $lastErr"
+    if (-not (Test-MultishopScheduledTaskExists -Name $plain)) {
+        return $true
     }
 
-    if ($removedAny -and (Test-MultishopScheduledTaskExists -Name $plain)) {
-        return $false
+    if (-not $removedAny -and $VerboseFail -and $lastErr) {
+        Write-Warning "No se pudo eliminar tarea $plain : $lastErr"
     }
     return $removedAny
 }
