@@ -22,7 +22,13 @@ from db.sinv_compare import (
 from db.sinv_store import (
     SINV_PULL_FETCH_FIELDS,
     augment_sinv_patch,
+    hub_pull_snapshot_with_costs,
+    merge_hub_costs_into_row,
+    parse_hub_cost_fields,
     prepare_sinv_upsert,
+    sinv_cost_node_snapshot,
+    sinv_cost_pull_blocked_lower_fields,
+    sinv_cost_pull_patch,
     sinv_local_empty_patch,
     upsert_sinv,
 )
@@ -90,10 +96,12 @@ def _process_inventory_pull(
     to_patch: list[dict] = []
     conflicts: list[dict] = []
     missing_deps: list[dict] = []
+    cost_lower: list[dict] = []
     unchanged = 0
 
-    for codigo, hub_row in hub_by_codigo.items():
-        hub_row = prepare_sinv_upsert(hub_row)
+    for codigo, hub_raw in hub_by_codigo.items():
+        hub_row = prepare_sinv_upsert(hub_raw)
+        hub_cost = parse_hub_cost_fields(hub_raw)
         missing = inventory_missing_refs(
             hub_row,
             local_ccates=local_ccates,
@@ -117,31 +125,67 @@ def _process_inventory_pull(
             continue
 
         node_row = local_sinv.get(codigo)
+        lower_cost_fields = sinv_cost_pull_blocked_lower_fields(hub_cost, node_row)
+        cost_patch = sinv_cost_pull_patch(hub_cost, node_row)
+
+        def report_cost_lower() -> None:
+            if not lower_cost_fields or node_row is None:
+                return
+            cost_lower.append(
+                {
+                    "direction": "pull",
+                    "entityType": "inventory",
+                    "warningType": "cost_lower",
+                    "codigo": codigo,
+                    "hubSnapshot": hub_pull_snapshot_with_costs(hub_row, hub_raw),
+                    "nodeSnapshot": sinv_cost_node_snapshot(node_row),
+                    "diffFields": lower_cost_fields,
+                }
+            )
+
         if node_row is None:
-            to_insert.append(hub_row)
+            to_insert.append(merge_hub_costs_into_row(hub_row, hub_raw))
             continue
 
         local_patch = sinv_local_empty_patch(hub_row, node_row)
         if sinv_snapshots_equal(hub_row, node_row):
             if local_patch:
-                to_patch.append(local_patch)
+                patch_row: dict = {"codigo": codigo}
+                patch_row.update(local_patch)
+                if cost_patch:
+                    patch_row.update(cost_patch)
+                to_patch.append(augment_sinv_patch(patch_row))
+            elif cost_patch:
+                to_patch.append(
+                    augment_sinv_patch({"codigo": codigo, **cost_patch})
+                )
+            elif lower_cost_fields:
+                report_cost_lower()
             else:
                 unchanged += 1
+            if lower_cost_fields and (local_patch or cost_patch):
+                report_cost_lower()
             continue
 
         patch = sinv_empty_field_patch(hub_row, node_row)
         if patch:
+            if cost_patch:
+                patch.update(cost_patch)
             to_patch.append(augment_sinv_patch(patch))
+            report_cost_lower()
             continue
+        master_diff = sinv_diff_fields(hub_row, node_row)
+        if lower_cost_fields:
+            master_diff = list(dict.fromkeys([*master_diff, *lower_cost_fields]))
         conflicts.append(
             {
                 "direction": "pull",
                 "entityType": "inventory",
                 "warningType": "conflict",
                 "codigo": codigo,
-                "hubSnapshot": hub_row,
+                "hubSnapshot": hub_pull_snapshot_with_costs(hub_row, hub_raw),
                 "nodeSnapshot": node_row,
-                "diffFields": sinv_diff_fields(hub_row, node_row),
+                "diffFields": master_diff,
             }
         )
 
@@ -173,7 +217,7 @@ def _process_inventory_pull(
         finally:
             conn.close()
 
-    return inserted, patched, unchanged, conflicts, missing_deps
+    return inserted, patched, unchanged, conflicts, missing_deps, cost_lower
 
 
 async def run_inventory_pull_from_hub(
@@ -228,16 +272,18 @@ async def run_inventory_pull_from_hub(
         hub, missing_ccates, missing_prvs
     )
 
-    inserted, patched, unchanged, conflicts, missing_deps = await anyio.to_thread.run_sync(
-        lambda: _process_inventory_pull(
-            mysql,
-            hub_by_codigo,
-            hub_catego=hub_catego,
-            hub_prv=hub_prv,
+    inserted, patched, unchanged, conflicts, missing_deps, cost_lower = (
+        await anyio.to_thread.run_sync(
+            lambda: _process_inventory_pull(
+                mysql,
+                hub_by_codigo,
+                hub_catego=hub_catego,
+                hub_prv=hub_prv,
+            )
         )
     )
 
-    reports = conflicts + missing_deps
+    reports = conflicts + missing_deps + cost_lower
     warnings_reported = 0
     if reports:
         warnings_reported = await hub.report_catalog_pull_warnings(reports)
@@ -248,6 +294,7 @@ async def run_inventory_pull_from_hub(
         "patched": patched,
         "unchanged": unchanged,
         "conflicts": len(conflicts),
+        "cost_lower": len(cost_lower),
         "missing_dependencies": len(missing_deps),
         "skipped": skipped,
         "warnings_reported": warnings_reported,

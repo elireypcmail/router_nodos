@@ -63,16 +63,18 @@ async def run_inventory_pull_from_file(
         hub, missing_ccates, missing_prvs
     )
 
-    inserted, patched, unchanged, conflicts, missing_deps = await anyio.to_thread.run_sync(
-        lambda: _process_inventory_pull(
-            mysql,
-            hub_by_codigo,
-            hub_catego=hub_catego,
-            hub_prv=hub_prv,
+    inserted, patched, unchanged, conflicts, missing_deps, cost_lower = (
+        await anyio.to_thread.run_sync(
+            lambda: _process_inventory_pull(
+                mysql,
+                hub_by_codigo,
+                hub_catego=hub_catego,
+                hub_prv=hub_prv,
+            )
         )
     )
 
-    reports = conflicts + missing_deps
+    reports = conflicts + missing_deps + cost_lower
     warnings_reported = 0
     if reports:
         warnings_reported = await hub.report_catalog_pull_warnings(reports)
@@ -87,6 +89,7 @@ async def run_inventory_pull_from_file(
         "patched": patched,
         "unchanged": unchanged,
         "conflicts": len(conflicts),
+        "cost_lower": len(cost_lower),
         "missing_dependencies": len(missing_deps),
         "skipped": skipped,
         "warnings_reported": warnings_reported,

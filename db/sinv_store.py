@@ -28,15 +28,19 @@ SINV_UPDATE_FIELDS = tuple(f for f in SINV_HUB_FIELDS if f != "codigo")
 
 # Columnas sinv derivadas al aplicar catálogo del hub (no comparan en pull de maestros).
 SINV_LOCAL_FIELDS = ("corigen", "fcrea", "descontinuador")
-SINV_PULL_FETCH_FIELDS = SINV_HUB_FIELDS + SINV_LOCAL_FIELDS
+
+# Último costo hub → sinv en pull (no historial).
+SINV_COST_PULL_FIELDS = ("costo", "costopro", "costoant")
+# Solo CPP (costopro) dispara advertencia cost_lower; costo/costoant se aplican sin esa comparación.
+SINV_COST_PULL_LOWER_CHECK_FIELDS = ("costopro",)
+
+SINV_PULL_FETCH_FIELDS = SINV_HUB_FIELDS + SINV_LOCAL_FIELDS + SINV_COST_PULL_FIELDS
 
 SINV_DESCONTINUADOR_FROM_HUB = "N/A"
 SINV_CORIGEN_MAX_LEN = 15
 
-# Metadatos de sync push/pull que no son columnas sinv.
-SINV_SYNC_META_KEYS = frozenset(
-    {"action", "lotes", "existencia", "costo", "costopro", "costoant"}
-)
+# Metadatos de sync push/pull que no son columnas sinv (maestro pull).
+SINV_SYNC_META_KEYS = frozenset({"action", "lotes", "existencia"})
 
 # Solo corigen se actualiza en ON DUPLICATE KEY UPDATE (fcrea/descontinuador: insert).
 SINV_UPDATE_LOCAL_FIELDS = ("corigen",)
@@ -98,11 +102,94 @@ def _hub_row_has_activo(raw_row: dict) -> bool:
     return str(val).strip() != ""
 
 
+def parse_hub_cost_fields(raw_row: dict) -> dict[str, float] | None:
+    """Último costo del hub en pull; None si no hay datos útiles."""
+    from db.sinv_compare import _norm_num
+
+    costo = _norm_num(raw_row.get("costo"))
+    costopro = _norm_num(raw_row.get("costopro"))
+    costoant = _norm_num(raw_row.get("costoant"))
+    if costo <= 0 and costopro <= 0:
+        return None
+    cpp = costopro if costopro > 0 else costo
+    ant = costoant if costoant > 0 else costo
+    return {"costo": costo, "costopro": cpp, "costoant": ant}
+
+
+def sinv_cost_pull_blocked_lower_fields(
+    hub_cost: dict[str, float] | None,
+    node_row: dict | None,
+) -> list[str]:
+    """
+    Campos donde el hub trae un costo menor que el local (requiere decisión del usuario).
+    Vacío si no hay bloqueo (incluye producto nuevo o hub sin costo útil).
+    """
+    if not hub_cost or node_row is None:
+        return []
+    from db.sinv_compare import _norm_num
+
+    blocked: list[str] = []
+    for key in SINV_COST_PULL_LOWER_CHECK_FIELDS:
+        local_v = _norm_num(node_row.get(key))
+        if local_v > 0 and hub_cost[key] < local_v:
+            blocked.append(key)
+    return blocked
+
+
+def sinv_cost_pull_patch(
+    hub_cost: dict[str, float] | None,
+    node_row: dict | None,
+) -> dict[str, float] | None:
+    """Parche solo costos si el hub trae último costo, difiere de sinv y no es menor que local."""
+    if not hub_cost:
+        return None
+    if node_row is None:
+        return dict(hub_cost)
+    if sinv_cost_pull_blocked_lower_fields(hub_cost, node_row):
+        return None
+    from db.sinv_compare import _norm_num
+
+    patch: dict[str, float] = {}
+    for key in SINV_COST_PULL_FIELDS:
+        if _norm_num(node_row.get(key)) != hub_cost[key]:
+            patch[key] = hub_cost[key]
+    return patch if patch else None
+
+
+def sinv_cost_node_snapshot(node_row: dict) -> dict[str, Any]:
+    """Solo costos locales para advertencias de pull."""
+    return {k: node_row.get(k) for k in SINV_COST_PULL_FIELDS}
+
+
+def hub_pull_snapshot_with_costs(
+    hub_row: dict[str, Any], raw_hub: dict
+) -> dict[str, Any]:
+    snap = dict(hub_row)
+    cost = parse_hub_cost_fields(raw_hub)
+    if cost:
+        snap.update(cost)
+    return snap
+
+
+def merge_hub_costs_into_row(row: dict[str, Any], raw_hub: dict) -> dict[str, Any]:
+    """Añade costo/costopro/costoant al upsert cuando el pull los trae."""
+    cost = parse_hub_cost_fields(raw_hub)
+    if not cost:
+        return row
+    out = dict(row)
+    out.update(cost)
+    return out
+
+
 def prepare_sinv_upsert(row: dict) -> dict[str, Any]:
     """Normalize hub/PGMQ row to sinv snapshot plus derived local fields."""
     from db.sinv_compare import normalize_sinv_snapshot
 
-    clean = {k: v for k, v in row.items() if k not in SINV_SYNC_META_KEYS}
+    clean = {
+        k: v
+        for k, v in row.items()
+        if k not in SINV_SYNC_META_KEYS and k not in SINV_COST_PULL_FIELDS
+    }
     has_activo = _hub_row_has_activo(clean)
     normalized = normalize_sinv_snapshot(clean)
     if not has_activo:
@@ -176,6 +263,12 @@ def _value_for_column(normalized: dict[str, Any], key: str, raw_row: dict) -> An
         return raw
     if key in {"precio1", "pg1", "stockmin", "stockmax", "porvg"}:
         return normalized.get(key, 0)
+    if key in SINV_COST_PULL_FIELDS:
+        from db.sinv_compare import _norm_num
+
+        if key in raw_row:
+            return _norm_num(raw_row[key])
+        return _norm_num(normalized.get(key))
     if key == "fcrea":
         val = normalized.get("fcrea")
         return val if val else None
@@ -194,7 +287,10 @@ def upsert_sinv(
     patch_keys: en ON DUPLICATE KEY UPDATE solo toca esas columnas (p. ej. barra).
     INSERT siempre escribe el snapshot completo normalizado + campos locales.
     """
+    hub_cost = parse_hub_cost_fields(row)
     normalized = prepare_sinv_upsert(row)
+    if hub_cost:
+        normalized.update(hub_cost)
     codigo = str(normalized.get("codigo") or "").strip()
     if not codigo:
         raise ValueError("inventory row requires codigo")
@@ -206,6 +302,9 @@ def upsert_sinv(
             insert_fields.append(key)
     if row.get("existencia") is not None and "existencia" not in insert_fields:
         insert_fields.append("existencia")
+    for key in SINV_COST_PULL_FIELDS:
+        if key in normalized and key not in insert_fields:
+            insert_fields.append(key)
 
     if patch_keys is not None:
         allowed = {k for k in patch_keys if k in insert_fields}

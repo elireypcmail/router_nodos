@@ -25,7 +25,9 @@ SINV_FIELD_LABELS: dict[str, str] = {
     "porvg": "Margin pct",
 }
 
-_NUMERIC_FIELDS = frozenset({"precio1", "pg1", "stockmin", "stockmax", "porvg"})
+_NUMERIC_FIELDS = frozenset(
+    {"precio1", "pg1", "stockmin", "stockmax", "porvg", "costo", "costopro", "costoant"}
+)
 _INT_FIELDS = frozenset({"recipe", "cfrio", "activo"})
 
 

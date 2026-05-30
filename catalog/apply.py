@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from db.sprv_store import upsert_sprv
-from db.sinv_store import prepare_sinv_upsert, upsert_sinv
+from db.sinv_store import upsert_sinv
 
 logger = logging.getLogger("multishop.sync_apply")
 
@@ -33,7 +33,7 @@ def apply_proveedor_row(cur, it: dict) -> None:
 
 
 def apply_inventario_row(cur, it: dict) -> None:
-    upsert_sinv(cur, prepare_sinv_upsert(it))
+    upsert_sinv(cur, it)
 
 
 def apply_inventario_dependency_rows(

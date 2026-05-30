@@ -287,7 +287,7 @@ async def sync_cost_propose(body: SyncEventBody, _: None = Depends(verify_bearer
     """
     Propuesta de actualización de costo (hub -> nodo).
 
-    No modifica tablas si el costo propuesto es menor que el costo local.
+    No modifica tablas si el CPP propuesto (hub) es menor que sinv.costopro local.
     """
     entity = body.entity_type.strip().lower()
     if entity not in {"inventory_cost_update", "cost_update", "inventory_cost"}:
@@ -323,15 +323,13 @@ async def sync_cost_propose(body: SyncEventBody, _: None = Depends(verify_bearer
             codigo_db = str(row.get("codigo") or codigo).strip()
             costo_local = _to_float(row.get("costo"))
             costopro_local = _to_float(row.get("costopro"))
-            costo_local_max = max(costo_local, costopro_local)
 
-            if costo_propuesto < costo_local_max:
+            if costo_propuesto < costopro_local:
                 return {
                     "status": "warning",
                     "codigo": codigo_db,
                     "costo_local": costo_local,
                     "costopro_local": costopro_local,
-                    "costo_local_max": costo_local_max,
                     "costo_propuesto": costo_propuesto,
                 }
 
