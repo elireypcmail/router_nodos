@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Simula compra ERP: kardex (compras) + kardexd (ajustesp por cubica) -> outbox purchase."""
+"""Simula compra ERP: scom (línea + subtotal2) → kardex + kardexd → outbox purchase."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from _common import (
     format_kobs_compra,
     insert_kardex_header,
     insert_kardexd_line,
+    insert_scom_purchase_line,
     lookup_provider,
     make_test_lote_ids,
     maybe_flush,
@@ -118,7 +119,7 @@ def _insert_legacy_comprasdbf(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Simula compra ERP (kardex + kardexd; outbox comprasdbf vía trigger kardex)"
+        description="Simula compra ERP (scom → kardex + kardexd; outbox purchase vía trigger kardex)"
     )
     add_common_args(parser)
     parser.add_argument(
@@ -140,7 +141,7 @@ def main() -> int:
     parser.add_argument(
         "--legacy-comprasdbf",
         action="store_true",
-        help="INSERT solo en comprasdbf (sin outbox; ya no hay trg_comprasdbf_*)",
+        help="Solo comprasdbf (NO flujo ERP; sin scom ni outbox)",
     )
     parser.add_argument(
         "--lotes",
@@ -169,8 +170,9 @@ def main() -> int:
         codigo = str(product["codigo"]).strip()
         cantidad = max(1, int(args.cantidad))
         precio = float(args.precio)
-        monto = round(precio * cantidad, 2)
+        subtotal2 = round(precio * cantidad, 2)
         fecha = today()
+        descrip = str(product.get("descrip") or "").strip()
         suf = test_suffix()
 
         try:
@@ -199,8 +201,7 @@ def main() -> int:
                 row = cur.fetchone() or {}
             cod_prv, nom_prv = lookup_provider(conn, row.get("cod_prv"))
 
-        num_compra = (args.num_compra or suf[:4]).strip()
-        kobs = format_kobs_compra(num_compra, cod_prv, nom_prv)
+        num_compra = (args.num_compra or fecha.strftime("%d%m%Y")).strip()
         ex_despues = ex_antes + cantidad
 
         print(
@@ -213,7 +214,7 @@ def main() -> int:
             numdoc = f"T{suf}"[:6]
             print(
                 f"[legacy] INSERT comprasdbf: contador={contador} numdoc={numdoc} "
-                f"cantidad={cantidad} precio={precio} monto={monto}"
+                f"cantidad={cantidad} precio={precio} monto={subtotal2}"
             )
             if args.dry_run:
                 return 0
@@ -222,7 +223,7 @@ def main() -> int:
                 codigo=codigo,
                 cantidad=cantidad,
                 precio=precio,
-                monto=monto,
+                monto=subtotal2,
                 fecha=fecha,
                 numdoc=numdoc,
                 contador=contador,
@@ -238,7 +239,11 @@ def main() -> int:
             return 0
 
         print(
-            f"INSERT kardex: compras={cantidad} costo={precio} kobs={kobs[:60]}..."
+            f"INSERT scom: numero={num_compra} codigo={codigo} "
+            f"cantidad={cantidad} costo={precio} subtotal2={subtotal2}"
+        )
+        print(
+            f"INSERT kardex: compras={cantidad} costo={precio} numero={num_compra}"
         )
         for cubica, qty, lote in lote_splits:
             print(
@@ -255,6 +260,22 @@ def main() -> int:
             return 0
 
         with conn.cursor() as cur:
+            scom_indice = insert_scom_purchase_line(
+                cur,
+                conn,
+                numero=num_compra,
+                cod_prv=cod_prv or "0000000000",
+                codigo=codigo,
+                descrip=descrip,
+                fecha=fecha,
+                cantidad=float(cantidad),
+                costo=precio,
+                costopro=costopro_antes,
+                subtotal2=subtotal2,
+            )
+            kobs = format_kobs_compra(
+                num_compra, cod_prv, nom_prv, ind=scom_indice
+            )
             indice_k = insert_kardex_header(
                 cur,
                 codigo=codigo,
@@ -267,6 +288,7 @@ def main() -> int:
                 costopro=costopro_antes,
                 kobs=kobs,
                 cajero="SUPERVISOR",
+                numero=num_compra,
             )
             indices_d: list[int] = []
             for cubica, qty, _lote in lote_splits:
@@ -308,8 +330,8 @@ def main() -> int:
 
         conn.commit()
         print(
-            f"OK: ERP purchase kardex indice={indice_k}, "
-            f"kardexd={indices_d} (outbox comprasdbf from kardex trigger)."
+            f"OK: scom indice={scom_indice}, kardex indice={indice_k}, "
+            f"kardexd={indices_d} (outbox monto=subtotal2 from scom)."
         )
         show_recent_outbox(conn, ["comprasdbf"])
     except Exception as ex:

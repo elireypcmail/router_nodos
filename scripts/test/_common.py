@@ -316,7 +316,7 @@ def pick_product(
         if codigo:
             cur.execute(
                 """
-                SELECT codigo, costo, costopro
+                SELECT codigo, descrip, costo, costopro
                 FROM sinv
                 WHERE codigo = %s
                 LIMIT 1
@@ -332,7 +332,7 @@ def pick_product(
         if aleatorio:
             cur.execute(
                 """
-                SELECT codigo, costo, costopro
+                SELECT codigo, descrip, costo, costopro
                 FROM sinv
                 WHERE codigo IS NOT NULL AND TRIM(codigo) <> ''
                 ORDER BY RAND()
@@ -342,7 +342,7 @@ def pick_product(
         else:
             cur.execute(
                 """
-                SELECT codigo, costo, costopro
+                SELECT codigo, descrip, costo, costopro
                 FROM sinv
                 WHERE codigo IS NOT NULL AND TRIM(codigo) <> ''
                 ORDER BY codigo
@@ -366,10 +366,74 @@ def today() -> date:
 
 
 def next_compras_contador(conn: pymysql.connections.Connection) -> int:
+    """Solo modo legacy (--legacy-comprasdbf); el ERP no usa comprasdbf."""
     with conn.cursor() as cur:
         cur.execute("SELECT COALESCE(MAX(contador), 0) + 1 AS n FROM comprasdbf")
         row = cur.fetchone() or {}
         return int(row.get("n") or 1)
+
+
+def next_scom_indice(conn: pymysql.connections.Connection) -> str:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COALESCE(MAX(CAST(indice AS UNSIGNED)), 0) + 1 AS n
+            FROM scom
+            WHERE indice REGEXP '^[0-9]+$'
+            """
+        )
+        row = cur.fetchone() or {}
+        return str(int(row.get("n") or 1))
+
+
+def insert_scom_purchase_line(
+    cur: pymysql.cursors.Cursor,
+    conn: pymysql.connections.Connection,
+    *,
+    numero: str,
+    cod_prv: str,
+    codigo: str,
+    descrip: str,
+    fecha: date,
+    cantidad: float,
+    costo: float,
+    costopro: float,
+    indice: str | None = None,
+    subtotal2: float | None = None,
+) -> str:
+    """Línea de compra ERP (scom). Debe existir antes del INSERT en kardex (trigger lee subtotal2)."""
+    line_indice = (indice or next_scom_indice(conn)).strip()[:30]
+    qty = float(cantidad)
+    unit = float(costo)
+    total = float(subtotal2) if subtotal2 is not None else round(unit * qty, 2)
+    cur.execute(
+        """
+        INSERT INTO scom (
+          numero, cod_prv, fecha, porvg, codigo, descrip, cantidad, costo,
+          subtotal1, descuento1, descuento2, subtotal2, exento,
+          iva1, iva2, base1, base2, costopro, indice, aplicaprecio
+        ) VALUES (
+          %s, %s, %s, 0, %s, %s, %s, %s,
+          %s, 0, 0, %s, %s,
+          0, 0, 0, 0, %s, %s, 'N'
+        )
+        """,
+        (
+            numero.strip()[:30],
+            cod_prv.strip()[:30],
+            fecha,
+            codigo.strip()[:50],
+            (descrip or "")[:80],
+            qty,
+            unit,
+            total,
+            total,
+            total,
+            costopro,
+            line_indice,
+        ),
+    )
+    return line_indice
 
 
 def next_kardex_contador(conn: pymysql.connections.Connection) -> int:

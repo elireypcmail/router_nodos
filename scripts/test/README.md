@@ -36,13 +36,13 @@ Con la API en marcha y `HUEY_ENABLED=true` (default del provisioning), el **cons
 
 ## Scripts (flujo ERP real)
 
-El ERP legacy registra compras/ventas en **`kardex` cabecera** (`compras` / `ventas`) y el detalle por **cubica** en **`kardexd`** (`ajustesp` / `ajustesn` con `kobs` `Compra#:` / `Vta#:`). No siempre escribe `comprasdbf` ni `ventasi`.
+Compras reales del ERP: línea en **`scom`** (`numero`, `subtotal2`, `costo`, `cantidad`) y luego movimiento en **`kardex`** + **`kardexd`**. El ERP **no** escribe `comprasdbf`. Ventas: **`kardex`** / **`kardexd`** (no `ventasi` como fuente principal).
 
 Los triggers transaccionales encolan **`comprasdbf`** / **`ventasi`** / **`kardex`** solo desde la cabecera **`kardex`**. No hay triggers en **`kardexd`**, **`comprasdbf`** ni **`ventasi`**.
 
 | Script | Tablas ERP | Outbox → hub |
 |--------|------------|--------------|
-| `simulate_compra.py` | `kardex` + `kardexd` | `comprasdbf` → `purchase` |
+| `simulate_compra.py` | **`scom`** + `kardex` + `kardexd` | `comprasdbf` (etiqueta outbox) → `purchase` |
 | `simulate_venta.py` | `kardex` + `kardexd` | `ventasi` → `sale` |
 | `simulate_kardex_ajuste.py` | `kardex` (cabecera) | `kardex` → ajuste |
 | `simulate_kardex_devolucion.py` | `kardex` (cabecera) | `kardex` → devolución |
