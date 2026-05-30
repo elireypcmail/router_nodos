@@ -89,6 +89,9 @@ function Get-MultishopNodoDir {
 
 function Test-NodoApiPortOpen {
     param([int]$Port = 8443)
+    if (Get-Command Test-MultishopNodoApiTcpPortListening -ErrorAction SilentlyContinue) {
+        return (Test-MultishopNodoApiTcpPortListening -Port $Port)
+    }
     try {
         $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
         return ($null -ne $conn)
@@ -152,7 +155,18 @@ function Start-MultishopNodoApi {
             -RedirectStandardError $logErr `
             -PassThru
 
-        Start-Sleep -Seconds 4
+        $deadline = (Get-Date).AddSeconds(45)
+        $listening = $false
+        while ((Get-Date) -lt $deadline) {
+            if ($proc.HasExited) {
+                break
+            }
+            if (Test-NodoApiPortOpen -Port $apiPort) {
+                $listening = $true
+                break
+            }
+            Start-Sleep -Seconds 2
+        }
 
         if ($proc.HasExited) {
             $errTail = ""
@@ -162,8 +176,8 @@ function Start-MultishopNodoApi {
             throw "python salio con codigo $($proc.ExitCode). Revise $logErr. $errTail"
         }
 
-        if (-not (Test-NodoApiPortOpen -Port $apiPort)) {
-            throw "python sigue vivo (PID $($proc.Id)) pero puerto $apiPort no escucha. Revise $logErr y $logOut"
+        if (-not $listening) {
+            throw "python sigue vivo (PID $($proc.Id)) pero puerto $apiPort no escucha tras 45s. Revise $logErr y $logOut"
         }
 
         Write-NodoApiLog "API activa PID $($proc.Id) puerto $apiPort"

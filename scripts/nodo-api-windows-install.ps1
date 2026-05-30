@@ -12,7 +12,7 @@ param(
     [switch]$StartNow
 )
 
-$MultishopWindowsInstallVersion = "20260530.4"
+$MultishopWindowsInstallVersion = "20260530.5"
 
 $ErrorActionPreference = "Stop"
 
@@ -342,7 +342,7 @@ function Assert-MultishopSingleInstance {
     if (-not (Get-Command Get-MultishopNodoProcessCounts -ErrorAction SilentlyContinue)) {
         return
     }
-    Start-Sleep -Seconds 4
+    Start-Sleep -Seconds 2
     $counts = Get-MultishopNodoProcessCounts -NodoDir $NodoDirPath
     $expectedApi = if ($StartNow) { 1 } else { 0 }
     $expectedHuey = if ($StartNow -and $ExpectHuey) { 1 } else { 0 }
@@ -350,8 +350,28 @@ function Assert-MultishopSingleInstance {
     if ($counts.Api -ne $expectedApi -or $counts.Huey -ne $expectedHuey) {
         throw "Multishop nodo: procesos incorrectos (API=$($counts.Api) Huey=$($counts.Huey))"
     }
-    if ($StartNow -and -not (Test-MultishopNodoApiPortListening -NodoDir $NodoDirPath)) {
-        throw "Multishop nodo: API no escucha en el puerto configurado."
+    if ($StartNow) {
+        $port = Get-MultishopNodoApiPort -NodoDir $NodoDirPath
+        Write-Host "Esperando API en puerto $port (hasta 45 s)..."
+        $listening = $false
+        if (Get-Command Wait-MultishopNodoApiPortListening -ErrorAction SilentlyContinue) {
+            $listening = Wait-MultishopNodoApiPortListening -NodoDir $NodoDirPath -TimeoutSec 45
+        } else {
+            Start-Sleep -Seconds 6
+            $listening = Test-MultishopNodoApiPortListening -NodoDir $NodoDirPath
+        }
+        if (-not $listening) {
+            $hint = ""
+            if (Get-Command Get-MultishopNodoApiStartFailureHint -ErrorAction SilentlyContinue) {
+                $hint = Get-MultishopNodoApiStartFailureHint -NodoDir $NodoDirPath
+            }
+            throw @(
+                "Multishop nodo: API no escucha en el puerto configurado ($port)."
+                "Revise ProgramData\Multishop\nodo-api.err.log y nodo-api-start.log."
+                $(if ($hint) { $hint } else { "" })
+            ) -join "`n  "
+        }
+        Write-Host "API escuchando en puerto $port." -ForegroundColor Green
     }
 }
 

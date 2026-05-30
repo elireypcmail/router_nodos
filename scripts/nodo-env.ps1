@@ -542,16 +542,65 @@ function Stop-MultishopNodoProcesses {
     }
 }
 
+function Test-MultishopNodoApiTcpPortListening {
+    param([Parameter(Mandatory = $true)][int]$Port)
+    try {
+        $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+        if ($conn) {
+            return $true
+        }
+    } catch {
+        # Get-NetTCPConnection no disponible en algunas ediciones Windows
+    }
+    $pattern = ":$Port\s"
+    $netstat = netstat -ano 2>$null | Select-String $pattern
+    return ($null -ne $netstat)
+}
+
 function Test-MultishopNodoApiPortListening {
     param(
         [Parameter(Mandatory = $true)]
         [string]$NodoDir
     )
     $port = Get-MultishopNodoApiPort -NodoDir $NodoDir
-    try {
-        $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
-        return ($null -ne $conn)
-    } catch {
-        return $false
+    return (Test-MultishopNodoApiTcpPortListening -Port $port)
+}
+
+function Wait-MultishopNodoApiPortListening {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDir,
+        [int]$TimeoutSec = 45,
+        [int]$IntervalSec = 2
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-MultishopNodoApiPortListening -NodoDir $NodoDir) {
+            return $true
+        }
+        Start-Sleep -Seconds $IntervalSec
     }
+    return $false
+}
+
+function Get-MultishopNodoApiStartFailureHint {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDir
+    )
+    $port = Get-MultishopNodoApiPort -NodoDir $NodoDir
+    $lines = @("Puerto esperado: $port (NODO_PORT en .env)")
+    foreach ($base in @($env:ProgramData, $env:LOCALAPPDATA)) {
+        if (-not $base) { continue }
+        $logDir = Join-Path $base "Multishop"
+        foreach ($name in @("nodo-api.err.log", "nodo-api-start.log", "nodo-api.out.log")) {
+            $path = Join-Path $logDir $name
+            if (-not (Test-Path -LiteralPath $path)) { continue }
+            $tail = (Get-Content -LiteralPath $path -Tail 10 -ErrorAction SilentlyContinue) -join " | "
+            if ($tail) {
+                $lines += "$path -> $tail"
+            }
+        }
+    }
+    return ($lines -join "`n  ")
 }

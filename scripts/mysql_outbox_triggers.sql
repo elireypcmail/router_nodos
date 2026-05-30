@@ -2,6 +2,7 @@
 -- (siempre DROP de trg_* y ms_json_* del manifiesto y CREATE de nuevo; no pegar este archivo a mano).
 --
 -- Transaccional compra/venta/ajuste: una sola fuente = tabla kardex (trg_kardex_*).
+-- Compra: monto/precio/numdoc desde scom (subtotal2, costo, numero) si hay match; fallback kardex.
 -- No hay triggers en comprasdbf, ventasi ni kardexd (evita duplicar con cabecera/detalle ERP).
 
 CREATE TABLE IF NOT EXISTS sync_outbox (
@@ -26,6 +27,9 @@ DROP FUNCTION IF EXISTS ms_json_str;
 DROP FUNCTION IF EXISTS ms_json_int;
 DROP FUNCTION IF EXISTS ms_json_num;
 DROP FUNCTION IF EXISTS ms_json_date;
+DROP FUNCTION IF EXISTS ms_scom_purchase_subtotal2;
+DROP FUNCTION IF EXISTS ms_scom_purchase_costo;
+DROP FUNCTION IF EXISTS ms_scom_purchase_numero;
 
 DELIMITER $$
 CREATE FUNCTION ms_json_escape(str TEXT)
@@ -90,6 +94,70 @@ BEGIN
   END IF;
   RETURN CONCAT('"', DATE_FORMAT(d, '%Y-%m-%d'), '"');
 END$$
+
+-- Match línea de compra ERP (scom) con fila kardex: codigo + fecha + cantidad + costo ~igual.
+CREATE FUNCTION ms_scom_purchase_subtotal2(
+  p_codigo VARCHAR(15),
+  p_fecha DATE,
+  p_compras DECIMAL(25, 2),
+  p_costo DECIMAL(25, 2)
+)
+RETURNS DECIMAL(65, 10)
+READS SQL DATA
+BEGIN
+  DECLARE v DECIMAL(65, 10);
+  SELECT sc.subtotal2 INTO v
+  FROM scom sc
+  WHERE sc.codigo = p_codigo
+    AND sc.fecha = p_fecha
+    AND ABS(IFNULL(sc.cantidad, 0) - IFNULL(p_compras, 0)) < 0.001
+    AND ABS(IFNULL(sc.costo, 0) - IFNULL(p_costo, 0)) < 0.05
+  ORDER BY sc.indice DESC
+  LIMIT 1;
+  RETURN v;
+END$$
+
+CREATE FUNCTION ms_scom_purchase_costo(
+  p_codigo VARCHAR(15),
+  p_fecha DATE,
+  p_compras DECIMAL(25, 2),
+  p_costo DECIMAL(25, 2)
+)
+RETURNS DECIMAL(65, 10)
+READS SQL DATA
+BEGIN
+  DECLARE v DECIMAL(65, 10);
+  SELECT sc.costo INTO v
+  FROM scom sc
+  WHERE sc.codigo = p_codigo
+    AND sc.fecha = p_fecha
+    AND ABS(IFNULL(sc.cantidad, 0) - IFNULL(p_compras, 0)) < 0.001
+    AND ABS(IFNULL(sc.costo, 0) - IFNULL(p_costo, 0)) < 0.05
+  ORDER BY sc.indice DESC
+  LIMIT 1;
+  RETURN v;
+END$$
+
+CREATE FUNCTION ms_scom_purchase_numero(
+  p_codigo VARCHAR(15),
+  p_fecha DATE,
+  p_compras DECIMAL(25, 2),
+  p_costo DECIMAL(25, 2)
+)
+RETURNS VARCHAR(30)
+READS SQL DATA
+BEGIN
+  DECLARE v VARCHAR(30);
+  SELECT sc.numero INTO v
+  FROM scom sc
+  WHERE sc.codigo = p_codigo
+    AND sc.fecha = p_fecha
+    AND ABS(IFNULL(sc.cantidad, 0) - IFNULL(p_compras, 0)) < 0.001
+    AND ABS(IFNULL(sc.costo, 0) - IFNULL(p_costo, 0)) < 0.05
+  ORDER BY sc.indice DESC
+  LIMIT 1;
+  RETURN v;
+END$$
 DELIMITER ;
 
 DROP TRIGGER IF EXISTS trg_kardex_ai;
@@ -109,8 +177,8 @@ BEGIN
     VALUES (
       'comprasdbf',
       'I',
-      CONCAT('{','\"contador\":',ms_json_int(IFNULL(NEW.contador, NEW.indice)),',','\"numdoc\":',ms_json_str(IFNULL(NEW.numero, '')),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"fecha\":',ms_json_date(NEW.fecha),'}'),
-      CONCAT('{','\"contador\":',ms_json_int(IFNULL(NEW.contador, NEW.indice)),',','\"numdoc\":',ms_json_str(IFNULL(NEW.numero, '')),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"cantidad\":',ms_json_num(NEW.compras),',','\"precio\":',ms_json_num(NEW.costo),',','\"monto\":',ms_json_num(IFNULL(NEW.compras, 0) * IFNULL(NEW.costo, 0)),',','\"costo_anterior\":',ms_json_num((
+      CONCAT('{','\"contador\":',ms_json_int(IFNULL(NEW.contador, NEW.indice)),',','\"numdoc\":',ms_json_str(COALESCE(NULLIF(TRIM(IFNULL(NEW.numero, '')), ''), IFNULL(ms_scom_purchase_numero(NEW.codigo, NEW.fecha, NEW.compras, NEW.costo), ''))),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"fecha\":',ms_json_date(NEW.fecha),'}'),
+      CONCAT('{','\"contador\":',ms_json_int(IFNULL(NEW.contador, NEW.indice)),',','\"numdoc\":',ms_json_str(COALESCE(NULLIF(TRIM(IFNULL(NEW.numero, '')), ''), IFNULL(ms_scom_purchase_numero(NEW.codigo, NEW.fecha, NEW.compras, NEW.costo), ''))),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"cantidad\":',ms_json_num(NEW.compras),',','\"precio\":',ms_json_num(COALESCE(ms_scom_purchase_costo(NEW.codigo, NEW.fecha, NEW.compras, NEW.costo), NEW.costo)),',','\"monto\":',ms_json_num(COALESCE(ms_scom_purchase_subtotal2(NEW.codigo, NEW.fecha, NEW.compras, NEW.costo), IFNULL(NEW.compras, 0) * IFNULL(NEW.costo, 0))),',','\"costo_anterior\":',ms_json_num((
         SELECT s.costo
         FROM sinv s
         WHERE s.codigo = NEW.codigo
@@ -120,7 +188,7 @@ BEGIN
         FROM sinv s
         WHERE s.codigo = NEW.codigo
         LIMIT 1
-      )),',','\"costo_actual_factura\":',ms_json_num(NEW.costo),',','\"fecha\":',ms_json_date(NEW.fecha),',','\"kardex_indice\":',ms_json_int(NEW.indice),'}'),
+      )),',','\"costo_actual_factura\":',ms_json_num(COALESCE(ms_scom_purchase_costo(NEW.codigo, NEW.fecha, NEW.compras, NEW.costo), NEW.costo)),',','\"fecha\":',ms_json_date(NEW.fecha),',','\"kardex_indice\":',ms_json_int(NEW.indice),'}'),
       NOW(3)
     );
   END IF;
@@ -158,8 +226,8 @@ BEGIN
     VALUES (
       'comprasdbf',
       'U',
-      CONCAT('{','\"contador\":',ms_json_int(IFNULL(NEW.contador, NEW.indice)),',','\"numdoc\":',ms_json_str(IFNULL(NEW.numero, '')),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"fecha\":',ms_json_date(NEW.fecha),'}'),
-      CONCAT('{','\"contador\":',ms_json_int(IFNULL(NEW.contador, NEW.indice)),',','\"numdoc\":',ms_json_str(IFNULL(NEW.numero, '')),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"cantidad\":',ms_json_num(NEW.compras),',','\"precio\":',ms_json_num(NEW.costo),',','\"monto\":',ms_json_num(IFNULL(NEW.compras, 0) * IFNULL(NEW.costo, 0)),',','\"costo_anterior\":',ms_json_num((
+      CONCAT('{','\"contador\":',ms_json_int(IFNULL(NEW.contador, NEW.indice)),',','\"numdoc\":',ms_json_str(COALESCE(NULLIF(TRIM(IFNULL(NEW.numero, '')), ''), IFNULL(ms_scom_purchase_numero(NEW.codigo, NEW.fecha, NEW.compras, NEW.costo), ''))),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"fecha\":',ms_json_date(NEW.fecha),'}'),
+      CONCAT('{','\"contador\":',ms_json_int(IFNULL(NEW.contador, NEW.indice)),',','\"numdoc\":',ms_json_str(COALESCE(NULLIF(TRIM(IFNULL(NEW.numero, '')), ''), IFNULL(ms_scom_purchase_numero(NEW.codigo, NEW.fecha, NEW.compras, NEW.costo), ''))),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"cantidad\":',ms_json_num(NEW.compras),',','\"precio\":',ms_json_num(COALESCE(ms_scom_purchase_costo(NEW.codigo, NEW.fecha, NEW.compras, NEW.costo), NEW.costo)),',','\"monto\":',ms_json_num(COALESCE(ms_scom_purchase_subtotal2(NEW.codigo, NEW.fecha, NEW.compras, NEW.costo), IFNULL(NEW.compras, 0) * IFNULL(NEW.costo, 0))),',','\"costo_anterior\":',ms_json_num((
         SELECT s.costo
         FROM sinv s
         WHERE s.codigo = NEW.codigo
@@ -169,7 +237,7 @@ BEGIN
         FROM sinv s
         WHERE s.codigo = NEW.codigo
         LIMIT 1
-      )),',','\"costo_actual_factura\":',ms_json_num(NEW.costo),',','\"fecha\":',ms_json_date(NEW.fecha),',','\"kardex_indice\":',ms_json_int(NEW.indice),'}'),
+      )),',','\"costo_actual_factura\":',ms_json_num(COALESCE(ms_scom_purchase_costo(NEW.codigo, NEW.fecha, NEW.compras, NEW.costo), NEW.costo)),',','\"fecha\":',ms_json_date(NEW.fecha),',','\"kardex_indice\":',ms_json_int(NEW.indice),'}'),
       NOW(3)
     );
   END IF;
@@ -207,8 +275,8 @@ BEGIN
     VALUES (
       'comprasdbf',
       'D',
-      CONCAT('{','\"contador\":',ms_json_int(IFNULL(OLD.contador, OLD.indice)),',','\"numdoc\":',ms_json_str(IFNULL(OLD.numero, '')),',','\"codigo\":',ms_json_str(OLD.codigo),',','\"fecha\":',ms_json_date(OLD.fecha),'}'),
-      CONCAT('{','\"contador\":',ms_json_int(IFNULL(OLD.contador, OLD.indice)),',','\"numdoc\":',ms_json_str(IFNULL(OLD.numero, '')),',','\"codigo\":',ms_json_str(OLD.codigo),',','\"cantidad\":',ms_json_num(OLD.compras),',','\"precio\":',ms_json_num(OLD.costo),',','\"monto\":',ms_json_num(IFNULL(OLD.compras, 0) * IFNULL(OLD.costo, 0)),',','\"costo_anterior\":',ms_json_num((
+      CONCAT('{','\"contador\":',ms_json_int(IFNULL(OLD.contador, OLD.indice)),',','\"numdoc\":',ms_json_str(COALESCE(NULLIF(TRIM(IFNULL(OLD.numero, '')), ''), IFNULL(ms_scom_purchase_numero(OLD.codigo, OLD.fecha, OLD.compras, OLD.costo), ''))),',','\"codigo\":',ms_json_str(OLD.codigo),',','\"fecha\":',ms_json_date(OLD.fecha),'}'),
+      CONCAT('{','\"contador\":',ms_json_int(IFNULL(OLD.contador, OLD.indice)),',','\"numdoc\":',ms_json_str(COALESCE(NULLIF(TRIM(IFNULL(OLD.numero, '')), ''), IFNULL(ms_scom_purchase_numero(OLD.codigo, OLD.fecha, OLD.compras, OLD.costo), ''))),',','\"codigo\":',ms_json_str(OLD.codigo),',','\"cantidad\":',ms_json_num(OLD.compras),',','\"precio\":',ms_json_num(COALESCE(ms_scom_purchase_costo(OLD.codigo, OLD.fecha, OLD.compras, OLD.costo), OLD.costo)),',','\"monto\":',ms_json_num(COALESCE(ms_scom_purchase_subtotal2(OLD.codigo, OLD.fecha, OLD.compras, OLD.costo), IFNULL(OLD.compras, 0) * IFNULL(OLD.costo, 0))),',','\"costo_anterior\":',ms_json_num((
         SELECT s.costo
         FROM sinv s
         WHERE s.codigo = OLD.codigo
@@ -218,7 +286,7 @@ BEGIN
         FROM sinv s
         WHERE s.codigo = OLD.codigo
         LIMIT 1
-      )),',','\"costo_actual_factura\":',ms_json_num(OLD.costo),',','\"fecha\":',ms_json_date(OLD.fecha),',','\"kardex_indice\":',ms_json_int(OLD.indice),'}'),
+      )),',','\"costo_actual_factura\":',ms_json_num(COALESCE(ms_scom_purchase_costo(OLD.codigo, OLD.fecha, OLD.compras, OLD.costo), OLD.costo)),',','\"fecha\":',ms_json_date(OLD.fecha),',','\"kardex_indice\":',ms_json_int(OLD.indice),'}'),
       NOW(3)
     );
   END IF;
