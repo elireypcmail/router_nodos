@@ -48,6 +48,7 @@ def run_outbox_flush_once() -> dict[str, Any]:
                 "pk": e.pk,
                 "row": e.row,
                 "created_at": e.created_at,
+                "attempts": e.attempts,
             }
         )
         ids.append(e.id)

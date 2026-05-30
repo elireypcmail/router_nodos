@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     huey_outbox_batch_size: int = 200
     huey_outbox_task_retries: int = 30
     huey_outbox_retry_delay_seconds: int = 10
+    # Reintentos outbox antes de enviar compra sin scom (luego fallback kardex).
+    outbox_purchase_scom_max_defer_attempts: int = 30
 
     nodo_sync_jobs_dir: str = "./data/sync-jobs"
     catalog_sync_progress_throttle_ms: int = 2000

@@ -42,7 +42,7 @@ Los triggers transaccionales encolan **`comprasdbf`** / **`ventasi`** / **`karde
 
 | Script | Tablas ERP | Outbox → hub |
 |--------|------------|--------------|
-| `simulate_compra.py` | **`scom`** + `kardex` + `kardexd` | `comprasdbf` (etiqueta outbox) → `purchase` |
+| `simulate_compra.py` | **`scom`** + `kardex` + `kardexd` | `comprasdbf` → `purchase` (`subtotal2` al flush outbox) |
 | `simulate_venta.py` | `kardex` + `kardexd` | `ventasi` → `sale` |
 | `simulate_kardex_ajuste.py` | `kardex` (cabecera) | `kardex` → ajuste |
 | `simulate_kardex_devolucion.py` | `kardex` (cabecera) | `kardex` → devolución |

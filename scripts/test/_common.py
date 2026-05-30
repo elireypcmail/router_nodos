@@ -682,6 +682,7 @@ async def flush_outbox_once(batch_size: int = 50) -> int:
             "pk": e.pk,
             "row": e.row,
             "created_at": e.created_at,
+            "attempts": e.attempts,
         }
         for e in events
     ]

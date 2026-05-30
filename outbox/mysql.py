@@ -18,6 +18,7 @@ class OutboxEvent:
     pk: dict[str, Any]
     row: dict[str, Any] | None
     created_at: str
+    attempts: int = 0
 
 
 class OutboxRepository:
@@ -113,7 +114,7 @@ class OutboxRepository:
             cur = conn.cursor(dictionary=True)
             cur.execute(
                 f"""
-                SELECT id, table_name, op, pk_json, row_json, created_at
+                SELECT id, table_name, op, pk_json, row_json, created_at, attempts
                 FROM {self._table}
                 WHERE status = 'pending'
                 ORDER BY id ASC
@@ -122,29 +123,7 @@ class OutboxRepository:
                 (limit,),
             )
             rows = cur.fetchall() or []
-            events: list[OutboxEvent] = []
-            for r in rows:
-                oid = int(r["id"])
-                events.append(
-                    OutboxEvent(
-                        id=oid,
-                        table_name=str(r["table_name"]),
-                        op=str(r["op"]),
-                        pk=loads_outbox_json(
-                            r["pk_json"], context=f"outbox_id={oid} pk_json"
-                        ),
-                        row=(
-                            loads_outbox_json(
-                                r["row_json"],
-                                context=f"outbox_id={oid} row_json",
-                            )
-                            if r.get("row_json")
-                            else None
-                        ),
-                        created_at=self._to_iso(r["created_at"]),
-                    )
-                )
-            return events
+            return self._rows_to_events(rows)
         finally:
             conn.close()
 
@@ -159,7 +138,7 @@ class OutboxRepository:
             cur = conn.cursor(dictionary=True)
             cur.execute(
                 f"""
-                SELECT id, table_name, op, pk_json, row_json, created_at
+                SELECT id, table_name, op, pk_json, row_json, created_at, attempts
                 FROM {self._table}
                 WHERE status = 'pending'
                 ORDER BY id ASC
@@ -183,30 +162,7 @@ class OutboxRepository:
                 )
 
             conn.commit()
-
-            events: list[OutboxEvent] = []
-            for r in rows:
-                oid = int(r["id"])
-                events.append(
-                    OutboxEvent(
-                        id=oid,
-                        table_name=str(r["table_name"]),
-                        op=str(r["op"]),
-                        pk=loads_outbox_json(
-                            r["pk_json"], context=f"outbox_id={oid} pk_json"
-                        ),
-                        row=(
-                            loads_outbox_json(
-                                r["row_json"],
-                                context=f"outbox_id={oid} row_json",
-                            )
-                            if r.get("row_json")
-                            else None
-                        ),
-                        created_at=self._to_iso(r["created_at"]),
-                    )
-                )
-            return events
+            return self._rows_to_events(rows)
         except Exception:
             conn.rollback()
             raise
@@ -442,6 +398,32 @@ class OutboxRepository:
             return out
         finally:
             conn.close()
+
+    def _rows_to_events(self, rows: list[dict[str, Any]]) -> list[OutboxEvent]:
+        events: list[OutboxEvent] = []
+        for r in rows:
+            oid = int(r["id"])
+            events.append(
+                OutboxEvent(
+                    id=oid,
+                    table_name=str(r["table_name"]),
+                    op=str(r["op"]),
+                    pk=loads_outbox_json(
+                        r["pk_json"], context=f"outbox_id={oid} pk_json"
+                    ),
+                    row=(
+                        loads_outbox_json(
+                            r["row_json"],
+                            context=f"outbox_id={oid} row_json",
+                        )
+                        if r.get("row_json")
+                        else None
+                    ),
+                    created_at=self._to_iso(r["created_at"]),
+                    attempts=int(r.get("attempts") or 0),
+                )
+            )
+        return events
 
     def _to_iso(self, dt: Any) -> str:
         if isinstance(dt, datetime):

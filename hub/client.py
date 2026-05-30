@@ -6,6 +6,7 @@ import logging
 
 from outbox.catalog_push import send_catalog_outbox_batch
 from outbox.digest import CATALOG_TABLES
+from outbox.purchase_scom import prepare_purchase_payload_for_hub
 from core.categoria_trace import trace, trace_exc, trace_warn
 from core.config import settings
 from db.mysql import MySqlClient
@@ -76,6 +77,8 @@ class HubClient:
 
         ignored_ids: list[int] = []
         pending_events: list[tuple[int, dict]] = []
+        deferred_ids: list[int] = []
+        deferred_messages: dict[int, str] = {}
         catalog_sent: list[int] = []
         catalog_failed: list[int] = []
         catalog_digest_skipped: list[int] = []
@@ -104,10 +107,27 @@ class HubClient:
                 pk = e.get("pk") or {}
                 row = e.get("row") or {}
                 payload = {**pk, **row}
+                attempts = int(e.get("attempts") or 0)
 
                 entity_type: str | None = None
                 if table == "comprasdbf":
                     entity_type = "purchase"
+                    prep = await anyio.to_thread.run_sync(
+                        lambda p=dict(payload), a=attempts: prepare_purchase_payload_for_hub(
+                            p, attempts=a, mysql=mysql if mysql.is_configured() else None
+                        ),
+                    )
+                    if prep.defer:
+                        logger.info(
+                            "[hub-ingest] defer purchase outbox_id=%s attempts=%s: %s",
+                            outbox_id_int,
+                            attempts,
+                            prep.reason,
+                        )
+                        deferred_ids.append(outbox_id_int)
+                        deferred_messages[outbox_id_int] = prep.reason
+                        continue
+                    payload = prep.payload or payload
                 elif table == "ventasi":
                     entity_type = "sale"
                 elif table in {"kardex", "kardexd"}:
@@ -174,8 +194,12 @@ class HubClient:
                 return OutboxSendResult(
                     sent_ids=catalog_sent + catalog_digest_skipped,
                     ignored_ids=ignored_ids,
-                    failed_ids=catalog_failed,
-                    attempted_ids=attempted_ids + catalog_sent + catalog_failed,
+                    failed_ids=catalog_failed + deferred_ids,
+                    attempted_ids=attempted_ids
+                    + catalog_sent
+                    + catalog_failed
+                    + deferred_ids,
+                    hub_failed_messages=deferred_messages,
                 )
 
             events = [ev for _, ev in pending_events]
@@ -232,12 +256,16 @@ class HubClient:
             return OutboxSendResult(
                 sent_ids=catalog_sent + catalog_digest_skipped + sent_ids,
                 ignored_ids=ignored_ids,
-                failed_ids=catalog_failed + failed_ids,
+                failed_ids=catalog_failed + failed_ids + deferred_ids,
                 attempted_ids=attempted_ids
                 + catalog_sent
                 + catalog_failed
-                + catalog_digest_skipped,
-                hub_failed_messages=hub_failed_messages,
+                + catalog_digest_skipped
+                + deferred_ids,
+                hub_failed_messages={
+                    **hub_failed_messages,
+                    **deferred_messages,
+                },
             )
 
     async def get_categoria_in_hub(self, ccate: str) -> dict | None:
