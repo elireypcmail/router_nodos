@@ -20,8 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from config import settings  # noqa: E402
-from db_mysql import MySqlClient  # noqa: E402
+from core.config import settings  # noqa: E402
+from db.mysql import MySqlClient  # noqa: E402
 
 INGEST_TABLES = ("comprasdbf", "ventasi", "kardex", "kardexd", "detalle")
 

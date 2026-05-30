@@ -1,36 +1,36 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 import anyio
 from pydantic import BaseModel, ConfigDict, Field
 
-from categoria_trace import is_categoria_entity, trace, trace_exc, trace_warn
-from config import settings
-from db_mysql import MySqlClient
-from hub_client import HubClient
+from core.categoria_trace import is_categoria_entity, trace, trace_exc, trace_warn
+from core.config import settings
+from db.mysql import MySqlClient
+from hub.client import HubClient
 from middleware.auth import verify_bearer
-from catalog_apply import (
+from catalog.apply import (
     apply_categoria_row,
     apply_inventario_row,
     apply_inventario_dependency_rows,
     apply_proveedor_row,
     assert_inventario_dependencies,
 )
-from sync_apply_trace import (
+from sync.apply_trace import (
     log_apply_exception,
     log_apply_ok,
     log_apply_start,
     log_apply_value_error,
 )
-from pull_inventory_deps import (
+from catalog.pull.inventory_deps import (
     apply_inventory_row_dependencies,
     fetch_row_dependencies_from_hub,
 )
-from pull_catalog_common import fetch_codes_existing
-from sinv_store import delete_sinv, prepare_sinv_upsert, upsert_sinv
-from sprv_store import delete_sprv, upsert_sprv
-from sync_models import SyncApplyRequest
-from sync_store import SyncEvent
+from catalog.pull_common import fetch_codes_existing
+from db.sinv_store import delete_sinv, prepare_sinv_upsert, upsert_sinv
+from db.sprv_store import delete_sprv, upsert_sprv
+from sync.models import SyncApplyRequest
+from sync.store import SyncEvent
 
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 
@@ -444,7 +444,7 @@ async def sync_categorias_legacy(request: Request, _: None = Depends(verify_bear
 
 
 async def _run_category_pull_with_warnings(page_size: int) -> dict:
-    from pull_categoria import run_category_pull_from_hub
+    from catalog.pull.categoria import run_category_pull_from_hub
 
     mysql = MySqlClient()
     if not mysql.is_configured():
@@ -455,7 +455,7 @@ async def _run_category_pull_with_warnings(page_size: int) -> dict:
 
 
 async def _run_provider_pull_with_warnings(page_size: int) -> dict:
-    from pull_proveedor import run_provider_pull_from_hub
+    from catalog.pull.proveedor import run_provider_pull_from_hub
 
     mysql = MySqlClient()
     if not mysql.is_configured():
@@ -485,7 +485,7 @@ async def sync_proveedores_pull(
 
 
 async def _run_category_push_to_hub() -> dict:
-    from push_categoria import run_category_push_to_hub
+    from catalog.push.categoria import run_category_push_to_hub
 
     mysql = MySqlClient()
     if not mysql.is_configured():
@@ -494,7 +494,7 @@ async def _run_category_push_to_hub() -> dict:
 
 
 async def _run_provider_push_to_hub() -> dict:
-    from push_proveedor import run_provider_push_to_hub
+    from catalog.push.proveedor import run_provider_push_to_hub
 
     mysql = MySqlClient()
     if not mysql.is_configured():
@@ -503,7 +503,7 @@ async def _run_provider_push_to_hub() -> dict:
 
 
 async def _run_inventory_push_to_hub() -> dict:
-    from push_inventario import run_inventory_push_to_hub
+    from catalog.push.inventario import run_inventory_push_to_hub
 
     mysql = MySqlClient()
     if not mysql.is_configured():
@@ -548,7 +548,7 @@ async def sync_productos_push(_: None = Depends(verify_bearer)):
 
 
 async def _run_inventory_pull_with_warnings(page_size: int) -> dict:
-    from pull_inventario import run_inventory_pull_from_hub
+    from catalog.pull.inventario import run_inventory_pull_from_hub
 
     mysql = MySqlClient()
     if not mysql.is_configured():
@@ -745,45 +745,83 @@ async def sync_push_inicial(_: None = Depends(verify_bearer)):
     }
 
 
-@router.post("/jobs/{job_id}/push/start", status_code=202)
-async def start_catalog_push_job(job_id: str, _: None = Depends(verify_bearer)):
-    if not settings.huey_enabled:
+def _start_catalog_sync_job(
+    job_id: str,
+    *,
+    direction: str,
+    background_tasks: BackgroundTasks,
+) -> str:
+    if not settings.huey_catalog_sync_enabled:
         raise HTTPException(
             status_code=503,
-            detail="HUEY_ENABLED required for async catalog sync jobs",
+            detail="Catalog sync jobs disabled (HUEY_CATALOG_SYNC_ENABLED=false)",
         )
-    from huey_tasks import catalog_push_job
-    from sync_job_store import save_job
 
-    save_job(job_id, {"job_id": job_id, "direction": "push", "status": "pending"})
-    catalog_push_job(job_id)
+    from sync.jobs.store import save_job
+
+    save_job(job_id, {"job_id": job_id, "direction": direction, "status": "pending"})
+
+    if settings.huey_enabled:
+        if direction == "push":
+            from workers.huey_tasks import schedule_catalog_push_job
+
+            schedule_catalog_push_job(job_id)
+            return "push job enqueued (Huey)"
+        from workers.huey_tasks import schedule_catalog_pull_job
+
+        schedule_catalog_pull_job(job_id)
+        return "pull job enqueued (Huey)"
+
+    if direction == "push":
+        from workers.huey_tasks import run_catalog_push_job
+
+        background_tasks.add_task(run_catalog_push_job, job_id)
+        return (
+            "push job started in-process; set HUEY_ENABLED=true and run "
+            "huey_consumer for production-style retries"
+        )
+    from workers.huey_tasks import run_catalog_pull_job
+
+    background_tasks.add_task(run_catalog_pull_job, job_id)
+    return (
+        "pull job started in-process; set HUEY_ENABLED=true and run "
+        "huey_consumer for production-style retries"
+    )
+
+
+@router.post("/jobs/{job_id}/push/start", status_code=202)
+async def start_catalog_push_job(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    _: None = Depends(verify_bearer),
+):
+    message = _start_catalog_sync_job(
+        job_id, direction="push", background_tasks=background_tasks
+    )
     return JSONResponse(
         status_code=202,
-        content={"jobId": job_id, "status": "pending", "message": "push job enqueued"},
+        content={"jobId": job_id, "status": "pending", "message": message},
     )
 
 
 @router.post("/jobs/{job_id}/pull/start", status_code=202)
-async def start_catalog_pull_job(job_id: str, _: None = Depends(verify_bearer)):
-    if not settings.huey_enabled:
-        raise HTTPException(
-            status_code=503,
-            detail="HUEY_ENABLED required for async catalog sync jobs",
-        )
-    from huey_tasks import catalog_pull_job
-    from sync_job_store import save_job
-
-    save_job(job_id, {"job_id": job_id, "direction": "pull", "status": "pending"})
-    catalog_pull_job(job_id)
+async def start_catalog_pull_job(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    _: None = Depends(verify_bearer),
+):
+    message = _start_catalog_sync_job(
+        job_id, direction="pull", background_tasks=background_tasks
+    )
     return JSONResponse(
         status_code=202,
-        content={"jobId": job_id, "status": "pending", "message": "pull job enqueued"},
+        content={"jobId": job_id, "status": "pending", "message": message},
     )
 
 
 @router.get("/jobs/{job_id}")
 async def get_catalog_job(job_id: str, _: None = Depends(verify_bearer)):
-    from sync_job_store import load_job
+    from sync.jobs.store import load_job
 
     local = load_job(job_id)
     if local:
@@ -900,7 +938,7 @@ async def outbox_flush(
     _: None = Depends(verify_bearer),
     max_batches: int = Query(20, ge=1, le=100),
 ):
-    from huey_tasks import run_outbox_flush_once
+    from workers.huey_tasks import run_outbox_flush_once
 
     batches: list[dict] = []
     total_sent = 0

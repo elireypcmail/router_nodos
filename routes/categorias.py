@@ -3,10 +3,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 import anyio
 
 from categories_models import CategoriaUpsertRequest
-from categoria_trace import trace, trace_exc, trace_warn
-from config import settings
-from db_mysql import MySqlClient
-from hub_client import HubClient
+from core.categoria_trace import trace, trace_exc, trace_warn
+from core.config import settings
+from db.mysql import MySqlClient
+from hub.client import HubClient
 from middleware.auth import verify_bearer
 
 router = APIRouter(prefix="/api/categorias", tags=["categorias"])

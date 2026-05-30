@@ -55,9 +55,9 @@ La guía completa y detallada está en:
 
 Componentes:
 
-- `sync_store.py` (SQLite)
-- `sync_worker.py`
-- `sync_apply.py`
+- `sync/store.py` (SQLite)
+- `sync/worker.py`
+- `sync/apply.py`
 - `routes/sync.py`
 
 ### 2) Nodo -> Hub (CDC / push)
@@ -68,9 +68,9 @@ Componentes:
 Componentes:
 
 - `scripts/mysql_outbox_triggers.sql`
-- `outbox_mysql.py`
-- `outbox_worker.py`
-- `hub_client.py`
+- `outbox/mysql.py`
+- `outbox/worker.py`
+- `hub/client.py`
 
 ### 3) Envío resiliente con Huey (opcional)
 
@@ -80,14 +80,17 @@ Componentes:
 
 Componentes:
 
-- `huey_app.py`
-- `huey_tasks.py`
+- `workers/huey_app.py` (shim raíz: `huey_app.py`)
+- `workers/huey_tasks.py` (consumer: `huey_tasks.huey` en raíz)
 
 ---
 
 ## Estructura del proyecto
 
+Layout por dominio: ver [docs/arquitectura-python.md](docs/arquitectura-python.md).
+
 - `main.py`: entry point de la API
+- `core/`, `db/`, `hub/`, `outbox/`, `catalog/`, `sync/`, `workers/`: lógica de negocio
 - `routes/`: endpoints FastAPI
 - `scripts/`: instaladores y utilidades
   - Windows:

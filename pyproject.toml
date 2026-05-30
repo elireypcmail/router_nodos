@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multishop-nodo-api"
+version = "0.0.0"
+description = "Agente FastAPI Multishop en tienda (MySQL ERP + VPN hub)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "python-dotenv>=1.0.0",
+    "pydantic-settings>=2.6.0",
+    "aiosqlite>=0.20.0",
+    "httpx>=0.27.0",
+    "pymysql>=1.1.0",
+    "huey>=2.5.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "core*",
+    "db*",
+    "hub*",
+    "outbox*",
+    "catalog*",
+    "sync*",
+    "workers*",
+    "routes*",
+    "middleware*",
+]
+
+[tool.setuptools]
+py-modules = ["main", "api", "config", "huey_app", "huey_tasks", "categories_models"]

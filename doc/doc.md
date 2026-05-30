@@ -39,17 +39,17 @@ Regla práctica (identificación):
 
 Se implementó una cola FIFO persistente en SQLite para aplicar eventos en orden:
 
-- **Archivo**: `sync_store.py`
+- **Archivo**: `sync/store.py`
   - `sync_state.last_applied_sequence`
   - cola `sync_queue` con estados `pending/processing/done/failed`
   - idempotencia por `event_id` único
 
-- **Archivo**: `sync_worker.py`
+- **Archivo**: `sync/worker.py`
   - worker async: toma `pending` ordenados por `sequence`, aplica y marca `done`/`failed`.
 
 - **Aplicación (MySQL local)**:
-  - **Archivo**: `sync_apply.py`
-  - **Cliente MySQL**: `db_mysql.py`
+  - **Archivo**: `sync/apply.py`
+  - **Cliente MySQL**: `db/mysql.py`
   - Implementación inicial: `entity="categorias"` (upsert/delete en `catego`).
 
 - **Rutas**:
@@ -70,18 +70,18 @@ Requisito: el nodo debe **enviar eventos** al orquestador cuando se muevan (INSE
 
 ### 4.1 Outbox en MySQL
 
-- **Repositorio**: `outbox_mysql.py`
+- **Repositorio**: `outbox/mysql.py`
   - `sync_outbox` con `status=pending|sent|failed`
   - `fetch_pending()`, `mark_sent()`, `mark_failed()`, `stats()`, `recent()`
 
 ### 4.2 Worker de envío
 
-- **Archivo**: `outbox_worker.py`
+- **Archivo**: `outbox/worker.py`
   - drena `sync_outbox` (`pending`) en batches y envía al hub.
 
 ### 4.3 Cliente hub
 
-- **Archivo**: `hub_client.py`
+- **Archivo**: `hub/client.py`
   - POST hacia `HUB_BASE_URL + HUB_PUSH_PATH`
   - header `x-internal-api-key: HUB_API_KEY` (si está configurado)
 
@@ -157,7 +157,7 @@ Triggers adicionales:
 
 ## 6) Variables de entorno agregadas
 
-En `Multishop-nodo-API/config.py` y `.env.example`:
+En `Multishop-nodo-API/core/config.py` (o shim `config.py`) y `.env.example`:
 
 - Rol:
   - `NODO_ROLE=slave|master`
@@ -219,7 +219,7 @@ LIMIT 20;"
 El nodo puede ponerse al día consultando al hub por eventos a partir del último `last_applied_sequence`.
 
 - **Feature flag**: `HUB_PULL_ENABLED=true`
-- **Worker**: `pull_worker.py` (`HubPullWorker`)
+- **Worker**: `sync/pull_worker.py` (`HubPullWorker`)
 - **Frecuencia**: `HUB_PULL_INTERVAL_SECONDS`
 - **Batch**: `HUB_PULL_BATCH_SIZE`
 

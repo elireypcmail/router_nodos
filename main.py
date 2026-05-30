@@ -7,24 +7,24 @@ import os
 from pathlib import Path
 import ssl
 
-from log_compat import configure_node_logging, ascii_safe
+from core.log_compat import configure_node_logging, ascii_safe
 
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from config import settings
-from db_mysql import MySqlClient
-from hub_client import HubClient
-from outbox_mysql import OutboxRepository
-from outbox_worker import OutboxWorker
+from core.config import settings
+from db.mysql import MySqlClient
+from hub.client import HubClient
+from outbox.mysql import OutboxRepository
+from outbox.worker import OutboxWorker
 from routes import categorias, health, inventario, proveedores, sync
-from sync_apply import SyncApplier
-from sync_store import SyncStore
-from sync_worker import SyncWorker
-from categoria_trace import is_categoria_http_path, trace, trace_exc
-from sync_http_log import sync_http_log_middleware
+from sync.apply import SyncApplier
+from sync.store import SyncStore
+from sync.worker import SyncWorker
+from core.categoria_trace import is_categoria_http_path, trace, trace_exc
+from sync.http_log import sync_http_log_middleware
 
 sync_store: SyncStore | None = None
 sync_worker: SyncWorker | None = None
@@ -98,12 +98,12 @@ async def lifespan(_app: FastAPI):
             raise RuntimeError("HUEY_ENABLED requires MYSQL_* configured")
         outbox_repo = OutboxRepository(mysql)
         await _ensure_outbox_schema_with_retry(outbox_repo)
-        import huey_tasks
+        from workers.huey_tasks import bootstrap_outbox_scheduler
 
-        huey_tasks.enqueue_outbox()
+        bootstrap_outbox_scheduler()
 
     try:
-        from sync_job_recovery import recover_stale_local_jobs
+        from sync.jobs.recovery import recover_stale_local_jobs
 
         await recover_stale_local_jobs()
     except Exception as exc:

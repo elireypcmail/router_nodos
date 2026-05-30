@@ -3,9 +3,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 import anyio
 from pydantic import BaseModel
 
-from config import settings
-from db_mysql import MySqlClient
-from sprv_store import delete_sprv, upsert_sprv
+from core.config import settings
+from db.mysql import MySqlClient
+from db.sprv_store import delete_sprv, upsert_sprv
 from middleware.auth import verify_bearer
 
 router = APIRouter(prefix="/api", tags=["proveedores"])

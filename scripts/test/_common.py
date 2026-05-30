@@ -22,10 +22,10 @@ os.chdir(NODO_ROOT)
 if str(NODO_ROOT) not in sys.path:
     sys.path.insert(0, str(NODO_ROOT))
 
-from config import settings  # noqa: E402
-from db_mysql import MySqlClient  # noqa: E402
-from hub_client import HubClient  # noqa: E402
-from outbox_mysql import OutboxRepository  # noqa: E402
+from core.config import settings  # noqa: E402
+from db.mysql import MySqlClient  # noqa: E402
+from hub.client import HubClient  # noqa: E402
+from outbox.mysql import OutboxRepository  # noqa: E402
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:

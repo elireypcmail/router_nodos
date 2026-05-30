@@ -1,24 +1,5 @@
-from __future__ import annotations
+"""Shim: instancia Huey en workers.huey_app (alternativa: huey_tasks.huey para el consumer)."""
 
-import os
-from pathlib import Path
+from workers.huey_app import huey
 
-from huey import SqliteHuey
-
-from config import settings
-
-
-def _ensure_parent_dir(path: str) -> None:
-    p = Path(path)
-    parent = p.parent
-    if str(parent) and not parent.exists():
-        parent.mkdir(parents=True, exist_ok=True)
-
-
-_ensure_parent_dir(settings.huey_db_path)
-
-huey = SqliteHuey(
-    name="multishop-nodo",
-    filename=settings.huey_db_path,
-    immediate=False,
-)
+__all__ = ["huey"]
