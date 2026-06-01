@@ -9,25 +9,10 @@ from db.mysql import MySqlClient
 from hub.client import HubClient
 from core.json_util import json_safe
 from catalog.push.categoria import _hub_batch_stats
+from catalog.push.detalle_sql import DETALLE_PUSH_FROM, DETALLE_PUSH_SELECT
 from db.sinv_store import SINV_HUB_FIELDS
 
 SINV_PUSH_EXTRA_FIELDS = ("existencia", "costo", "costopro", "costoant")
-
-DETALLE_PUSH_FIELDS = (
-    "codigod",
-    "lote",
-    "cubica",
-    "nubica",
-    "existencia",
-    "vence",
-    "elabora",
-    "calidad",
-    "costo",
-    "costopro",
-)
-
-DETALLE_PUSH_SELECT = ", ".join(f"d.{c}" for c in DETALLE_PUSH_FIELDS if c != "nubica")
-DETALLE_PUSH_SELECT = f"{DETALLE_PUSH_SELECT}, u.nubica"
 
 
 def _fetch_detalle_by_codigo(mysql: MySqlClient) -> dict[str, list[dict[str, Any]]]:
@@ -39,8 +24,7 @@ def _fetch_detalle_by_codigo(mysql: MySqlClient) -> dict[str, list[dict[str, Any
             cur.execute(
                 f"""
                 SELECT d.codigo, {DETALLE_PUSH_SELECT}
-                FROM detalle d
-                LEFT JOIN ubica u ON d.cubica = u.cubica
+                {DETALLE_PUSH_FROM}
                 ORDER BY d.codigo ASC, d.cubica ASC, d.lote ASC, d.vence ASC
                 """
             )

@@ -17,21 +17,10 @@ from outbox.digest import (
 )
 from db.mysql import MySqlClient
 from core.json_util import json_safe
-from catalog.push.inventario import DETALLE_PUSH_SELECT
+from catalog.push.detalle_sql import DETALLE_PUSH_FROM, DETALLE_PUSH_SELECT
 from db.sprv_store import SPRV_BODY_FIELDS
 
 SINV_PUSH_EXTRA_FIELDS = ("existencia", "costo", "costopro", "costoant")
-DETALLE_PUSH_FIELDS = (
-    "codigod",
-    "lote",
-    "cubica",
-    "existencia",
-    "vence",
-    "elabora",
-    "calidad",
-    "costo",
-    "costopro",
-)
 
 logger = logging.getLogger("multishop.outbox")
 
@@ -119,8 +108,7 @@ def _load_sinv_push_item(mysql: MySqlClient, codigo: str) -> dict[str, Any] | No
             cur.execute(
                 f"""
                 SELECT {DETALLE_PUSH_SELECT}
-                FROM detalle d
-                LEFT JOIN ubica u ON d.cubica = u.cubica
+                {DETALLE_PUSH_FROM}
                 WHERE d.codigo = %s
                 ORDER BY d.cubica ASC, d.lote ASC, d.vence ASC
                 """,
