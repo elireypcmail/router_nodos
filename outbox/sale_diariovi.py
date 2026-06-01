@@ -7,6 +7,7 @@ from datetime import date, datetime
 from typing import Any
 
 from db.mysql import MySqlClient
+from db.schema_cache import TableColumnCache
 
 
 @dataclass(frozen=True)
@@ -44,8 +45,16 @@ def _get_row_value(row: dict[str, Any], *keys: str) -> Any:
     return None
 
 
-def _table_has_column(cur: Any, table: str, column: str) -> bool:
-    cur.execute(f"SHOW COLUMNS FROM {table}")
+def _table_has_column(
+    cur: Any,
+    table: str,
+    column: str,
+    *,
+    col_cache: TableColumnCache | None = None,
+) -> bool:
+    if col_cache is not None:
+        return col_cache.has_column(cur, table, column)
+    cur.execute(f"SHOW COLUMNS FROM `{table}`")
     rows = cur.fetchall() or []
     for row in rows:
         if not isinstance(row, dict):
@@ -57,10 +66,14 @@ def _table_has_column(cur: Any, table: str, column: str) -> bool:
 
 
 def _fetch_diariovi_by_numero(
-    cur: Any, *, codigo: str, numero: str
+    cur: Any,
+    *,
+    codigo: str,
+    numero: str,
+    col_cache: TableColumnCache | None = None,
 ) -> dict[str, Any] | None:
-    has_fecha = _table_has_column(cur, "diariovi", "fecha")
-    has_indice = _table_has_column(cur, "diariovi", "indice")
+    has_fecha = _table_has_column(cur, "diariovi", "fecha", col_cache=col_cache)
+    has_indice = _table_has_column(cur, "diariovi", "indice", col_cache=col_cache)
     if has_fecha and has_indice:
         order_by = "fecha DESC, indice DESC, numero DESC"
     elif has_fecha:
@@ -89,9 +102,10 @@ def _fetch_diariovi_by_match(
     codigo: str,
     fecha: date,
     cantidad: float,
+    col_cache: TableColumnCache | None = None,
 ) -> dict[str, Any] | None:
-    has_fecha = _table_has_column(cur, "diariovi", "fecha")
-    has_indice = _table_has_column(cur, "diariovi", "indice")
+    has_fecha = _table_has_column(cur, "diariovi", "fecha", col_cache=col_cache)
+    has_indice = _table_has_column(cur, "diariovi", "indice", col_cache=col_cache)
     if has_fecha and has_indice:
         order_by = "fecha DESC, indice DESC, numero DESC"
     elif has_fecha:
@@ -116,31 +130,47 @@ def _fetch_diariovi_by_match(
 
 
 def lookup_diariovi_sale_line(
-    mysql: MySqlClient, payload: dict[str, Any]
+    mysql: MySqlClient,
+    payload: dict[str, Any],
+    *,
+    cur: Any | None = None,
+    col_cache: TableColumnCache | None = None,
 ) -> dict[str, Any] | None:
     codigo = str(payload.get("codigo") or "").strip()
     if not codigo:
         return None
 
+    def _lookup(active_cur: Any) -> dict[str, Any] | None:
+        numero = str(payload.get("numero") or payload.get("numdoc") or "").strip()
+        if numero:
+            row = _fetch_diariovi_by_numero(
+                active_cur,
+                codigo=codigo,
+                numero=numero,
+                col_cache=col_cache,
+            )
+            if row:
+                return row
+
+        fecha = _parse_fecha(payload.get("fecha"))
+        if not fecha:
+            return None
+        cantidad = _to_float(payload.get("cantidad"))
+        return _fetch_diariovi_by_match(
+            active_cur,
+            codigo=codigo,
+            fecha=fecha,
+            cantidad=cantidad,
+            col_cache=col_cache,
+        )
+
+    if cur is not None:
+        return _lookup(cur)
+
     conn = mysql.connect()
     try:
-        with conn.cursor(dictionary=True) as cur:
-            numero = str(payload.get("numero") or payload.get("numdoc") or "").strip()
-            if numero:
-                row = _fetch_diariovi_by_numero(cur, codigo=codigo, numero=numero)
-                if row:
-                    return row
-
-            fecha = _parse_fecha(payload.get("fecha"))
-            if not fecha:
-                return None
-            cantidad = _to_float(payload.get("cantidad"))
-            return _fetch_diariovi_by_match(
-                cur,
-                codigo=codigo,
-                fecha=fecha,
-                cantidad=cantidad,
-            )
+        with conn.cursor(dictionary=True) as active_cur:
+            return _lookup(active_cur)
     finally:
         conn.close()
 
@@ -181,6 +211,8 @@ def prepare_sale_payload_for_hub(
     payload: dict[str, Any],
     *,
     mysql: MySqlClient | None = None,
+    cur: Any | None = None,
+    col_cache: TableColumnCache | None = None,
 ) -> SaleDiarioViPrepareResult:
     out = dict(payload)
     out.setdefault("monto", _to_float(out.get("cantidad")) * _to_float(out.get("precio")))
@@ -190,7 +222,12 @@ def prepare_sale_payload_for_hub(
     if not client.is_configured():
         return SaleDiarioViPrepareResult(payload=out)
 
-    row = lookup_diariovi_sale_line(client, payload)
+    row = lookup_diariovi_sale_line(
+        client,
+        payload,
+        cur=cur,
+        col_cache=col_cache,
+    )
     if row:
         out = apply_diariovi_to_sale_payload(out, row)
     return SaleDiarioViPrepareResult(payload=out)

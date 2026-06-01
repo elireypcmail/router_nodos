@@ -7,10 +7,8 @@ from typing import Any
 
 from core.json_util import json_safe
 from db.mysql import MySqlClient
-from outbox.purchase_lots import load_purchase_lot_snapshot
-from outbox.purchase_scom import prepare_purchase_payload_for_hub
-from outbox.sale_diariovi import prepare_sale_payload_for_hub
-from hub.catalog_snapshot import load_node_catalog
+from db.schema_cache import TableColumnCache
+from sync.jobs.export_transaction_enrich import ExportTransactionEnricher
 from sync.jobs.transaction_sync_types import (
     TransactionWatermark,
     max_watermark_from_rows,
@@ -85,18 +83,13 @@ def _iter_kardex_rows(
         where_parts.append("TRIM(codigo) = %s")
         params.append(codigo.strip())
     conn = mysql.connect()
+    col_cache = TableColumnCache()
     try:
         with conn.cursor(dictionary=True) as cur:
-            cur.execute("SHOW COLUMNS FROM kardex")
-            columns = {
-                str((row or {}).get("Field") or "").strip().lower()
-                for row in (cur.fetchall() or [])
-                if isinstance(row, dict)
-            }
-
-            has_fecha = "fecha" in columns
-            has_indice = "indice" in columns
-            has_contador = "contador" in columns
+            kardex_cols = col_cache.columns(cur, "kardex")
+            has_fecha = "fecha" in kardex_cols
+            has_indice = "indice" in kardex_cols
+            has_contador = "contador" in kardex_cols
 
             _apply_watermark_filter(
                 where_parts,
@@ -212,46 +205,33 @@ def export_transaction_push_file(
         }
         gz.write(json.dumps(manifest, ensure_ascii=True) + "\n")
 
-        for row in rows:
-            if should_cancel:
-                should_cancel()
-            if mode == "purchase":
-                payload = _purchase_payload(row)
-                prep = prepare_purchase_payload_for_hub(payload, attempts=999, mysql=mysql)
-                payload = prep.payload or payload
-                lotes = load_purchase_lot_snapshot(
-                    mysql,
-                    str(payload.get("codigo") or ""),
-                    preferred_costo=_num(payload.get("costo_actual_factura"))
-                    or _num(payload.get("precio")),
-                    preferred_costopro=_num(payload.get("costo_actual_factura"))
-                    or _num(payload.get("precio")),
+        progress_stride = max(total // 100, 1) if total > 0 else 1
+        with ExportTransactionEnricher(mysql) as enricher:
+            for row in rows:
+                if should_cancel:
+                    should_cancel()
+                if mode == "purchase":
+                    payload = enricher.enrich_purchase(_purchase_payload(row))
+                else:
+                    payload = enricher.enrich_sale(_sale_payload(row))
+
+                event = json_safe(
+                    {
+                        "entity_type": mode,
+                        "event_id": _row_event_id(mode, row),
+                        "payload": json_safe(payload),
+                        "occurred_at": row.get("fecha"),
+                    }
                 )
-                if lotes:
-                    payload["lotes"] = lotes
-            else:
-                payload = _sale_payload(row)
-                payload = prepare_sale_payload_for_hub(payload, mysql=mysql).payload
-
-            codigo_payload = str(payload.get("codigo") or "").strip()
-            if codigo_payload:
-                catalog = load_node_catalog(codigo_payload)
-                if catalog:
-                    payload["node_catalog"] = catalog
-
-            event = json_safe(
-                {
-                    "entity_type": mode,
-                    "event_id": _row_event_id(mode, row),
-                    "payload": json_safe(payload),
-                    "occurred_at": row.get("fecha"),
-                }
-            )
-            gz.write(json.dumps(event, ensure_ascii=True) + "\n")
-            written += 1
-            if on_progress and total > 0:
-                pct = int((written / total) * 100)
-                on_progress(written, total, pct)
+                gz.write(json.dumps(event, ensure_ascii=True) + "\n")
+                written += 1
+                if on_progress and total > 0 and (
+                    written == total
+                    or written == 1
+                    or written % progress_stride == 0
+                ):
+                    pct = int((written / total) * 100)
+                    on_progress(written, total, pct)
 
     tmp.replace(path)
     meta = {

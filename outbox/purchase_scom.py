@@ -9,6 +9,7 @@ from typing import Any
 
 from core.config import settings
 from db.mysql import MySqlClient
+from db.schema_cache import TableColumnCache
 
 _KOBS_INDICE_RE = re.compile(r"Ind:\s*(\d+)", re.IGNORECASE)
 
@@ -67,8 +68,16 @@ def _parse_kobs_indice(kobs: Any) -> str | None:
     return match.group(1).strip()
 
 
-def _table_has_column(cur: Any, table: str, column: str) -> bool:
-    cur.execute(f"SHOW COLUMNS FROM {table}")
+def _table_has_column(
+    cur: Any,
+    table: str,
+    column: str,
+    *,
+    col_cache: TableColumnCache | None = None,
+) -> bool:
+    if col_cache is not None:
+        return col_cache.has_column(cur, table, column)
+    cur.execute(f"SHOW COLUMNS FROM `{table}`")
     rows = cur.fetchall() or []
     for row in rows:
         if not isinstance(row, dict):
@@ -80,9 +89,13 @@ def _table_has_column(cur: Any, table: str, column: str) -> bool:
 
 
 def _fetch_scom_by_indice(
-    cur: Any, *, codigo: str, indice: str
+    cur: Any,
+    *,
+    codigo: str,
+    indice: str,
+    col_cache: TableColumnCache | None = None,
 ) -> dict[str, Any] | None:
-    if not _table_has_column(cur, "scom", "indice"):
+    if not _table_has_column(cur, "scom", "indice", col_cache=col_cache):
         return None
     cur.execute(
         """
@@ -103,9 +116,10 @@ def _fetch_scom_by_match(
     fecha: date,
     cantidad: float,
     costo: float,
+    col_cache: TableColumnCache | None = None,
 ) -> dict[str, Any] | None:
-    has_fecha = _table_has_column(cur, "scom", "fecha")
-    has_indice = _table_has_column(cur, "scom", "indice")
+    has_fecha = _table_has_column(cur, "scom", "fecha", col_cache=col_cache)
+    has_indice = _table_has_column(cur, "scom", "indice", col_cache=col_cache)
     if has_fecha and has_indice:
         order_by = "fecha DESC, indice DESC, numero DESC"
     elif has_fecha:
@@ -132,35 +146,51 @@ def _fetch_scom_by_match(
 
 
 def lookup_scom_purchase_line(
-    mysql: MySqlClient, payload: dict[str, Any]
+    mysql: MySqlClient,
+    payload: dict[str, Any],
+    *,
+    cur: Any | None = None,
+    col_cache: TableColumnCache | None = None,
 ) -> dict[str, Any] | None:
     codigo = str(payload.get("codigo") or "").strip()
     if not codigo:
         return None
 
+    def _lookup(active_cur: Any) -> dict[str, Any] | None:
+        indice = str(payload.get("scom_indice") or "").strip()
+        if not indice:
+            indice = _parse_kobs_indice(payload.get("kobs")) or ""
+        if indice:
+            row = _fetch_scom_by_indice(
+                active_cur,
+                codigo=codigo,
+                indice=indice,
+                col_cache=col_cache,
+            )
+            if row:
+                return row
+
+        fecha = _parse_fecha(payload.get("fecha"))
+        if not fecha:
+            return None
+        cantidad = _to_float(payload.get("cantidad"))
+        costo = _kardex_unit_cost(payload)
+        return _fetch_scom_by_match(
+            active_cur,
+            codigo=codigo,
+            fecha=fecha,
+            cantidad=cantidad,
+            costo=costo,
+            col_cache=col_cache,
+        )
+
+    if cur is not None:
+        return _lookup(cur)
+
     conn = mysql.connect()
     try:
-        with conn.cursor(dictionary=True) as cur:
-            indice = str(payload.get("scom_indice") or "").strip()
-            if not indice:
-                indice = _parse_kobs_indice(payload.get("kobs")) or ""
-            if indice:
-                row = _fetch_scom_by_indice(cur, codigo=codigo, indice=indice)
-                if row:
-                    return row
-
-            fecha = _parse_fecha(payload.get("fecha"))
-            if not fecha:
-                return None
-            cantidad = _to_float(payload.get("cantidad"))
-            costo = _kardex_unit_cost(payload)
-            return _fetch_scom_by_match(
-                cur,
-                codigo=codigo,
-                fecha=fecha,
-                cantidad=cantidad,
-                costo=costo,
-            )
+        with conn.cursor(dictionary=True) as active_cur:
+            return _lookup(active_cur)
     finally:
         conn.close()
 
@@ -195,6 +225,8 @@ def prepare_purchase_payload_for_hub(
     *,
     attempts: int = 0,
     mysql: MySqlClient | None = None,
+    cur: Any | None = None,
+    col_cache: TableColumnCache | None = None,
 ) -> PurchaseScomPrepareResult:
     """
     Resuelve scom antes de enviar al hub.
@@ -209,7 +241,12 @@ def prepare_purchase_payload_for_hub(
         out["monto_source"] = "kardex.fallback_no_mysql"
         return PurchaseScomPrepareResult(payload=out, defer=False)
 
-    scom = lookup_scom_purchase_line(client, payload)
+    scom = lookup_scom_purchase_line(
+        client,
+        payload,
+        cur=cur,
+        col_cache=col_cache,
+    )
     if scom and _to_float(scom.get("subtotal2")) > 0:
         enriched = apply_scom_to_purchase_payload(payload, scom)
         return PurchaseScomPrepareResult(payload=enriched, defer=False)
