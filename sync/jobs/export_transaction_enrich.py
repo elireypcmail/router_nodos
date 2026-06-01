@@ -10,6 +10,7 @@ from hub.catalog_snapshot import load_node_catalog_with_cursor
 from outbox.purchase_lots import load_purchase_lot_snapshot
 from outbox.purchase_scom import prepare_purchase_payload_for_hub
 from outbox.sale_diariovi import prepare_sale_payload_for_hub
+from sync.jobs.node_stock_snapshot import attach_node_stock_fields
 
 
 class ExportTransactionEnricher:
@@ -69,6 +70,15 @@ class ExportTransactionEnricher:
             )
             if catalog:
                 out["node_catalog"] = catalog
+            out = attach_node_stock_fields(
+                out,
+                mysql=self.mysql,
+                cur=self._cur,
+                codigo=codigo,
+                detalle_rows_cache=self._detalle_rows,
+                preferred_costo=costo or None,
+                preferred_costopro=costo or None,
+            )
         return out
 
     def enrich_sale(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -90,4 +100,24 @@ class ExportTransactionEnricher:
             )
             if catalog:
                 out["node_catalog"] = catalog
+            out = attach_node_stock_fields(
+                out,
+                mysql=self.mysql,
+                cur=self._cur,
+                codigo=codigo,
+                detalle_rows_cache=self._detalle_rows,
+            )
+        return out
+
+    def enrich_kardex_adjustment(self, payload: dict[str, Any]) -> dict[str, Any]:
+        out = dict(payload)
+        codigo = str(out.get("codigo") or "").strip()
+        if codigo and self._cur is not None:
+            out = attach_node_stock_fields(
+                out,
+                mysql=self.mysql,
+                cur=self._cur,
+                codigo=codigo,
+                detalle_rows_cache=self._detalle_rows,
+            )
         return out

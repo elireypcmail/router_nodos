@@ -10,6 +10,17 @@ def resolve_job_entity_type(job_meta: dict[str, Any]) -> str:
     return str(raw).strip().lower() or "inventory"
 
 
+def resolve_transaction_mode_from_entity(entity: str) -> str | None:
+    key = entity.strip().lower()
+    if key in ("transaction_purchase", "transactions_purchase"):
+        return "purchase"
+    if key in ("transaction_sale", "transactions_sale"):
+        return "sale"
+    if key == "transactions":
+        return None
+    return None
+
+
 async def fetch_hub_job_meta(hub: HubClient, job_id: str) -> dict[str, Any]:
     meta = await hub.get_sync_job(job_id)
     if not isinstance(meta, dict):

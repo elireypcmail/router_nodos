@@ -142,91 +142,61 @@ async def _finalize_cancelled_job(job_id: str, hub: HubClient) -> dict:
     return {"job_id": job_id, "status": "cancelled", "message": "ok"}
 
 
-async def _catalog_transactions_push_job_async(job_id: str, hub: HubClient) -> dict:
+async def _catalog_transaction_mode_push_job_async(
+    job_id: str,
+    hub: HubClient,
+    *,
+    mode: str,
+) -> dict:
     from sync.jobs.catalog_job_runner import fetch_hub_job_meta, resolve_transaction_since
     from sync.jobs.export_transactions import export_transaction_push_file
 
+    phase = "compras" if mode == "purchase" else "ventas"
     job_meta = await fetch_hub_job_meta(hub, job_id)
-    since_purchase = resolve_transaction_since(job_meta, "purchase")
-    since_sale = resolve_transaction_since(job_meta, "sale")
+    since_wm = resolve_transaction_since(job_meta, mode)
     mysql = MySqlClient()
-    step_exports: dict[str, tuple] = {}
 
-    for step_name, mode, phase in (
-        ("compras", "purchase", "compras"),
-        ("ventas", "sale", "ventas"),
-    ):
-        await ensure_job_active(hub, job_id)
-        sub_id = f"{job_id}-{mode}"
-        nodo_export_lo = 8 if mode == "purchase" else 55
-        nodo_export_hi = 28 if mode == "purchase" else 72
-        nodo_ingest_hi = 50 if mode == "purchase" else 95
-        hub_ingest_hi = 50 if mode == "purchase" else 95
+    def on_export(done: int, total: int, pct: int) -> None:
+        ensure_not_cancelled_sync(job_id)
 
-        def on_export(done: int, total: int, pct: int) -> None:
-            ensure_not_cancelled_sync(job_id)
-            span = max(nodo_export_hi - nodo_export_lo, 1)
-            nodo_pct = nodo_export_lo + int((pct / 100) * span)
-
-            async def _report() -> None:
-                await report_progress(
-                    hub,
-                    job_id,
-                    phase=phase,
-                    progress_nodo=nodo_pct,
-                    total_rows=total,
-                    processed_rows=done,
-                    force=(done == 0 or done == total or pct % 10 == 0),
-                )
-
-            anyio.from_thread.run(_report)
-
-        since_wm = since_purchase if mode == "purchase" else since_sale
-
-        path, file_rows, export_meta = await anyio.to_thread.run_sync(
-            lambda m=mode, sid=sub_id, sw=since_wm: export_transaction_push_file(
-                job_id=sid,
-                mysql=mysql,
-                nodo_id=settings.nodo_id,
-                mode=m,
-                codigo=None,
-                since_watermark=sw,
-                should_cancel=lambda: ensure_not_cancelled_sync(job_id),
-                on_progress=on_export,
+        async def _report() -> None:
+            await report_progress(
+                hub,
+                job_id,
+                phase=phase,
+                progress_nodo=pct,
+                total_rows=total,
+                processed_rows=done,
+                force=(done == 0 or done == total or pct % 10 == 0),
             )
-        )
-        step_exports[step_name] = (path, file_rows, export_meta)
 
-    await ensure_hub_job_active(hub, job_id)
-    from sync.jobs.merge_transaction_push_files import merge_transaction_push_files
+        anyio.from_thread.run(_report)
 
-    purchase_path, purchase_rows, purchase_meta = step_exports["compras"]
-    sale_path, sale_rows, sale_meta = step_exports["ventas"]
-    combined_path = await anyio.to_thread.run_sync(
-        lambda: merge_transaction_push_files(
-            job_id,
-            purchase_path=purchase_path,
-            sale_path=sale_path,
-            purchase_meta=purchase_meta,
-            sale_meta=sale_meta,
+    await ensure_job_active(hub, job_id)
+    path, file_rows, _export_meta = await anyio.to_thread.run_sync(
+        lambda: export_transaction_push_file(
+            job_id=job_id,
+            mysql=mysql,
             nodo_id=settings.nodo_id,
+            mode=mode,
+            codigo=None,
+            since_watermark=since_wm,
+            should_cancel=lambda: ensure_not_cancelled_sync(job_id),
+            on_progress=on_export,
         )
     )
-    delete_job_file(f"{job_id}-purchase")
-    delete_job_file(f"{job_id}-sale")
-    total_rows = int(purchase_rows or 0) + int(sale_rows or 0)
 
     await report_progress(
         hub,
         job_id,
         phase="upload",
-        progress_nodo=72,
+        progress_nodo=95,
         progress_hub=0,
-        total_rows=total_rows,
+        total_rows=int(file_rows or 0),
         processed_rows=0,
         force=True,
     )
-    await hub.upload_sync_job_file(job_id, combined_path)
+    await hub.upload_sync_job_file(job_id, path)
     delete_job_file(job_id)
     await report_progress(
         hub,
@@ -234,7 +204,7 @@ async def _catalog_transactions_push_job_async(job_id: str, hub: HubClient) -> d
         phase="process",
         progress_nodo=100,
         progress_hub=0,
-        total_rows=total_rows,
+        total_rows=int(file_rows or 0),
         processed_rows=0,
         force=True,
     )
@@ -245,16 +215,15 @@ async def _catalog_transactions_push_job_async(job_id: str, hub: HubClient) -> d
             "direction": "push",
             "status": "uploaded",
             "phase": "process",
-            "purchase_rows": purchase_rows,
-            "sale_rows": sale_rows,
+            "mode": mode,
+            "file_rows": file_rows,
         },
     )
     return {
         "job_id": job_id,
         "status": "uploaded",
-        "total_rows": total_rows,
-        "purchase_rows": purchase_rows,
-        "sale_rows": sale_rows,
+        "mode": mode,
+        "total_rows": int(file_rows or 0),
     }
 
 
@@ -268,7 +237,11 @@ async def _catalog_push_job_async(job_id: str) -> dict:
     job_meta = await fetch_hub_job_meta(hub, job_id)
     entity = resolve_job_entity_type(job_meta)
 
-    if entity == "transactions":
+    from sync.jobs.catalog_job_runner import resolve_transaction_mode_from_entity
+
+    txn_mode = resolve_transaction_mode_from_entity(entity)
+    if txn_mode:
+        phase = "compras" if txn_mode == "purchase" else "ventas"
         save_job(
             job_id,
             {
@@ -276,11 +249,13 @@ async def _catalog_push_job_async(job_id: str) -> dict:
                 "direction": "push",
                 "entity_type": entity,
                 "status": "running",
-                "phase": "compras",
+                "phase": phase,
             },
         )
         try:
-            return await _catalog_transactions_push_job_async(job_id, hub)
+            return await _catalog_transaction_mode_push_job_async(
+                job_id, hub, mode=txn_mode
+            )
         except JobCancelledError:
             return await _finalize_cancelled_job(job_id, hub)
         except Exception as ex:
