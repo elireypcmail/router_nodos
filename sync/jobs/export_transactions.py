@@ -33,8 +33,6 @@ def _job_file(job_id: str) -> Path:
 def _row_event_id(
     mode: str,
     row: dict[str, Any],
-    *,
-    position: int,
 ) -> str:
     indice = str(row.get("indice") or "").strip()
     if indice:
@@ -43,7 +41,7 @@ def _row_event_id(
     numero = str(row.get("numero") or "").strip()
     fecha = str(row.get("fecha") or "").strip()[:10]
     codigo = str(row.get("codigo") or "").strip()
-    return f"{mode}-kardex-fallback-{contador or '-'}-{numero or '-'}-{fecha or '-'}-{codigo or '-'}-{position}"
+    return f"{mode}-kardex-fallback-{contador or '-'}-{numero or '-'}-{fecha or '-'}-{codigo or '-'}"
 
 
 def _iter_kardex_rows(mysql: MySqlClient, *, mode: str, codigo: str | None) -> list[dict[str, Any]]:
@@ -159,7 +157,7 @@ def export_transaction_push_file(
         }
         gz.write(json.dumps(manifest, ensure_ascii=True) + "\n")
 
-        for index, row in enumerate(rows, start=1):
+        for row in rows:
             if mode == "purchase":
                 payload = _purchase_payload(row)
                 prep = prepare_purchase_payload_for_hub(payload, attempts=999, mysql=mysql)
@@ -187,7 +185,7 @@ def export_transaction_push_file(
             event = json_safe(
                 {
                 "entity_type": mode,
-                "event_id": _row_event_id(mode, row, position=index),
+                "event_id": _row_event_id(mode, row),
                 "payload": json_safe(payload),
                 "occurred_at": row.get("fecha"),
                 }
