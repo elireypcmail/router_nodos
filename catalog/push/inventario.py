@@ -17,6 +17,7 @@ DETALLE_PUSH_FIELDS = (
     "codigod",
     "lote",
     "cubica",
+    "nubica",
     "existencia",
     "vence",
     "elabora",
@@ -25,10 +26,11 @@ DETALLE_PUSH_FIELDS = (
     "costopro",
 )
 
+DETALLE_PUSH_SELECT = ", ".join(f"d.{c}" for c in DETALLE_PUSH_FIELDS if c != "nubica")
+DETALLE_PUSH_SELECT = f"{DETALLE_PUSH_SELECT}, u.nubica"
+
 
 def _fetch_detalle_by_codigo(mysql: MySqlClient) -> dict[str, list[dict[str, Any]]]:
-    col_list = ", ".join(("codigo", *DETALLE_PUSH_FIELDS))
-
     def load():
         conn = mysql.connect()
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -36,9 +38,10 @@ def _fetch_detalle_by_codigo(mysql: MySqlClient) -> dict[str, list[dict[str, Any
             cur = conn.cursor(dictionary=True)
             cur.execute(
                 f"""
-                SELECT {col_list}
-                FROM detalle
-                ORDER BY codigo ASC, cubica ASC, lote ASC, vence ASC
+                SELECT d.codigo, {DETALLE_PUSH_SELECT}
+                FROM detalle d
+                LEFT JOIN ubica u ON d.cubica = u.cubica
+                ORDER BY d.codigo ASC, d.cubica ASC, d.lote ASC, d.vence ASC
                 """
             )
             for row in cur.fetchall() or []:

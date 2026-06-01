@@ -192,8 +192,9 @@ def _fetch_lotes(codigo: str) -> list[dict]:
             SELECT
               indice,
               codigod,
-              lote,
-              cubica,
+              d.lote,
+              d.cubica,
+              u.nubica,
               existencia,
               vence,
               elabora,
@@ -204,9 +205,10 @@ def _fetch_lotes(codigo: str) -> list[dict]:
               costopropr,
               disponible,
               traslado
-            FROM detalle
-            WHERE codigo = %s
-            ORDER BY cubica ASC, lote ASC, vence ASC
+            FROM detalle d
+            LEFT JOIN ubica u ON d.cubica = u.cubica
+            WHERE d.codigo = %s
+            ORDER BY d.cubica ASC, d.lote ASC, d.vence ASC
             """,
             (codigo,),
         )

@@ -17,7 +17,7 @@ from outbox.digest import (
 )
 from db.mysql import MySqlClient
 from core.json_util import json_safe
-from db.sinv_store import SINV_HUB_FIELDS
+from catalog.push.inventario import DETALLE_PUSH_SELECT
 from db.sprv_store import SPRV_BODY_FIELDS
 
 SINV_PUSH_EXTRA_FIELDS = ("existencia", "costo", "costopro", "costoant")
@@ -103,7 +103,6 @@ def _load_sprv_row(mysql: MySqlClient, cod_prv: str) -> dict[str, Any] | None:
 
 def _load_sinv_push_item(mysql: MySqlClient, codigo: str) -> dict[str, Any] | None:
     sinv_cols = ", ".join([*SINV_HUB_FIELDS, *SINV_PUSH_EXTRA_FIELDS])
-    det_cols = ", ".join(("codigo", *DETALLE_PUSH_FIELDS))
 
     def load() -> dict[str, Any] | None:
         conn = mysql.connect()
@@ -119,10 +118,11 @@ def _load_sinv_push_item(mysql: MySqlClient, codigo: str) -> dict[str, Any] | No
             payload = json_safe(dict(row))
             cur.execute(
                 f"""
-                SELECT {det_cols}
-                FROM detalle
-                WHERE codigo = %s
-                ORDER BY cubica ASC, lote ASC, vence ASC
+                SELECT {DETALLE_PUSH_SELECT}
+                FROM detalle d
+                LEFT JOIN ubica u ON d.cubica = u.cubica
+                WHERE d.codigo = %s
+                ORDER BY d.cubica ASC, d.lote ASC, d.vence ASC
                 """,
                 (codigo,),
             )
