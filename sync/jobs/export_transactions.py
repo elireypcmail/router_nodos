@@ -136,12 +136,14 @@ def export_transaction_push_file(
                 payload = _sale_payload(row)
                 payload = prepare_sale_payload_for_hub(payload, mysql=mysql).payload
 
-            event = {
+            event = json_safe(
+                {
                 "entity_type": mode,
                 "event_id": f"{mode}-kardex-{row.get('indice')}",
                 "payload": json_safe(payload),
                 "occurred_at": row.get("fecha"),
-            }
+                }
+            )
             gz.write(json.dumps(event, ensure_ascii=True) + "\n")
 
     tmp.replace(path)
