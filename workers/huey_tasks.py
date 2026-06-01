@@ -124,14 +124,131 @@ def catalog_pull_job(job_id: str) -> dict:
     return anyio.run(_catalog_pull_job_async, job_id)
 
 
+async def _catalog_transactions_push_job_async(job_id: str, hub: HubClient) -> dict:
+    from sync.jobs.export_transactions import export_transaction_push_file
+
+    mysql = MySqlClient()
+    totals = {
+        "file_rows": 0,
+        "accepted": 0,
+        "duplicates": 0,
+        "failed": 0,
+        "total": 0,
+    }
+    pushes: dict[str, dict] = {}
+
+    for step_name, mode, phase in (
+        ("compras", "purchase", "compras"),
+        ("ventas", "sale", "ventas"),
+    ):
+        sub_id = f"{job_id}-{mode}"
+        await report_progress(
+            hub,
+            job_id,
+            phase=phase,
+            progress_nodo=8 if mode == "purchase" else 55,
+            force=True,
+        )
+        path, file_rows = await anyio.to_thread.run_sync(
+            lambda m=mode, sid=sub_id: export_transaction_push_file(
+                job_id=sid,
+                mysql=mysql,
+                nodo_id=settings.nodo_id,
+                mode=m,
+                codigo=None,
+            )
+        )
+        await report_progress(
+            hub,
+            job_id,
+            phase=phase,
+            progress_nodo=30 if mode == "purchase" else 75,
+            total_rows=file_rows,
+            force=True,
+        )
+        hub_result = await hub.send_ingest_events_from_file(path)
+        delete_job_file(sub_id)
+        pushes[step_name] = {
+            "mode": mode,
+            "file_rows": file_rows,
+            "hub_result": hub_result,
+        }
+        totals["file_rows"] += int(file_rows or 0)
+        totals["accepted"] += int((hub_result or {}).get("accepted") or 0)
+        totals["duplicates"] += int((hub_result or {}).get("duplicates") or 0)
+        totals["failed"] += int((hub_result or {}).get("failed") or 0)
+        totals["total"] += int((hub_result or {}).get("total") or 0)
+        await report_progress(
+            hub,
+            job_id,
+            phase=phase,
+            progress_nodo=50 if mode == "purchase" else 95,
+            progress_hub=50 if mode == "purchase" else 95,
+            total_rows=file_rows,
+            force=True,
+        )
+
+    summary = {
+        "message": "ok",
+        "pushes": pushes,
+        "totals": totals,
+    }
+    await hub.patch_sync_job_progress(
+        job_id,
+        {
+            "status": "completed",
+            "result_summary": summary,
+            "progress_nodo": 100,
+            "progress_hub": 100,
+        },
+    )
+    save_job(job_id, {"job_id": job_id, "status": "completed", "result": summary})
+    return summary
+
+
 async def _catalog_push_job_async(job_id: str) -> dict:
     mysql = MySqlClient()
     if not mysql.is_configured():
         raise RuntimeError("MYSQL_* required for catalog push job")
     hub = HubClient()
+    from sync.jobs.catalog_job_runner import fetch_hub_job_meta, resolve_job_entity_type
+
+    job_meta = await fetch_hub_job_meta(hub, job_id)
+    entity = resolve_job_entity_type(job_meta)
+
+    if entity == "transactions":
+        save_job(
+            job_id,
+            {
+                "job_id": job_id,
+                "direction": "push",
+                "entity_type": entity,
+                "status": "running",
+                "phase": "compras",
+            },
+        )
+        try:
+            return await _catalog_transactions_push_job_async(job_id, hub)
+        except Exception as ex:
+            save_job(job_id, {"job_id": job_id, "status": "failed", "error": str(ex)})
+            try:
+                await hub.patch_sync_job_progress(
+                    job_id,
+                    {"status": "failed", "error_message": str(ex)},
+                )
+            except Exception:
+                pass
+            raise
+
     save_job(
         job_id,
-        {"job_id": job_id, "direction": "push", "status": "running", "phase": "export"},
+        {
+            "job_id": job_id,
+            "direction": "push",
+            "entity_type": entity,
+            "status": "running",
+            "phase": "export",
+        },
     )
 
     def on_export(done: int, total: int, pct: int) -> None:
@@ -148,8 +265,19 @@ async def _catalog_push_job_async(job_id: str) -> dict:
         anyio.from_thread.run(_report)
 
     try:
+        if entity == "inventory_category":
+            from sync.jobs.export_catalog import export_category_push_file
+
+            export_fn = export_category_push_file
+        elif entity == "provider":
+            from sync.jobs.export_catalog import export_provider_push_file
+
+            export_fn = export_provider_push_file
+        else:
+            export_fn = export_inventory_push_file
+
         path, total = await anyio.to_thread.run_sync(
-            lambda: export_inventory_push_file(
+            lambda: export_fn(
                 job_id,
                 mysql,
                 settings.nodo_id,
@@ -174,7 +302,6 @@ async def _catalog_push_job_async(job_id: str) -> dict:
             total_rows=total,
             force=True,
         )
-        # uploaded = trabajo del nodo terminado; el hub sigue en phase process (no listar como activo local).
         save_job(
             job_id,
             {
@@ -220,21 +347,48 @@ async def _catalog_pull_job_async(job_id: str) -> dict:
     if not mysql.is_configured():
         raise RuntimeError("MYSQL_* required for catalog pull job")
     hub = HubClient()
+    from sync.jobs.catalog_job_runner import fetch_hub_job_meta, resolve_job_entity_type
+    from sync.jobs.pull_catalog import (
+        run_category_pull_from_file,
+        run_provider_pull_from_file,
+    )
+
+    job_meta = await fetch_hub_job_meta(hub, job_id)
+    entity = resolve_job_entity_type(job_meta)
     path = job_file_path(job_id)
     save_job(
         job_id,
-        {"job_id": job_id, "direction": "pull", "status": "running", "phase": "download"},
+        {
+            "job_id": job_id,
+            "direction": "pull",
+            "entity_type": entity,
+            "status": "running",
+            "phase": "download",
+        },
     )
     try:
         await report_progress(hub, job_id, phase="download", progress_nodo=5, force=True)
         await hub.download_sync_job_file(job_id, path)
         await report_progress(hub, job_id, phase="download", progress_nodo=40, force=True)
 
-        result = await run_inventory_pull_from_file(
-            file_path=path,
-            hub=hub,
-            mysql=mysql,
-        )
+        if entity == "inventory_category":
+            result = await run_category_pull_from_file(
+                file_path=path,
+                hub=hub,
+                mysql=mysql,
+            )
+        elif entity == "provider":
+            result = await run_provider_pull_from_file(
+                file_path=path,
+                hub=hub,
+                mysql=mysql,
+            )
+        else:
+            result = await run_inventory_pull_from_file(
+                file_path=path,
+                hub=hub,
+                mysql=mysql,
+            )
         await report_progress(
             hub,
             job_id,
@@ -249,8 +403,9 @@ async def _catalog_pull_job_async(job_id: str) -> dict:
             {"status": "completed", "result_summary": result, "progress_nodo": 100},
         )
         logger.info(
-            "catalog pull job completed job_id=%s hub_status=%s pulled=%s",
+            "catalog pull job completed job_id=%s entity=%s hub_status=%s pulled=%s",
             job_id,
+            entity,
             completed.get("status") if isinstance(completed, dict) else completed,
             result.get("pulled"),
         )
