@@ -514,6 +514,7 @@ async def _run_transaction_push_file_to_hub(
     *,
     mode: str,
     codigo: str | None = None,
+    since_watermark=None,
 ) -> dict:
     from sync.jobs.export_transactions import export_transaction_push_file
     from sync.jobs.files import delete_job_file
@@ -524,13 +525,14 @@ async def _run_transaction_push_file_to_hub(
     hub = HubClient()
     job_id = f"{mode}-{uuid.uuid4()}"
 
-    path, total = await anyio.to_thread.run_sync(
+    path, total, export_meta = await anyio.to_thread.run_sync(
         lambda: export_transaction_push_file(
             job_id=job_id,
             mysql=mysql,
             nodo_id=settings.nodo_id,
             mode=mode,
             codigo=codigo,
+            since_watermark=since_watermark,
         )
     )
     try:
@@ -544,20 +546,28 @@ async def _run_transaction_push_file_to_hub(
         "job_id": job_id,
         "file_rows": total,
         "hub_result": result,
+        "watermark": {
+            "since": export_meta.get("since_watermark"),
+            "max": export_meta.get("max_watermark"),
+        },
     }
 
 
 async def _run_transaction_push_general_to_hub(
     *,
     codigo: str | None = None,
+    since_purchase=None,
+    since_sale=None,
 ) -> dict:
     compras = await _run_transaction_push_file_to_hub(
         mode="purchase",
         codigo=codigo,
+        since_watermark=since_purchase,
     )
     ventas = await _run_transaction_push_file_to_hub(
         mode="sale",
         codigo=codigo,
+        since_watermark=since_sale,
     )
     return {
         "message": "ok",
@@ -621,9 +631,26 @@ async def sync_compras_push_file(
         default=None,
         description="Opcional: si se indica, empuja solo compras de ese producto (codigo)",
     ),
+    since_fecha: str | None = Query(
+        default=None,
+        description="Desde hub: exportar kardex con fecha posterior (YYYY-MM-DD)",
+    ),
+    since_contador: int | None = Query(
+        default=None,
+        description="Desempate mismo día (contador kardex)",
+    ),
     _: None = Depends(verify_bearer),
 ):
-    return await _run_transaction_push_file_to_hub(mode="purchase", codigo=codigo)
+    from sync.jobs.transaction_sync_types import parse_since_query
+
+    since = None if (codigo or "").strip() else parse_since_query(
+        since_fecha, since_contador
+    )
+    return await _run_transaction_push_file_to_hub(
+        mode="purchase",
+        codigo=codigo,
+        since_watermark=since,
+    )
 
 
 @router.post("/ventas/push-file")
@@ -632,9 +659,26 @@ async def sync_ventas_push_file(
         default=None,
         description="Opcional: si se indica, empuja solo ventas de ese producto (codigo)",
     ),
+    since_fecha: str | None = Query(
+        default=None,
+        description="Desde hub: exportar kardex con fecha posterior (YYYY-MM-DD)",
+    ),
+    since_contador: int | None = Query(
+        default=None,
+        description="Desempate mismo día (contador kardex)",
+    ),
     _: None = Depends(verify_bearer),
 ):
-    return await _run_transaction_push_file_to_hub(mode="sale", codigo=codigo)
+    from sync.jobs.transaction_sync_types import parse_since_query
+
+    since = None if (codigo or "").strip() else parse_since_query(
+        since_fecha, since_contador
+    )
+    return await _run_transaction_push_file_to_hub(
+        mode="sale",
+        codigo=codigo,
+        since_watermark=since,
+    )
 
 
 @router.post("/transacciones/push-file")
@@ -645,9 +689,26 @@ async def sync_transacciones_push_file(
             "Opcional: si se indica, empuja compras y ventas del producto (codigo)"
         ),
     ),
+    since_fecha_purchase: str | None = Query(default=None),
+    since_contador_purchase: int | None = Query(default=None),
+    since_fecha_sale: str | None = Query(default=None),
+    since_contador_sale: int | None = Query(default=None),
     _: None = Depends(verify_bearer),
 ):
-    return await _run_transaction_push_general_to_hub(codigo=codigo)
+    from sync.jobs.transaction_sync_types import parse_since_query
+
+    codigo_clean = (codigo or "").strip()
+    since_purchase = None if codigo_clean else parse_since_query(
+        since_fecha_purchase, since_contador_purchase
+    )
+    since_sale = None if codigo_clean else parse_since_query(
+        since_fecha_sale, since_contador_sale
+    )
+    return await _run_transaction_push_general_to_hub(
+        codigo=codigo,
+        since_purchase=since_purchase,
+        since_sale=since_sale,
+    )
 
 
 @router.post("/productos/push")
@@ -905,7 +966,9 @@ async def start_catalog_push_job(
     _: None = Depends(verify_bearer),
 ):
     message = _start_catalog_sync_job(
-        job_id, direction="push", background_tasks=background_tasks
+        job_id,
+        direction="push",
+        background_tasks=background_tasks,
     )
     return JSONResponse(
         status_code=202,
@@ -926,6 +989,22 @@ async def start_catalog_pull_job(
         status_code=202,
         content={"jobId": job_id, "status": "pending", "message": message},
     )
+
+
+@router.post("/jobs/{job_id}/cancel", status_code=200)
+async def cancel_catalog_sync_job(
+    job_id: str,
+    _: None = Depends(verify_bearer),
+):
+    """Parada cooperativa: el worker comprueba cancel_requested en export/apply."""
+    from sync.jobs.cancel import request_local_cancel
+    from sync.jobs.files import delete_job_file
+
+    request_local_cancel(job_id)
+    delete_job_file(job_id)
+    delete_job_file(f"{job_id}-purchase")
+    delete_job_file(f"{job_id}-sale")
+    return {"jobId": job_id, "status": "cancelled", "message": "ok"}
 
 
 @router.get("/jobs/{job_id}")

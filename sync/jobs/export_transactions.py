@@ -11,6 +11,10 @@ from outbox.purchase_lots import load_purchase_lot_snapshot
 from outbox.purchase_scom import prepare_purchase_payload_for_hub
 from outbox.sale_diariovi import prepare_sale_payload_for_hub
 from hub.catalog_snapshot import load_node_catalog
+from sync.jobs.transaction_sync_types import (
+    TransactionWatermark,
+    max_watermark_from_rows,
+)
 
 
 def _num(value: Any) -> float:
@@ -44,7 +48,33 @@ def _row_event_id(
     return f"{mode}-kardex-fallback-{contador or '-'}-{numero or '-'}-{fecha or '-'}-{codigo or '-'}"
 
 
-def _iter_kardex_rows(mysql: MySqlClient, *, mode: str, codigo: str | None) -> list[dict[str, Any]]:
+def _apply_watermark_filter(
+    where_parts: list[str],
+    params: list[Any],
+    watermark: TransactionWatermark | None,
+    *,
+    has_fecha: bool,
+    has_contador: bool,
+) -> None:
+    if watermark is None or not has_fecha:
+        return
+    if has_contador and watermark.contador is not None:
+        where_parts.append(
+            "(fecha > %s OR (fecha = %s AND IFNULL(contador, 0) > %s))"
+        )
+        params.extend([watermark.fecha, watermark.fecha, watermark.contador])
+    else:
+        where_parts.append("fecha > %s")
+        params.append(watermark.fecha)
+
+
+def _iter_kardex_rows(
+    mysql: MySqlClient,
+    *,
+    mode: str,
+    codigo: str | None,
+    since_watermark: TransactionWatermark | None = None,
+) -> list[dict[str, Any]]:
     where_parts: list[str] = []
     params: list[Any] = []
     if mode == "purchase":
@@ -54,7 +84,6 @@ def _iter_kardex_rows(mysql: MySqlClient, *, mode: str, codigo: str | None) -> l
     if codigo:
         where_parts.append("TRIM(codigo) = %s")
         params.append(codigo.strip())
-    where = " AND ".join(where_parts)
     conn = mysql.connect()
     try:
         with conn.cursor(dictionary=True) as cur:
@@ -68,6 +97,14 @@ def _iter_kardex_rows(mysql: MySqlClient, *, mode: str, codigo: str | None) -> l
             has_fecha = "fecha" in columns
             has_indice = "indice" in columns
             has_contador = "contador" in columns
+
+            _apply_watermark_filter(
+                where_parts,
+                params,
+                since_watermark,
+                has_fecha=has_fecha,
+                has_contador=has_contador,
+            )
 
             indice_select = "indice" if has_indice else "NULL"
             if has_fecha and has_indice:
@@ -83,6 +120,7 @@ def _iter_kardex_rows(mysql: MySqlClient, *, mode: str, codigo: str | None) -> l
             else:
                 order_by = "numero ASC, codigo ASC"
 
+            where = " AND ".join(where_parts)
             query = f"""
                 SELECT {indice_select} AS indice, contador, numero, codigo, fecha, costo, compras, ventas, cajero, kobs
                 FROM kardex
@@ -132,18 +170,34 @@ def export_transaction_push_file(
     *,
     mode: str,
     codigo: str | None = None,
-) -> tuple[Path, int]:
+    since_watermark: TransactionWatermark | None = None,
+    should_cancel=None,
+    on_progress=None,
+) -> tuple[Path, int, dict[str, Any]]:
     """
     Crea archivo .ndjson.gz para push transaccional:
     - mode="purchase" -> entity_type purchase
     - mode="sale" -> entity_type sale
+
+    since_watermark: filtro desde hub (None = exportar todo).
     """
     if mode not in {"purchase", "sale"}:
         raise RuntimeError("mode must be purchase|sale")
 
     path = _job_file(job_id)
     tmp = Path(f"{path}.tmp")
-    rows = _iter_kardex_rows(mysql, mode=mode, codigo=codigo)
+    rows = _iter_kardex_rows(
+        mysql,
+        mode=mode,
+        codigo=codigo,
+        since_watermark=since_watermark,
+    )
+    total = len(rows)
+    written = 0
+    max_watermark = max_watermark_from_rows(rows)
+
+    if on_progress and total >= 0:
+        on_progress(0, total, 0)
 
     with gzip.open(tmp, "wt", encoding="utf-8") as gz:
         manifest = {
@@ -151,13 +205,16 @@ def export_transaction_push_file(
             "direction": "push",
             "entity": mode,
             "nodoId": nodo_id,
-            "totalRows": len(rows),
+            "totalRows": total,
             "schema": f"{mode}_v1",
             "codigo": (codigo or "").strip() or None,
+            "sinceWatermark": since_watermark.to_dict() if since_watermark else None,
         }
         gz.write(json.dumps(manifest, ensure_ascii=True) + "\n")
 
         for row in rows:
+            if should_cancel:
+                should_cancel()
             if mode == "purchase":
                 payload = _purchase_payload(row)
                 prep = prepare_purchase_payload_for_hub(payload, attempts=999, mysql=mysql)
@@ -184,14 +241,21 @@ def export_transaction_push_file(
 
             event = json_safe(
                 {
-                "entity_type": mode,
-                "event_id": _row_event_id(mode, row),
-                "payload": json_safe(payload),
-                "occurred_at": row.get("fecha"),
+                    "entity_type": mode,
+                    "event_id": _row_event_id(mode, row),
+                    "payload": json_safe(payload),
+                    "occurred_at": row.get("fecha"),
                 }
             )
             gz.write(json.dumps(event, ensure_ascii=True) + "\n")
+            written += 1
+            if on_progress and total > 0:
+                pct = int((written / total) * 100)
+                on_progress(written, total, pct)
 
     tmp.replace(path)
-    return path, len(rows)
-
+    meta = {
+        "since_watermark": since_watermark.to_dict() if since_watermark else None,
+        "max_watermark": max_watermark.to_dict() if max_watermark else None,
+    }
+    return path, total, meta

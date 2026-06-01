@@ -14,6 +14,7 @@ async def report_progress(
     *,
     phase: str,
     progress_nodo: int,
+    progress_hub: int | None = None,
     total_rows: int | None = None,
     processed_rows: int | None = None,
     force: bool = False,
@@ -35,6 +36,8 @@ async def report_progress(
         "phase": phase,
         "progress_nodo": min(100, max(0, progress_nodo)),
     }
+    if progress_hub is not None:
+        body["progress_hub"] = min(100, max(0, progress_hub))
     if total_rows is not None:
         body["total_rows"] = total_rows
     if processed_rows is not None:

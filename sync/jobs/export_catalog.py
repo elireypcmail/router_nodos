@@ -17,12 +17,15 @@ def _write_manifest_gz(
     manifest: dict[str, Any],
     rows: list[dict[str, Any]],
     on_progress: Callable[[int, int, int], None] | None = None,
+    should_cancel: Callable[[], None] | None = None,
 ) -> int:
     total = len(rows)
     written = 0
     with gzip.open(tmp, "wt", encoding="utf-8") as gz:
         gz.write(json.dumps(manifest, ensure_ascii=True) + "\n")
         for row in rows:
+            if should_cancel:
+                should_cancel()
             gz.write(json.dumps(row, ensure_ascii=True) + "\n")
             written += 1
             if on_progress and total > 0:
@@ -37,6 +40,7 @@ def export_category_push_file(
     nodo_id: str,
     *,
     on_progress=None,
+    should_cancel=None,
 ) -> tuple[Path, int]:
     from sync.jobs.files import job_file_path
 
@@ -51,7 +55,13 @@ def export_category_push_file(
         "totalRows": len(items),
         "schema": "inventory_category_v1",
     }
-    total = _write_manifest_gz(tmp, manifest=manifest, rows=items, on_progress=on_progress)
+    total = _write_manifest_gz(
+        tmp,
+        manifest=manifest,
+        rows=items,
+        on_progress=on_progress,
+        should_cancel=should_cancel,
+    )
     tmp.replace(path)
     return path, total if total > 0 else len(items)
 
@@ -62,6 +72,7 @@ def export_provider_push_file(
     nodo_id: str,
     *,
     on_progress=None,
+    should_cancel=None,
 ) -> tuple[Path, int]:
     from sync.jobs.files import job_file_path
 
@@ -76,6 +87,12 @@ def export_provider_push_file(
         "totalRows": len(items),
         "schema": "provider_v1",
     }
-    total = _write_manifest_gz(tmp, manifest=manifest, rows=items, on_progress=on_progress)
+    total = _write_manifest_gz(
+        tmp,
+        manifest=manifest,
+        rows=items,
+        on_progress=on_progress,
+        should_cancel=should_cancel,
+    )
     tmp.replace(path)
     return path, total if total > 0 else len(items)

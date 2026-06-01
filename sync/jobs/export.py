@@ -18,6 +18,7 @@ def export_inventory_push_file(
     nodo_id: str,
     *,
     on_progress=None,
+    should_cancel=None,
 ) -> tuple[Path, int]:
     from sync.jobs.files import job_file_path
 
@@ -65,6 +66,8 @@ def export_inventory_push_file(
                 if not rows:
                     break
                 for row in rows:
+                    if should_cancel:
+                        should_cancel()
                     if not isinstance(row, dict):
                         continue
                     codigo = str(row.get("codigo") or "").strip()

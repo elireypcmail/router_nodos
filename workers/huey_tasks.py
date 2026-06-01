@@ -16,6 +16,12 @@ from sync.jobs.files import delete_job_file, job_file_path
 from sync.jobs.progress import report_progress
 from sync.jobs.pull_file import run_inventory_pull_from_file
 from sync.jobs.store import save_job
+from sync.jobs.cancel import (
+    JobCancelledError,
+    ensure_hub_job_active,
+    ensure_job_active,
+    ensure_not_cancelled_sync,
+)
 
 logger = logging.getLogger("multishop.outbox")
 
@@ -124,9 +130,25 @@ def catalog_pull_job(job_id: str) -> dict:
     return anyio.run(_catalog_pull_job_async, job_id)
 
 
+async def _finalize_cancelled_job(job_id: str, hub: HubClient) -> dict:
+    delete_job_file(job_id)
+    delete_job_file(f"{job_id}-purchase")
+    delete_job_file(f"{job_id}-sale")
+    save_job(
+        job_id,
+        {"job_id": job_id, "status": "cancelled", "message": "Cancelado desde admin"},
+    )
+    logger.info("catalog job %s cancelled cooperatively", job_id)
+    return {"job_id": job_id, "status": "cancelled", "message": "ok"}
+
+
 async def _catalog_transactions_push_job_async(job_id: str, hub: HubClient) -> dict:
+    from sync.jobs.catalog_job_runner import fetch_hub_job_meta, resolve_transaction_since
     from sync.jobs.export_transactions import export_transaction_push_file
 
+    job_meta = await fetch_hub_job_meta(hub, job_id)
+    since_purchase = resolve_transaction_since(job_meta, "purchase")
+    since_sale = resolve_transaction_since(job_meta, "sale")
     mysql = MySqlClient()
     totals = {
         "file_rows": 0,
@@ -141,40 +163,70 @@ async def _catalog_transactions_push_job_async(job_id: str, hub: HubClient) -> d
         ("compras", "purchase", "compras"),
         ("ventas", "sale", "ventas"),
     ):
+        await ensure_job_active(hub, job_id)
         sub_id = f"{job_id}-{mode}"
-        await report_progress(
-            hub,
-            job_id,
-            phase=phase,
-            progress_nodo=8 if mode == "purchase" else 55,
-            force=True,
-        )
-        path, file_rows = await anyio.to_thread.run_sync(
-            lambda m=mode, sid=sub_id: export_transaction_push_file(
+        nodo_export_lo = 8 if mode == "purchase" else 55
+        nodo_export_hi = 28 if mode == "purchase" else 72
+        nodo_ingest_hi = 50 if mode == "purchase" else 95
+        hub_ingest_hi = 50 if mode == "purchase" else 95
+
+        def on_export(done: int, total: int, pct: int) -> None:
+            ensure_not_cancelled_sync(job_id)
+            span = max(nodo_export_hi - nodo_export_lo, 1)
+            nodo_pct = nodo_export_lo + int((pct / 100) * span)
+
+            async def _report() -> None:
+                await report_progress(
+                    hub,
+                    job_id,
+                    phase=phase,
+                    progress_nodo=nodo_pct,
+                    total_rows=total,
+                    processed_rows=done,
+                    force=(done == 0 or done == total or pct % 10 == 0),
+                )
+
+            anyio.from_thread.run(_report)
+
+        since_wm = since_purchase if mode == "purchase" else since_sale
+
+        path, file_rows, export_meta = await anyio.to_thread.run_sync(
+            lambda m=mode, sid=sub_id, sw=since_wm: export_transaction_push_file(
                 job_id=sid,
                 mysql=mysql,
                 nodo_id=settings.nodo_id,
                 mode=m,
                 codigo=None,
+                since_watermark=sw,
+                should_cancel=lambda: ensure_not_cancelled_sync(job_id),
+                on_progress=on_export,
             )
         )
+        await ensure_hub_job_active(hub, job_id)
         await report_progress(
             hub,
             job_id,
             phase=phase,
-            progress_nodo=30 if mode == "purchase" else 75,
+            progress_nodo=nodo_export_hi,
+            progress_hub=5 if mode == "purchase" else 52,
             total_rows=file_rows,
+            processed_rows=file_rows,
             force=True,
         )
         hub_result = await hub.send_ingest_events_from_file(path)
         delete_job_file(sub_id)
+        accepted = int((hub_result or {}).get("accepted") or 0)
         pushes[step_name] = {
             "mode": mode,
             "file_rows": file_rows,
             "hub_result": hub_result,
+            "watermark": {
+                "since": export_meta.get("since_watermark"),
+                "max": export_meta.get("max_watermark"),
+            },
         }
         totals["file_rows"] += int(file_rows or 0)
-        totals["accepted"] += int((hub_result or {}).get("accepted") or 0)
+        totals["accepted"] += accepted
         totals["duplicates"] += int((hub_result or {}).get("duplicates") or 0)
         totals["failed"] += int((hub_result or {}).get("failed") or 0)
         totals["total"] += int((hub_result or {}).get("total") or 0)
@@ -182,12 +234,14 @@ async def _catalog_transactions_push_job_async(job_id: str, hub: HubClient) -> d
             hub,
             job_id,
             phase=phase,
-            progress_nodo=50 if mode == "purchase" else 95,
-            progress_hub=50 if mode == "purchase" else 95,
+            progress_nodo=nodo_ingest_hi,
+            progress_hub=hub_ingest_hi,
             total_rows=file_rows,
+            processed_rows=accepted,
             force=True,
         )
 
+    await ensure_hub_job_active(hub, job_id)
     summary = {
         "message": "ok",
         "pushes": pushes,
@@ -229,6 +283,8 @@ async def _catalog_push_job_async(job_id: str) -> dict:
         )
         try:
             return await _catalog_transactions_push_job_async(job_id, hub)
+        except JobCancelledError:
+            return await _finalize_cancelled_job(job_id, hub)
         except Exception as ex:
             save_job(job_id, {"job_id": job_id, "status": "failed", "error": str(ex)})
             try:
@@ -252,6 +308,8 @@ async def _catalog_push_job_async(job_id: str) -> dict:
     )
 
     def on_export(done: int, total: int, pct: int) -> None:
+        ensure_not_cancelled_sync(job_id)
+
         async def _report() -> None:
             await report_progress(
                 hub,
@@ -263,6 +321,8 @@ async def _catalog_push_job_async(job_id: str) -> dict:
             )
 
         anyio.from_thread.run(_report)
+
+    cancel_check = lambda: ensure_not_cancelled_sync(job_id)
 
     try:
         if entity == "inventory_category":
@@ -282,8 +342,10 @@ async def _catalog_push_job_async(job_id: str) -> dict:
                 mysql,
                 settings.nodo_id,
                 on_progress=on_export,
+                should_cancel=cancel_check,
             )
         )
+        await ensure_hub_job_active(hub, job_id)
         await report_progress(
             hub,
             job_id,
@@ -312,6 +374,8 @@ async def _catalog_push_job_async(job_id: str) -> dict:
             },
         )
         return {"job_id": job_id, "status": "uploaded", "total_rows": total}
+    except JobCancelledError:
+        return await _finalize_cancelled_job(job_id, hub)
     except Exception as ex:
         save_job(job_id, {"job_id": job_id, "status": "failed", "error": str(ex)})
         delete_job_file(job_id)
@@ -329,6 +393,8 @@ async def run_catalog_pull_job(job_id: str) -> None:
     """Ejecuta pull de catálogo en el proceso actual (sin cola Huey)."""
     try:
         await _catalog_pull_job_async(job_id)
+    except JobCancelledError:
+        logger.info("catalog pull job %s cancelled", job_id)
     except Exception:
         logger.exception("catalog pull job %s failed", job_id)
 
@@ -337,6 +403,8 @@ async def run_catalog_push_job(job_id: str) -> None:
     """Ejecuta push de catálogo en el proceso actual (sin cola Huey)."""
     try:
         await _catalog_push_job_async(job_id)
+    except JobCancelledError:
+        logger.info("catalog push job %s cancelled", job_id)
     except Exception:
         logger.exception("catalog push job %s failed", job_id)
 
@@ -367,8 +435,10 @@ async def _catalog_pull_job_async(job_id: str) -> dict:
         },
     )
     try:
+        await ensure_job_active(hub, job_id)
         await report_progress(hub, job_id, phase="download", progress_nodo=5, force=True)
         await hub.download_sync_job_file(job_id, path)
+        await ensure_job_active(hub, job_id)
         await report_progress(hub, job_id, phase="download", progress_nodo=40, force=True)
 
         if entity == "inventory_category":
@@ -389,6 +459,7 @@ async def _catalog_pull_job_async(job_id: str) -> dict:
                 hub=hub,
                 mysql=mysql,
             )
+        await ensure_hub_job_active(hub, job_id)
         await report_progress(
             hub,
             job_id,
@@ -411,6 +482,8 @@ async def _catalog_pull_job_async(job_id: str) -> dict:
         )
         save_job(job_id, {"job_id": job_id, "status": "completed", "result": result})
         return result
+    except JobCancelledError:
+        return await _finalize_cancelled_job(job_id, hub)
     except Exception as ex:
         delete_job_file(job_id)
         save_job(job_id, {"job_id": job_id, "status": "failed", "error": str(ex)})

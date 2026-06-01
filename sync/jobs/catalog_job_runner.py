@@ -15,3 +15,20 @@ async def fetch_hub_job_meta(hub: HubClient, job_id: str) -> dict[str, Any]:
     if not isinstance(meta, dict):
         return {}
     return meta
+
+
+def resolve_transaction_since(
+    job_meta: dict[str, Any],
+    mode: str,
+) -> TransactionWatermark | None:
+    from sync.jobs.transaction_sync_types import TransactionWatermark
+
+    block = job_meta.get("transactionSyncSince") or job_meta.get(
+        "transaction_sync_since"
+    )
+    if not isinstance(block, dict):
+        return None
+    raw = block.get(mode)
+    if raw is None:
+        return None
+    return TransactionWatermark.from_dict(raw if isinstance(raw, dict) else None)
