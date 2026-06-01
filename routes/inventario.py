@@ -191,6 +191,7 @@ def _fetch_lotes(codigo: str) -> list[dict]:
             """
             SELECT
               indice,
+              codigod,
               lote,
               cubica,
               existencia,

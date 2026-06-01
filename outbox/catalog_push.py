@@ -22,6 +22,7 @@ from db.sprv_store import SPRV_BODY_FIELDS
 
 SINV_PUSH_EXTRA_FIELDS = ("existencia", "costo", "costopro", "costoant")
 DETALLE_PUSH_FIELDS = (
+    "codigod",
     "lote",
     "cubica",
     "existencia",

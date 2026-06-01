@@ -14,6 +14,7 @@ from db.sinv_store import SINV_HUB_FIELDS
 SINV_PUSH_EXTRA_FIELDS = ("existencia", "costo", "costopro", "costoant")
 
 DETALLE_PUSH_FIELDS = (
+    "codigod",
     "lote",
     "cubica",
     "existencia",
