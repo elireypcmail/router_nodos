@@ -150,14 +150,7 @@ async def _catalog_transactions_push_job_async(job_id: str, hub: HubClient) -> d
     since_purchase = resolve_transaction_since(job_meta, "purchase")
     since_sale = resolve_transaction_since(job_meta, "sale")
     mysql = MySqlClient()
-    totals = {
-        "file_rows": 0,
-        "accepted": 0,
-        "duplicates": 0,
-        "failed": 0,
-        "total": 0,
-    }
-    pushes: dict[str, dict] = {}
+    step_exports: dict[str, tuple] = {}
 
     for step_name, mode, phase in (
         ("compras", "purchase", "compras"),
@@ -202,62 +195,67 @@ async def _catalog_transactions_push_job_async(job_id: str, hub: HubClient) -> d
                 on_progress=on_export,
             )
         )
-        await ensure_hub_job_active(hub, job_id)
-        await report_progress(
-            hub,
-            job_id,
-            phase=phase,
-            progress_nodo=nodo_export_hi,
-            progress_hub=5 if mode == "purchase" else 52,
-            total_rows=file_rows,
-            processed_rows=file_rows,
-            force=True,
-        )
-        hub_result = await hub.send_ingest_events_from_file(path)
-        delete_job_file(sub_id)
-        accepted = int((hub_result or {}).get("accepted") or 0)
-        pushes[step_name] = {
-            "mode": mode,
-            "file_rows": file_rows,
-            "hub_result": hub_result,
-            "watermark": {
-                "since": export_meta.get("since_watermark"),
-                "max": export_meta.get("max_watermark"),
-            },
-        }
-        totals["file_rows"] += int(file_rows or 0)
-        totals["accepted"] += accepted
-        totals["duplicates"] += int((hub_result or {}).get("duplicates") or 0)
-        totals["failed"] += int((hub_result or {}).get("failed") or 0)
-        totals["total"] += int((hub_result or {}).get("total") or 0)
-        await report_progress(
-            hub,
-            job_id,
-            phase=phase,
-            progress_nodo=nodo_ingest_hi,
-            progress_hub=hub_ingest_hi,
-            total_rows=file_rows,
-            processed_rows=accepted,
-            force=True,
-        )
+        step_exports[step_name] = (path, file_rows, export_meta)
 
     await ensure_hub_job_active(hub, job_id)
-    summary = {
-        "message": "ok",
-        "pushes": pushes,
-        "totals": totals,
-    }
-    await hub.patch_sync_job_progress(
+    from sync.jobs.merge_transaction_push_files import merge_transaction_push_files
+
+    purchase_path, purchase_rows, purchase_meta = step_exports["compras"]
+    sale_path, sale_rows, sale_meta = step_exports["ventas"]
+    combined_path = await anyio.to_thread.run_sync(
+        lambda: merge_transaction_push_files(
+            job_id,
+            purchase_path=purchase_path,
+            sale_path=sale_path,
+            purchase_meta=purchase_meta,
+            sale_meta=sale_meta,
+            nodo_id=settings.nodo_id,
+        )
+    )
+    delete_job_file(f"{job_id}-purchase")
+    delete_job_file(f"{job_id}-sale")
+    total_rows = int(purchase_rows or 0) + int(sale_rows or 0)
+
+    await report_progress(
+        hub,
+        job_id,
+        phase="upload",
+        progress_nodo=72,
+        progress_hub=0,
+        total_rows=total_rows,
+        processed_rows=0,
+        force=True,
+    )
+    await hub.upload_sync_job_file(job_id, combined_path)
+    delete_job_file(job_id)
+    await report_progress(
+        hub,
+        job_id,
+        phase="process",
+        progress_nodo=100,
+        progress_hub=0,
+        total_rows=total_rows,
+        processed_rows=0,
+        force=True,
+    )
+    save_job(
         job_id,
         {
-            "status": "completed",
-            "result_summary": summary,
-            "progress_nodo": 100,
-            "progress_hub": 100,
+            "job_id": job_id,
+            "direction": "push",
+            "status": "uploaded",
+            "phase": "process",
+            "purchase_rows": purchase_rows,
+            "sale_rows": sale_rows,
         },
     )
-    save_job(job_id, {"job_id": job_id, "status": "completed", "result": summary})
-    return summary
+    return {
+        "job_id": job_id,
+        "status": "uploaded",
+        "total_rows": total_rows,
+        "purchase_rows": purchase_rows,
+        "sale_rows": sale_rows,
+    }
 
 
 async def _catalog_push_job_async(job_id: str) -> dict:

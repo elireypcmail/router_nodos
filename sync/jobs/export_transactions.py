@@ -235,6 +235,7 @@ def export_transaction_push_file(
 
     tmp.replace(path)
     meta = {
+        "file_rows": total,
         "since_watermark": since_watermark.to_dict() if since_watermark else None,
         "max_watermark": max_watermark.to_dict() if max_watermark else None,
     }

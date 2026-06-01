@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     hub_push_interval_seconds: float = 1.0
     # Contrato actual: node -> hub (ingest) para transaccional vía outbox.
     hub_push_path: str = "/api/nodo/events/batch"
+    # Máximo por POST (hub valida ArrayMaxSize(100) en IngestEventsBatchDto).
+    hub_ingest_batch_size: int = 100
 
     huey_enabled: bool = False
     huey_db_path: str = "./data/huey.sqlite"

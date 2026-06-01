@@ -56,6 +56,54 @@ _INGEST_LABEL = {
 }
 
 
+def _hub_ingest_chunk_size() -> int:
+    return min(max(1, int(settings.hub_ingest_batch_size)), 100)
+
+
+def _empty_ingest_batch_summary() -> dict[str, Any]:
+    return {
+        "accepted": 0,
+        "duplicates": 0,
+        "failed": 0,
+        "total": 0,
+        "results": [],
+    }
+
+
+def _merge_ingest_batch_summary(
+    into: dict[str, Any], chunk: dict[str, Any], *, events_in_chunk: int
+) -> None:
+    into["accepted"] = int(into.get("accepted") or 0) + int(chunk.get("accepted") or 0)
+    into["duplicates"] = int(into.get("duplicates") or 0) + int(
+        chunk.get("duplicates") or 0
+    )
+    into["failed"] = int(into.get("failed") or 0) + int(chunk.get("failed") or 0)
+    into["total"] = int(into.get("total") or 0) + events_in_chunk
+    results = chunk.get("results")
+    if isinstance(results, list):
+        existing = into.get("results")
+        if not isinstance(existing, list):
+            into["results"] = []
+            existing = into["results"]
+        existing.extend(results)
+
+
+def _iter_events_from_ndjson_gz(path: Path):
+    """Salta manifest (primera línea) y yield eventos dict."""
+    with gzip.open(path, "rt", encoding="utf-8") as gz:
+        first = True
+        for line in gz:
+            raw = line.strip()
+            if not raw:
+                continue
+            row = json.loads(raw)
+            if first:
+                first = False
+                continue
+            if isinstance(row, dict):
+                yield row
+
+
 def _is_kardex_inventory_adjustment(row: dict) -> bool:
     """Kardex adjustments/returns only; skip purchase/sale mirror rows."""
     if _num_field(row, "compras") != 0 or _num_field(row, "ventas") != 0:
@@ -222,54 +270,64 @@ class HubClient:
                     hub_failed_messages=deferred_messages,
                 )
 
-            events = [ev for _, ev in pending_events]
-            logger.info(
-                "[hub-ingest] POST %s (%s transactional event(s))",
-                url,
-                len(events),
-            )
-            resp = await client.post(url, json={"events": events}, headers=headers)
-            resp.raise_for_status()
-            body = resp.json()
-            logger.info(
-                "[hub-ingest] OK hub responded %s accepted=%s failed=%s",
-                resp.status_code,
-                body.get("accepted"),
-                body.get("failed"),
-            )
-
+            chunk_size = _hub_ingest_chunk_size()
             sent_ids: list[int] = []
             failed_ids: list[int] = []
             hub_failed_messages: dict[int, str] = {}
-            for item in body.get("results") or []:
-                if not isinstance(item, dict):
-                    continue
-                raw_id = item.get("event_id")
-                try:
-                    oid = int(str(raw_id).strip())
-                except (TypeError, ValueError):
-                    continue
-                status = str(item.get("status") or "").strip().lower()
-                if status in {"accepted", "duplicate"}:
-                    sent_ids.append(oid)
-                    continue
-                failed_ids.append(oid)
-                message = item.get("message")
-                if message:
-                    hub_failed_messages[oid] = str(message)
+            ingest_summary = _empty_ingest_batch_summary()
 
-            for oid in attempted_ids:
-                if oid in sent_ids or oid in failed_ids:
-                    continue
-                failed_ids.append(oid)
-                hub_failed_messages.setdefault(
-                    oid,
-                    "hub ingest: event missing from hub response",
+            for start in range(0, len(pending_events), chunk_size):
+                chunk_pairs = pending_events[start : start + chunk_size]
+                events = [ev for _, ev in chunk_pairs]
+                chunk_attempted = [oid for oid, _ in chunk_pairs]
+                logger.info(
+                    "[hub-ingest] POST %s chunk %s-%s (%s event(s))",
+                    url,
+                    start + 1,
+                    start + len(events),
+                    len(events),
                 )
+                body = await self._post_ingest_events_batch(
+                    client, url, headers, events
+                )
+                _merge_ingest_batch_summary(
+                    ingest_summary, body, events_in_chunk=len(events)
+                )
+                logger.info(
+                    "[hub-ingest] chunk ok accepted=%s failed=%s",
+                    body.get("accepted"),
+                    body.get("failed"),
+                )
+
+                for item in body.get("results") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    raw_id = item.get("event_id")
+                    try:
+                        oid = int(str(raw_id).strip())
+                    except (TypeError, ValueError):
+                        continue
+                    status = str(item.get("status") or "").strip().lower()
+                    if status in {"accepted", "duplicate"}:
+                        sent_ids.append(oid)
+                        continue
+                    failed_ids.append(oid)
+                    message = item.get("message")
+                    if message:
+                        hub_failed_messages[oid] = str(message)
+
+                for oid in chunk_attempted:
+                    if oid in sent_ids or oid in failed_ids:
+                        continue
+                    failed_ids.append(oid)
+                    hub_failed_messages.setdefault(
+                        oid,
+                        "hub ingest: event missing from hub response",
+                    )
 
             if failed_ids:
                 logger.warning(
-                    "[hub-ingest] %s event(s) not confirmed by hub",
+                    "[hub-ingest] %s event(s) not confirmed by hub (total)",
                     len(failed_ids),
                 )
 
@@ -575,52 +633,87 @@ class HubClient:
                 return data
             return {"ok": True}
 
+    async def _post_ingest_events_batch(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        headers: dict[str, str],
+        events: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        resp = await client.post(
+            url,
+            json=json_safe({"events": events}),
+            headers=headers,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        if isinstance(body, dict):
+            return body
+        return {
+            "accepted": 0,
+            "duplicates": 0,
+            "failed": 0,
+            "total": len(events),
+            "results": [],
+        }
+
     async def send_ingest_events_from_file(self, file_path) -> dict[str, Any]:
         """
-        Lee un .ndjson.gz con manifest + eventos y lo envía a /api/nodo/events/batch.
+        Lee un .ndjson.gz con manifest + eventos y lo envía a /api/nodo/events/batch
+        en lotes de hasta hub_ingest_batch_size (máx. 100, límite del hub).
         """
         path = Path(file_path)
-        events: list[dict[str, Any]] = []
-        with gzip.open(path, "rt", encoding="utf-8") as gz:
-            first = True
-            for line in gz:
-                raw = line.strip()
-                if not raw:
-                    continue
-                row = json.loads(raw)
-                if first:
-                    first = False
-                    continue
-                if isinstance(row, dict):
-                    events.append(row)
-
-        if not events:
-            return {
-                "accepted": 0,
-                "duplicates": 0,
-                "failed": 0,
-                "total": 0,
-                "results": [],
-            }
-
         url = f"{self._base}{settings.hub_push_path}"
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if settings.nodo_api_token:
             headers["Authorization"] = f"Bearer {settings.nodo_api_token}"
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(url, json={"events": events}, headers=headers)
-            resp.raise_for_status()
-            body = resp.json()
-            if isinstance(body, dict):
-                return body
-            return {
-                "accepted": 0,
-                "duplicates": 0,
-                "failed": 0,
-                "total": len(events),
-                "results": [],
-            }
+        chunk_size = _hub_ingest_chunk_size()
+        summary = _empty_ingest_batch_summary()
+        batch: list[dict[str, Any]] = []
+        chunk_index = 0
+
+        async with httpx.AsyncClient(timeout=600.0) as client:
+            for event in _iter_events_from_ndjson_gz(path):
+                batch.append(event)
+                if len(batch) < chunk_size:
+                    continue
+                chunk_index += 1
+                logger.info(
+                    "[hub-ingest-file] POST chunk %s (%s events)",
+                    chunk_index,
+                    len(batch),
+                )
+                body = await self._post_ingest_events_batch(
+                    client, url, headers, batch
+                )
+                _merge_ingest_batch_summary(summary, body, events_in_chunk=len(batch))
+                batch = []
+
+            if batch:
+                chunk_index += 1
+                logger.info(
+                    "[hub-ingest-file] POST chunk %s (%s events)",
+                    chunk_index,
+                    len(batch),
+                )
+                body = await self._post_ingest_events_batch(
+                    client, url, headers, batch
+                )
+                _merge_ingest_batch_summary(summary, body, events_in_chunk=len(batch))
+
+        if int(summary.get("total") or 0) == 0:
+            return _empty_ingest_batch_summary()
+
+        logger.info(
+            "[hub-ingest-file] done total=%s accepted=%s duplicates=%s failed=%s chunks=%s",
+            summary.get("total"),
+            summary.get("accepted"),
+            summary.get("duplicates"),
+            summary.get("failed"),
+            chunk_index,
+        )
+        return summary
 
     async def download_sync_job_file(self, job_id: str, dest_path) -> None:
         from pathlib import Path
