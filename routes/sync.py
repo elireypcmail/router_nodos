@@ -2,6 +2,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from fastapi.responses import JSONResponse
 
 import anyio
+import uuid
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.categoria_trace import is_categoria_entity, trace, trace_exc, trace_warn
@@ -509,6 +510,81 @@ async def _run_inventory_push_to_hub() -> dict:
     return await run_inventory_push_to_hub(hub=HubClient(), mysql=mysql)
 
 
+async def _run_transaction_push_file_to_hub(
+    *,
+    mode: str,
+    codigo: str | None = None,
+) -> dict:
+    from sync.jobs.export_transactions import export_transaction_push_file
+    from sync.jobs.files import delete_job_file
+
+    mysql = MySqlClient()
+    if not mysql.is_configured():
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
+    hub = HubClient()
+    job_id = f"{mode}-{uuid.uuid4()}"
+
+    path, total = await anyio.to_thread.run_sync(
+        lambda: export_transaction_push_file(
+            job_id=job_id,
+            mysql=mysql,
+            nodo_id=settings.nodo_id,
+            mode=mode,
+            codigo=codigo,
+        )
+    )
+    try:
+        result = await hub.send_ingest_events_from_file(path)
+    finally:
+        delete_job_file(job_id)
+    return {
+        "message": "ok",
+        "mode": mode,
+        "codigo": (codigo or "").strip() or None,
+        "job_id": job_id,
+        "file_rows": total,
+        "hub_result": result,
+    }
+
+
+async def _run_transaction_push_general_to_hub(
+    *,
+    codigo: str | None = None,
+) -> dict:
+    compras = await _run_transaction_push_file_to_hub(
+        mode="purchase",
+        codigo=codigo,
+    )
+    ventas = await _run_transaction_push_file_to_hub(
+        mode="sale",
+        codigo=codigo,
+    )
+    return {
+        "message": "ok",
+        "codigo": (codigo or "").strip() or None,
+        "pushes": {
+            "compras": compras,
+            "ventas": ventas,
+        },
+        "totals": {
+            "file_rows": int(compras.get("file_rows") or 0)
+            + int(ventas.get("file_rows") or 0),
+            "accepted": int(
+                ((compras.get("hub_result") or {}).get("accepted") or 0)
+            )
+            + int(((ventas.get("hub_result") or {}).get("accepted") or 0)),
+            "duplicates": int(
+                ((compras.get("hub_result") or {}).get("duplicates") or 0)
+            )
+            + int(((ventas.get("hub_result") or {}).get("duplicates") or 0)),
+            "failed": int(((compras.get("hub_result") or {}).get("failed") or 0))
+            + int(((ventas.get("hub_result") or {}).get("failed") or 0)),
+            "total": int(((compras.get("hub_result") or {}).get("total") or 0))
+            + int(((ventas.get("hub_result") or {}).get("total") or 0)),
+        },
+    }
+
+
 @router.post("/categorias/push")
 async def sync_categorias_push(_: None = Depends(verify_bearer)):
     trace("sync.push.start", entity="categoria")
@@ -537,6 +613,41 @@ async def sync_inventario_push(_: None = Depends(verify_bearer)):
         },
     )
     return result
+
+
+@router.post("/compras/push-file")
+async def sync_compras_push_file(
+    codigo: str | None = Query(
+        default=None,
+        description="Opcional: si se indica, empuja solo compras de ese producto (codigo)",
+    ),
+    _: None = Depends(verify_bearer),
+):
+    return await _run_transaction_push_file_to_hub(mode="purchase", codigo=codigo)
+
+
+@router.post("/ventas/push-file")
+async def sync_ventas_push_file(
+    codigo: str | None = Query(
+        default=None,
+        description="Opcional: si se indica, empuja solo ventas de ese producto (codigo)",
+    ),
+    _: None = Depends(verify_bearer),
+):
+    return await _run_transaction_push_file_to_hub(mode="sale", codigo=codigo)
+
+
+@router.post("/transacciones/push-file")
+async def sync_transacciones_push_file(
+    codigo: str | None = Query(
+        default=None,
+        description=(
+            "Opcional: si se indica, empuja compras y ventas del producto (codigo)"
+        ),
+    ),
+    _: None = Depends(verify_bearer),
+):
+    return await _run_transaction_push_general_to_hub(codigo=codigo)
 
 
 @router.post("/productos/push")

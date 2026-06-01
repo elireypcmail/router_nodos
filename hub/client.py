@@ -3,10 +3,16 @@ from __future__ import annotations
 import anyio
 import httpx
 import logging
+import gzip
+import json
+from pathlib import Path
+from typing import Any
 
 from outbox.catalog_push import send_catalog_outbox_batch
 from outbox.digest import CATALOG_TABLES
+from outbox.purchase_lots import load_purchase_lot_snapshot
 from outbox.purchase_scom import prepare_purchase_payload_for_hub
+from outbox.sale_diariovi import prepare_sale_payload_for_hub
 from core.categoria_trace import trace, trace_exc, trace_warn
 from core.config import settings
 from db.mysql import MySqlClient
@@ -128,8 +134,28 @@ class HubClient:
                         deferred_messages[outbox_id_int] = prep.reason
                         continue
                     payload = prep.payload or payload
+                    lotes = await anyio.to_thread.run_sync(
+                        lambda p=dict(payload): load_purchase_lot_snapshot(
+                            mysql if mysql.is_configured() else None,
+                            str(p.get("codigo") or ""),
+                            preferred_costo=_num_field(p, "costo_actual_factura")
+                            or _num_field(p, "precio"),
+                            preferred_costopro=_num_field(
+                                p, "costo_actual_factura"
+                            )
+                            or _num_field(p, "precio"),
+                        ),
+                    )
+                    if lotes:
+                        payload["lotes"] = lotes
                 elif table == "ventasi":
                     entity_type = "sale"
+                    prep_sale = await anyio.to_thread.run_sync(
+                        lambda p=dict(payload): prepare_sale_payload_for_hub(
+                            p, mysql=mysql if mysql.is_configured() else None
+                        ),
+                    )
+                    payload = prep_sale.payload or payload
                 elif table in {"kardex", "kardexd"}:
                     if not _is_kardex_inventory_adjustment(payload):
                         ignored_ids.append(outbox_id_int)
@@ -138,12 +164,6 @@ class HubClient:
                     op = str(e.get("op") or "I").strip().upper()
                     if op:
                         payload["outbox_op"] = op
-                elif table == "detalle":
-                    entity_type = "inventory_lot"
-                    op = str(e.get("op") or "I").strip().upper()
-                    if op:
-                        payload["outbox_op"] = op
-
                 if not entity_type:
                     ignored_ids.append(outbox_id_int)
                     continue
@@ -554,6 +574,53 @@ class HubClient:
             if isinstance(data, dict):
                 return data
             return {"ok": True}
+
+    async def send_ingest_events_from_file(self, file_path) -> dict[str, Any]:
+        """
+        Lee un .ndjson.gz con manifest + eventos y lo envía a /api/nodo/events/batch.
+        """
+        path = Path(file_path)
+        events: list[dict[str, Any]] = []
+        with gzip.open(path, "rt", encoding="utf-8") as gz:
+            first = True
+            for line in gz:
+                raw = line.strip()
+                if not raw:
+                    continue
+                row = json.loads(raw)
+                if first:
+                    first = False
+                    continue
+                if isinstance(row, dict):
+                    events.append(row)
+
+        if not events:
+            return {
+                "accepted": 0,
+                "duplicates": 0,
+                "failed": 0,
+                "total": 0,
+                "results": [],
+            }
+
+        url = f"{self._base}{settings.hub_push_path}"
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if settings.nodo_api_token:
+            headers["Authorization"] = f"Bearer {settings.nodo_api_token}"
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(url, json={"events": events}, headers=headers)
+            resp.raise_for_status()
+            body = resp.json()
+            if isinstance(body, dict):
+                return body
+            return {
+                "accepted": 0,
+                "duplicates": 0,
+                "failed": 0,
+                "total": len(events),
+                "results": [],
+            }
 
     async def download_sync_job_file(self, job_id: str, dest_path) -> None:
         from pathlib import Path

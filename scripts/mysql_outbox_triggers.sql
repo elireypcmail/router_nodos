@@ -427,6 +427,10 @@ DROP TRIGGER IF EXISTS trg_facturad_ai;
 DROP TRIGGER IF EXISTS trg_facturad_au;
 DROP TRIGGER IF EXISTS trg_facturad_ad;
 
+DROP TRIGGER IF EXISTS trg_detalle_ai;
+DROP TRIGGER IF EXISTS trg_detalle_au;
+DROP TRIGGER IF EXISTS trg_detalle_ad;
+
 -- comprasdbf: sin triggers (compra transaccional vía kardex.compras -> outbox comprasdbf)
 DROP TRIGGER IF EXISTS trg_comprasdbf_ai;
 DROP TRIGGER IF EXISTS trg_comprasdbf_au;
@@ -505,41 +509,8 @@ BEGIN
   );
 END$$
 
-CREATE TRIGGER trg_detalle_ai AFTER INSERT ON detalle FOR EACH ROW
-BEGIN
-  INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
-  VALUES (
-    'detalle',
-    'I',
-    CONCAT('{','\"codigo\":',ms_json_str(NEW.codigo),',','\"lote\":',ms_json_str(NEW.lote),',','\"vence\":',ms_json_date(NEW.vence),',','\"cubica\":',ms_json_str(NEW.cubica),'}'),
-    CONCAT('{','\"codigo\":',ms_json_str(NEW.codigo),',','\"lote\":',ms_json_str(NEW.lote),',','\"vence\":',ms_json_date(NEW.vence),',','\"cubica\":',ms_json_str(NEW.cubica),',','\"existencia\":',ms_json_num(NEW.existencia),',','\"costo\":',ms_json_num(NEW.costo),',','\"costopro\":',ms_json_num(NEW.costopro),',','\"calidad\":',ms_json_str(NEW.calidad),',','\"elabora\":',ms_json_date(NEW.elabora),'}'),
-    NOW(3)
-  );
-END$$
-
-CREATE TRIGGER trg_detalle_au AFTER UPDATE ON detalle FOR EACH ROW
-BEGIN
-  INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
-  VALUES (
-    'detalle',
-    'U',
-    CONCAT('{','\"codigo\":',ms_json_str(NEW.codigo),',','\"lote\":',ms_json_str(NEW.lote),',','\"vence\":',ms_json_date(NEW.vence),',','\"cubica\":',ms_json_str(NEW.cubica),'}'),
-    CONCAT('{','\"codigo\":',ms_json_str(NEW.codigo),',','\"lote\":',ms_json_str(NEW.lote),',','\"vence\":',ms_json_date(NEW.vence),',','\"cubica\":',ms_json_str(NEW.cubica),',','\"existencia\":',ms_json_num(NEW.existencia),',','\"costo\":',ms_json_num(NEW.costo),',','\"costopro\":',ms_json_num(NEW.costopro),',','\"calidad\":',ms_json_str(NEW.calidad),',','\"elabora\":',ms_json_date(NEW.elabora),'}'),
-    NOW(3)
-  );
-END$$
-
-CREATE TRIGGER trg_detalle_ad AFTER DELETE ON detalle FOR EACH ROW
-BEGIN
-  INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
-  VALUES (
-    'detalle',
-    'D',
-    CONCAT('{','\"codigo\":',ms_json_str(OLD.codigo),',','\"lote\":',ms_json_str(OLD.lote),',','\"vence\":',ms_json_date(OLD.vence),',','\"cubica\":',ms_json_str(OLD.cubica),'}'),
-    CONCAT('{','\"codigo\":',ms_json_str(OLD.codigo),',','\"lote\":',ms_json_str(OLD.lote),',','\"vence\":',ms_json_date(OLD.vence),',','\"cubica\":',ms_json_str(OLD.cubica),',','\"existencia\":',ms_json_num(0),'}'),
-    NOW(3)
-  );
-END$$
+-- detalle (lotes): sin triggers. Se lee snapshot de detalle al enviar compra
+-- (outbox comprasdbf -> hub purchase) para evitar desalineación temporal.
 DELIMITER ;
 
 DROP TRIGGER IF EXISTS trg_catego_ai;
