@@ -64,6 +64,15 @@ function Start-MultishopHueyConsumer {
         throw "Missing venv python: $venvPython"
     }
 
+    if (Get-Command Ensure-NodoWritableDataDir -ErrorAction SilentlyContinue) {
+        Ensure-NodoWritableDataDir -NodoDir $NodoDirPath
+    } else {
+        $dataDir = Join-Path $NodoDirPath "data"
+        if (-not (Test-Path -LiteralPath $dataDir)) {
+            New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
+        }
+    }
+
     $logOut = Join-Path $DeployDir "nodo-huey.out.log"
     $logErr = Join-Path $DeployDir "nodo-huey.err.log"
 

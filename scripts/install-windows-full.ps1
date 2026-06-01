@@ -602,6 +602,15 @@ $venvPip = Join-Path $venvDir 'Scripts\\pip.exe'
 & $pythonInfo.Exe @($pythonInfo.ArgsPrefix + @('-m', 'venv', $venvDir))
 & $venvPip install -r (Join-Path $NodoDir 'requirements.txt')
 
+$envHelperEarly = Join-Path $ScriptsDir 'nodo-env.ps1'
+if (Test-Path -LiteralPath $envHelperEarly) {
+    . $envHelperEarly
+    if (Get-Command Ensure-NodoWritableDataDir -ErrorAction SilentlyContinue) {
+        Ensure-NodoWritableDataDir -NodoDir $NodoDir
+        Write-Host "  Carpeta data\ lista (SQLite Huey/sync; permisos SYSTEM)." -ForegroundColor Green
+    }
+}
+
 Write-Host ""
 Write-Host "Paso 5/6 - PowerShell (venv Scripts) ..."
 if ($SkipExecutionPolicy) {

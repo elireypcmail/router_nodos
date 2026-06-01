@@ -583,6 +583,80 @@ function Wait-MultishopNodoApiPortListening {
     return $false
 }
 
+function Get-MultishopHueyStartFailureHint {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDir
+    )
+    $lines = @("NodoDir: $NodoDir")
+    foreach ($base in @($env:ProgramData, $env:LOCALAPPDATA)) {
+        if (-not $base) { continue }
+        $logDir = Join-Path $base "Multishop"
+        foreach ($name in @("nodo-huey.err.log", "nodo-huey-start.log", "nodo-huey.out.log")) {
+            $path = Join-Path $logDir $name
+            if (-not (Test-Path -LiteralPath $path)) { continue }
+            $tail = (Get-Content -LiteralPath $path -Tail 12 -ErrorAction SilentlyContinue) -join " | "
+            if ($tail) {
+                $lines += "$path -> $tail"
+            }
+        }
+    }
+    $dataDir = Join-Path $NodoDir "data"
+    $lines += "Data dir: $dataDir (HUEY_DB_PATH / SYNC_DB_PATH en .env)"
+    return ($lines -join "`n  ")
+}
+
+function Ensure-NodoWritableDataDir {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDir
+    )
+    $dataDir = Join-Path $NodoDir.TrimEnd('\') "data"
+    if (-not (Test-Path -LiteralPath $dataDir)) {
+        New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
+    }
+    $inherit = [System.Security.AccessControl.InheritanceFlags]"ContainerInherit,ObjectInherit"
+    $propagate = [System.Security.AccessControl.PropagationFlags]::None
+    $acl = Get-Acl -LiteralPath $dataDir
+    $acl.SetAccessRuleProtection($false, $true)
+    foreach ($entry in @(
+            @{ Sid = "S-1-5-18"; Rights = "Modify" },
+            @{ Sid = "S-1-5-32-544"; Rights = "FullControl" },
+            @{ Sid = "S-1-5-32-545"; Rights = "Modify" }
+        )) {
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            ([System.Security.Principal.SecurityIdentifier]$entry.Sid),
+            $entry.Rights,
+            $inherit,
+            $propagate,
+            "Allow"
+        )
+        $acl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $dataDir -AclObject $acl
+    & icacls.exe $dataDir /grant "*S-1-5-18:(OI)(CI)M" /T /C 2>$null | Out-Null
+    & icacls.exe $dataDir /grant "*S-1-5-32-544:(OI)(CI)F" /T /C 2>$null | Out-Null
+    & icacls.exe $dataDir /grant "*S-1-5-32-545:(OI)(CI)M" /T /C 2>$null | Out-Null
+}
+
+function Wait-MultishopHueyProcessRunning {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDir,
+        [int]$TimeoutSec = 45,
+        [int]$IntervalSec = 2
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        $pid = Test-MultishopHueyProcessRunning -NodoDir $NodoDir
+        if ($pid -gt 0) {
+            return $pid
+        }
+        Start-Sleep -Seconds $IntervalSec
+    }
+    return 0
+}
+
 function Get-MultishopNodoApiStartFailureHint {
     param(
         [Parameter(Mandatory = $true)]

@@ -12,7 +12,7 @@ param(
     [switch]$StartNow
 )
 
-$MultishopWindowsInstallVersion = "20260530.5"
+$MultishopWindowsInstallVersion = "20260531.1"
 
 $ErrorActionPreference = "Stop"
 
@@ -313,11 +313,30 @@ function Start-NodoApiBackground {
 }
 
 function Start-NodoHueyBackground {
+    param([switch]$WaitForReady)
+
     $hueyScript = Join-Path $DeployDir "start-nodo-huey.ps1"
     if (-not (Test-Path -LiteralPath $hueyScript)) {
         $hueyScript = Join-Path $PSScriptRoot "start-nodo-huey.ps1"
     }
     $psArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$hueyScript`" -NodoDir `"$NodoDir`""
+    if ($WaitForReady) {
+        Write-Host "Iniciando Huey consumer (esperando launcher) ..."
+        $proc = Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -WindowStyle Hidden -Wait -PassThru
+        if ($proc.ExitCode -ne 0) {
+            $hint = ""
+            if (Get-Command Get-MultishopHueyStartFailureHint -ErrorAction SilentlyContinue) {
+                $hint = Get-MultishopHueyStartFailureHint -NodoDir $NodoDir
+            }
+            throw @(
+                "Huey consumer no arranco (launcher exit $($proc.ExitCode))."
+                "Revise $DeployDir\nodo-huey-start.log y nodo-huey.err.log."
+                $(if ($hint) { $hint } else { "" })
+            ) -join "`n  "
+        }
+        Write-Host "Huey consumer launcher OK (see $DeployDir\nodo-huey-start.log)." -ForegroundColor Green
+        return
+    }
     Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -WindowStyle Hidden
     Write-Host "Huey consumer start requested (see $DeployDir\nodo-huey-start.log)." -ForegroundColor Green
 }
@@ -342,13 +361,33 @@ function Assert-MultishopSingleInstance {
     if (-not (Get-Command Get-MultishopNodoProcessCounts -ErrorAction SilentlyContinue)) {
         return
     }
-    Start-Sleep -Seconds 2
     $counts = Get-MultishopNodoProcessCounts -NodoDir $NodoDirPath
     $expectedApi = if ($StartNow) { 1 } else { 0 }
     $expectedHuey = if ($StartNow -and $ExpectHuey) { 1 } else { 0 }
+    if ($StartNow -and $ExpectHuey -and $counts.Huey -lt 1) {
+        if (Get-Command Wait-MultishopHueyProcessRunning -ErrorAction SilentlyContinue) {
+            $hueyPid = Wait-MultishopHueyProcessRunning -NodoDir $NodoDirPath -TimeoutSec 20
+            if ($hueyPid -gt 0) {
+                $counts = Get-MultishopNodoProcessCounts -NodoDir $NodoDirPath
+            }
+        } else {
+            Start-Sleep -Seconds 6
+            $counts = Get-MultishopNodoProcessCounts -NodoDir $NodoDirPath
+        }
+    } elseif ($StartNow) {
+        Start-Sleep -Seconds 2
+        $counts = Get-MultishopNodoProcessCounts -NodoDir $NodoDirPath
+    }
     Write-Host "Procesos: API=$($counts.Api) Huey=$($counts.Huey) (esperado API=$expectedApi Huey=$expectedHuey)"
     if ($counts.Api -ne $expectedApi -or $counts.Huey -ne $expectedHuey) {
-        throw "Multishop nodo: procesos incorrectos (API=$($counts.Api) Huey=$($counts.Huey))"
+        $hint = ""
+        if ($ExpectHuey -and $counts.Huey -lt 1 -and (Get-Command Get-MultishopHueyStartFailureHint -ErrorAction SilentlyContinue)) {
+            $hint = Get-MultishopHueyStartFailureHint -NodoDir $NodoDirPath
+        }
+        throw @(
+            "Multishop nodo: procesos incorrectos (API=$($counts.Api) Huey=$($counts.Huey))"
+            $(if ($hint) { $hint } else { "" })
+        ) -join "`n  "
     }
     if ($StartNow) {
         $port = Get-MultishopNodoApiPort -NodoDir $NodoDirPath
@@ -405,9 +444,13 @@ $enableHuey = $false
 $envPath = Join-Path $NodoDir ".env"
 if (Test-Path -LiteralPath $envPath) {
     $envText = Get-Content -LiteralPath $envPath -Raw
-    if ($envText -match '(?m)^\s*HUEY_ENABLED\s*=\s*true\s*$') {
+    if ($envText -match '(?im)^\s*HUEY_ENABLED\s*=\s*true\s*(?:#.*)?$') {
         $enableHuey = $true
     }
+}
+
+if (Get-Command Ensure-NodoWritableDataDir -ErrorAction SilentlyContinue) {
+    Ensure-NodoWritableDataDir -NodoDir $NodoDir
 }
 
 if ($StartNow) {
@@ -415,7 +458,7 @@ if ($StartNow) {
         Invoke-PrepareMultishopStartNow -NodoDirPath $NodoDir
     }
     Start-NodoApiBackground
-    if ($enableHuey) { Start-NodoHueyBackground }
+    if ($enableHuey) { Start-NodoHueyBackground -WaitForReady }
     Assert-MultishopSingleInstance -NodoDirPath $NodoDir -ExpectHuey:$enableHuey
 }
 
