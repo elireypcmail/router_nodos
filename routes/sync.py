@@ -257,6 +257,10 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
     )
 
 
+def _cost_ui_round(amount: float) -> float:
+    return round(amount, 2)
+
+
 def _to_float(value: object) -> float:
     if value is None:
         return 0.0
@@ -325,7 +329,17 @@ async def sync_cost_propose(body: SyncEventBody, _: None = Depends(verify_bearer
             costo_local = _to_float(row.get("costo"))
             costopro_local = _to_float(row.get("costopro"))
 
-            if costo_propuesto < costopro_local:
+            propuesto_ui = _cost_ui_round(costo_propuesto)
+            local_cpp_ui = _cost_ui_round(costopro_local)
+
+            if propuesto_ui <= 0:
+                return {
+                    "status": "skipped",
+                    "codigo": codigo_db,
+                    "reason": "propuesta_sin_costo_util",
+                }
+
+            if local_cpp_ui > 0 and propuesto_ui > 0 and propuesto_ui < local_cpp_ui:
                 return {
                     "status": "warning",
                     "codigo": codigo_db,
