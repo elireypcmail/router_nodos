@@ -40,15 +40,40 @@ def _iter_kardex_rows(mysql: MySqlClient, *, mode: str, codigo: str | None) -> l
         where_parts.append("TRIM(codigo) = %s")
         params.append(codigo.strip())
     where = " AND ".join(where_parts)
-    query = f"""
-        SELECT indice, contador, numero, codigo, fecha, costo, compras, ventas, cajero, kobs
-        FROM kardex
-        WHERE {where}
-        ORDER BY indice ASC
-    """
     conn = mysql.connect()
     try:
         with conn.cursor(dictionary=True) as cur:
+            cur.execute("SHOW COLUMNS FROM kardex")
+            columns = {
+                str((row or {}).get("Field") or "").strip().lower()
+                for row in (cur.fetchall() or [])
+                if isinstance(row, dict)
+            }
+
+            has_fecha = "fecha" in columns
+            has_indice = "indice" in columns
+            has_contador = "contador" in columns
+
+            indice_select = "indice" if has_indice else "NULL"
+            if has_fecha and has_indice:
+                order_by = "fecha ASC, indice ASC, numero ASC, codigo ASC"
+            elif has_fecha and has_contador:
+                order_by = "fecha ASC, contador ASC, numero ASC, codigo ASC"
+            elif has_fecha:
+                order_by = "fecha ASC, numero ASC, codigo ASC"
+            elif has_indice:
+                order_by = "indice ASC"
+            elif has_contador:
+                order_by = "contador ASC, numero ASC, codigo ASC"
+            else:
+                order_by = "numero ASC, codigo ASC"
+
+            query = f"""
+                SELECT {indice_select} AS indice, contador, numero, codigo, fecha, costo, compras, ventas, cajero, kobs
+                FROM kardex
+                WHERE {where}
+                ORDER BY {order_by}
+            """
             cur.execute(query, tuple(params))
             return list(cur.fetchall() or [])
     finally:

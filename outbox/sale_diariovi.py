@@ -44,16 +44,38 @@ def _get_row_value(row: dict[str, Any], *keys: str) -> Any:
     return None
 
 
+def _table_has_column(cur: Any, table: str, column: str) -> bool:
+    cur.execute(f"SHOW COLUMNS FROM {table}")
+    rows = cur.fetchall() or []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        field = str(row.get("Field") or "").strip().lower()
+        if field == column.strip().lower():
+            return True
+    return False
+
+
 def _fetch_diariovi_by_numero(
     cur: Any, *, codigo: str, numero: str
 ) -> dict[str, Any] | None:
+    has_fecha = _table_has_column(cur, "diariovi", "fecha")
+    has_indice = _table_has_column(cur, "diariovi", "indice")
+    if has_fecha and has_indice:
+        order_by = "fecha DESC, indice DESC, numero DESC"
+    elif has_fecha:
+        order_by = "fecha DESC, numero DESC"
+    elif has_indice:
+        order_by = "indice DESC, numero DESC"
+    else:
+        order_by = "numero DESC"
     cur.execute(
-        """
+        f"""
         SELECT *
         FROM diariovi
         WHERE codigo = %s
           AND numero = %s
-        ORDER BY indice DESC
+        ORDER BY {order_by}
         LIMIT 1
         """,
         (codigo, numero[:30]),
@@ -68,14 +90,24 @@ def _fetch_diariovi_by_match(
     fecha: date,
     cantidad: float,
 ) -> dict[str, Any] | None:
+    has_fecha = _table_has_column(cur, "diariovi", "fecha")
+    has_indice = _table_has_column(cur, "diariovi", "indice")
+    if has_fecha and has_indice:
+        order_by = "fecha DESC, indice DESC, numero DESC"
+    elif has_fecha:
+        order_by = "fecha DESC, numero DESC"
+    elif has_indice:
+        order_by = "indice DESC, numero DESC"
+    else:
+        order_by = "numero DESC"
     cur.execute(
-        """
+        f"""
         SELECT *
         FROM diariovi
         WHERE codigo = %s
           AND fecha = %s
           AND ABS(IFNULL(cantidad, 0) - %s) < 0.001
-        ORDER BY indice DESC
+        ORDER BY {order_by}
         LIMIT 1
         """,
         (codigo, fecha, cantidad),

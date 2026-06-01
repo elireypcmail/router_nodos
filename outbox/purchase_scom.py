@@ -67,9 +67,23 @@ def _parse_kobs_indice(kobs: Any) -> str | None:
     return match.group(1).strip()
 
 
+def _table_has_column(cur: Any, table: str, column: str) -> bool:
+    cur.execute(f"SHOW COLUMNS FROM {table}")
+    rows = cur.fetchall() or []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        field = str(row.get("Field") or "").strip().lower()
+        if field == column.strip().lower():
+            return True
+    return False
+
+
 def _fetch_scom_by_indice(
     cur: Any, *, codigo: str, indice: str
 ) -> dict[str, Any] | None:
+    if not _table_has_column(cur, "scom", "indice"):
+        return None
     cur.execute(
         """
         SELECT numero, cod_prv, indice, cantidad, costo, subtotal2
@@ -90,15 +104,26 @@ def _fetch_scom_by_match(
     cantidad: float,
     costo: float,
 ) -> dict[str, Any] | None:
+    has_fecha = _table_has_column(cur, "scom", "fecha")
+    has_indice = _table_has_column(cur, "scom", "indice")
+    if has_fecha and has_indice:
+        order_by = "fecha DESC, indice DESC, numero DESC"
+    elif has_fecha:
+        order_by = "fecha DESC, numero DESC"
+    elif has_indice:
+        order_by = "indice DESC, numero DESC"
+    else:
+        order_by = "numero DESC"
+    indice_select = "indice" if has_indice else "NULL AS indice"
     cur.execute(
-        """
-        SELECT numero, cod_prv, indice, cantidad, costo, subtotal2
+        f"""
+        SELECT numero, cod_prv, {indice_select}, cantidad, costo, subtotal2
         FROM scom
         WHERE codigo = %s
           AND fecha = %s
           AND ABS(IFNULL(cantidad, 0) - %s) < 0.001
           AND ABS(IFNULL(costo, 0) - %s) < 0.05
-        ORDER BY indice DESC
+        ORDER BY {order_by}
         LIMIT 1
         """,
         (codigo, fecha, cantidad, costo),
