@@ -17,6 +17,7 @@ from core.categoria_trace import trace, trace_exc, trace_warn
 from core.config import settings
 from db.mysql import MySqlClient
 from core.json_util import json_safe
+from hub.catalog_snapshot import load_node_catalog
 from outbox.send_result import OutboxSendResult
 from sync.http_log import log_sync_error, log_sync_step
 
@@ -214,6 +215,21 @@ class HubClient:
                 if not entity_type:
                     ignored_ids.append(outbox_id_int)
                     continue
+
+                codigo = _ingest_codigo(payload)
+                if codigo != _MISSING_CODIGO:
+                    try:
+                        catalog = await anyio.to_thread.run_sync(
+                            load_node_catalog, codigo
+                        )
+                        if catalog:
+                            payload["node_catalog"] = catalog
+                    except Exception as exc:
+                        trace_warn(
+                            "hub.ingest.node_catalog_skip",
+                            codigo=codigo,
+                            error=str(exc),
+                        )
 
                 label = _INGEST_LABEL.get(entity_type, entity_type)
                 logger.info(
