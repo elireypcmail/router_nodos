@@ -10,6 +10,7 @@ from db.mysql import MySqlClient
 from core.json_util import json_safe
 from catalog.push.inventario import SINV_PUSH_EXTRA_FIELDS, _fetch_detalle_by_codigo
 from db.sinv_store import SINV_HUB_FIELDS
+from sync.jobs.export_progress import should_tick_export_loop
 
 
 def export_inventory_push_file(
@@ -66,8 +67,6 @@ def export_inventory_push_file(
                 if not rows:
                     break
                 for row in rows:
-                    if should_cancel:
-                        should_cancel()
                     if not isinstance(row, dict):
                         continue
                     codigo = str(row.get("codigo") or "").strip()
@@ -77,6 +76,10 @@ def export_inventory_push_file(
                     payload["lotes"] = detalle_map.get(codigo, [])
                     gz.write(json.dumps(payload, ensure_ascii=True) + "\n")
                     written += 1
+                    if not should_tick_export_loop(written=written, total=total):
+                        continue
+                    if should_cancel:
+                        should_cancel()
                     if on_progress and total > 0:
                         pct = int((written / total) * 50)
                         on_progress(written, total, pct)

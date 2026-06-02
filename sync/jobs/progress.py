@@ -5,6 +5,7 @@ import time
 from typing import Any
 
 from hub.client import HubClient
+from sync.jobs.export_progress import should_tick_export_loop
 
 logger = logging.getLogger("multishop.sync.progress")
 
@@ -31,8 +32,17 @@ async def report_progress(
     throttle_ms = int(app_settings.catalog_sync_progress_throttle_ms)
     now = time.time()
     last = _last_report.get(job_id)
+
+    row_tick = False
+    if processed_rows is not None and total_rows is not None and total_rows > 0:
+        row_tick = should_tick_export_loop(
+            written=int(processed_rows),
+            total=int(total_rows),
+        )
+
     if (
         not force
+        and not row_tick
         and last is not None
         and (now - last[0]) * 1000 < throttle_ms
         and abs(progress_nodo - last[1]) < 1

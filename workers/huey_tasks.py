@@ -286,8 +286,6 @@ async def _catalog_push_job_async(job_id: str) -> dict:
     )
 
     def on_export(done: int, total: int, pct: int) -> None:
-        ensure_not_cancelled_sync(job_id)
-
         async def _report() -> None:
             await report_progress(
                 hub,

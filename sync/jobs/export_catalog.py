@@ -9,6 +9,7 @@ from catalog.push.categoria import fetch_all_categorias
 from catalog.push.proveedor import fetch_all_proveedores
 from core.json_util import json_safe
 from db.mysql import MySqlClient
+from sync.jobs.export_progress import should_tick_export_loop
 
 
 def _write_manifest_gz(
@@ -24,10 +25,12 @@ def _write_manifest_gz(
     with gzip.open(tmp, "wt", encoding="utf-8") as gz:
         gz.write(json.dumps(manifest, ensure_ascii=True) + "\n")
         for row in rows:
-            if should_cancel:
-                should_cancel()
             gz.write(json.dumps(row, ensure_ascii=True) + "\n")
             written += 1
+            if not should_tick_export_loop(written=written, total=total):
+                continue
+            if should_cancel:
+                should_cancel()
             if on_progress and total > 0:
                 pct = int((written / total) * 50)
                 on_progress(written, total, pct)
