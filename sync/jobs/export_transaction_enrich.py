@@ -12,7 +12,9 @@ from outbox.purchase_scom import prepare_purchase_payload_for_hub
 from outbox.purchase_scom_index import PurchaseScomIndex, build_purchase_scom_index
 from outbox.sale_diariovi import prepare_sale_payload_for_hub
 from outbox.sale_erp_index import SaleErpLineIndex, build_sale_erp_line_index
+from sync.jobs.kardex_sale_scope import build_kardex_ventas_where
 from sync.jobs.node_stock_snapshot import attach_node_stock_fields
+from sync.jobs.transaction_sync_types import TransactionWatermark
 
 
 class ExportTransactionEnricher:
@@ -61,15 +63,28 @@ class ExportTransactionEnricher:
             )
         return self._scom_index.row_count
 
-    def warm_sale_erp_indexes(self, codigo_filter: str | None = None) -> tuple[int, int]:
+    def warm_sale_erp_indexes(
+        self,
+        codigo_filter: str | None = None,
+        *,
+        since_watermark: TransactionWatermark | None = None,
+    ) -> tuple[int, int]:
         if self._cur is None:
             return (0, 0)
+        kardex_scope = build_kardex_ventas_where(
+            self.col_cache,
+            self._cur,
+            codigo=codigo_filter,
+            since_watermark=since_watermark,
+            table_alias="k",
+        )
         if self._diariovi_index is None:
             self._diariovi_index = build_sale_erp_line_index(
                 self._cur,
                 "diariovi",
                 col_cache=self.col_cache,
                 codigo_filter=codigo_filter,
+                kardex_scope_where=kardex_scope,
             )
         if self._ventasi_index is None:
             self._ventasi_index = build_sale_erp_line_index(
@@ -77,6 +92,7 @@ class ExportTransactionEnricher:
                 "ventasi",
                 col_cache=self.col_cache,
                 codigo_filter=codigo_filter,
+                kardex_scope_where=kardex_scope,
             )
         return (self._ventasi_index.row_count, self._diariovi_index.row_count)
 

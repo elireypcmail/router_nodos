@@ -12,6 +12,10 @@ from core.categoria_trace import trace
 from db.mysql import MySqlClient
 from db.schema_cache import TableColumnCache
 from sync.jobs.export_transaction_enrich import ExportTransactionEnricher
+from sync.jobs.kardex_sale_scope import (
+    apply_kardex_watermark_filter,
+    build_kardex_ventas_where,
+)
 from sync.jobs.node_stock_snapshot import append_stock_snapshot_lines
 from sync.jobs.transaction_sync_types import (
     TransactionWatermark,
@@ -50,26 +54,6 @@ def _row_event_id(
     fecha = str(row.get("fecha") or "").strip()[:10]
     codigo = str(row.get("codigo") or "").strip()
     return f"{mode}-kardex-fallback-{contador or '-'}-{numero or '-'}-{fecha or '-'}-{codigo or '-'}"
-
-
-def _apply_watermark_filter(
-    where_parts: list[str],
-    params: list[Any],
-    watermark: TransactionWatermark | None,
-    *,
-    has_fecha: bool,
-    has_contador: bool,
-) -> None:
-    if watermark is None or not has_fecha:
-        return
-    if has_contador and watermark.contador is not None:
-        where_parts.append(
-            "(fecha > %s OR (fecha = %s AND IFNULL(contador, 0) > %s))"
-        )
-        params.extend([watermark.fecha, watermark.fecha, watermark.contador])
-    else:
-        where_parts.append("fecha > %s")
-        params.append(watermark.fecha)
 
 
 @dataclass(frozen=True)
@@ -112,28 +96,36 @@ def _build_kardex_query(
                    compras, ventas, cajero, kobs
         """
     else:
-        where_parts.append("IFNULL(ventas, 0) <> 0")
+        ventas_where, ventas_params = build_kardex_ventas_where(
+            col_cache,
+            cur,
+            codigo=codigo,
+            since_watermark=since_watermark,
+        )
+        where_parts.extend(ventas_where)
+        params.extend(ventas_params)
         select = """
             SELECT indice_placeholder AS indice, contador, numero, codigo, fecha, costo,
                    compras, ventas, cajero, kobs
         """
-
-    if codigo:
-        where_parts.append("TRIM(codigo) = %s")
-        params.append(codigo.strip())
 
     kardex_cols = col_cache.columns(cur, "kardex")
     has_fecha = "fecha" in kardex_cols
     has_indice = "indice" in kardex_cols
     has_contador = "contador" in kardex_cols
 
-    _apply_watermark_filter(
-        where_parts,
-        params,
-        since_watermark,
-        has_fecha=has_fecha,
-        has_contador=has_contador,
-    )
+    if mode != "sale":
+        if codigo:
+            where_parts.append("TRIM(codigo) = %s")
+            params.append(codigo.strip())
+        apply_kardex_watermark_filter(
+            where_parts,
+            params,
+            since_watermark,
+            table_alias=None,
+            has_fecha=has_fecha,
+            has_contador=has_contador,
+        )
 
     indice_select = "indice" if has_indice else "NULL"
     if has_fecha and has_indice:
@@ -299,13 +291,17 @@ def export_transaction_push_file(
                 kardex_rows=kardex_count,
             )
         elif mode == "sale" and kardex_count > 0:
-            v_n, d_n = enricher.warm_sale_erp_indexes(codigo_filter=codigo)
+            v_n, d_n = enricher.warm_sale_erp_indexes(
+                codigo_filter=codigo,
+                since_watermark=since_watermark,
+            )
             trace(
                 "sync.export.warm_sale_erp_index",
                 job_id=job_id,
                 ventasi_rows=v_n,
                 diariovi_rows=d_n,
                 kardex_rows=kardex_count,
+                scoped_to_kardex=True,
             )
 
         if on_progress and total >= 0:

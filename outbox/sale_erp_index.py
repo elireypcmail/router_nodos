@@ -13,6 +13,8 @@ from typing import Any
 
 from db.schema_cache import TableColumnCache
 
+from sync.jobs.kardex_sale_scope import build_sale_erp_scoped_to_kardex_exists
+
 
 def _to_float(value: Any) -> float:
     if value is None:
@@ -81,9 +83,13 @@ def build_sale_erp_line_index(
     *,
     col_cache: TableColumnCache | None = None,
     codigo_filter: str | None = None,
+    kardex_scope_where: tuple[list[str], list[Any]] | None = None,
 ) -> SaleErpLineIndex:
     """
     Una sola lectura de ventasi/diariovi; claves más recientes ganan (ORDER BY fecha, contador ASC).
+
+    Si ``kardex_scope_where`` viene del export (mismo WHERE que kardex ventas), solo se indexan
+    líneas ERP enlazables a ese subconjunto — evita cargar diariovi/ventasi completos.
     """
     cache = col_cache or TableColumnCache()
     cols = cache.columns(cur, table)
@@ -125,11 +131,25 @@ def build_sale_erp_line_index(
     else:
         order_by = "numero ASC"
 
-    where = ""
-    params: tuple[Any, ...] = ()
+    where_parts: list[str] = []
+    params: list[Any] = []
     if codigo_filter:
-        where = " WHERE TRIM(codigo) = %s"
-        params = (codigo_filter.strip(),)
+        where_parts.append("TRIM(codigo) = %s")
+        params.append(codigo_filter.strip())
+    if kardex_scope_where is not None:
+        exists_sql, exists_params = build_sale_erp_scoped_to_kardex_exists(
+            table,
+            cur,
+            cache,
+            kardex_scope_where[0],
+            kardex_scope_where[1],
+        )
+        where_parts.append(exists_sql)
+        params.extend(exists_params)
+
+    where = ""
+    if where_parts:
+        where = " WHERE " + " AND ".join(where_parts)
 
     col_sql = ", ".join(f"`{c}`" for c in select_cols)
     cur.execute(
@@ -139,7 +159,7 @@ def build_sale_erp_line_index(
         {where}
         ORDER BY {order_by}
         """,
-        params,
+        tuple(params),
     )
 
     index = SaleErpLineIndex()
