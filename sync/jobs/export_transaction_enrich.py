@@ -36,7 +36,6 @@ class ExportTransactionEnricher:
         self._catego: dict[str, dict[str, Any] | None] = {}
         self._sprv: dict[str, dict[str, Any] | None] = {}
         self._scom_index: PurchaseScomIndex | None = None
-        self._ventasi_index: SaleErpLineIndex | None = None
         self._diariovi_index: SaleErpLineIndex | None = None
 
     def __enter__(self) -> ExportTransactionEnricher:
@@ -63,14 +62,16 @@ class ExportTransactionEnricher:
             )
         return self._scom_index.row_count
 
-    def warm_sale_erp_indexes(
+    def warm_sale_diariovi_index(
         self,
         codigo_filter: str | None = None,
         *,
         since_watermark: TransactionWatermark | None = None,
-    ) -> tuple[int, int]:
+    ) -> int:
         if self._cur is None:
-            return (0, 0)
+            return 0
+        if self._diariovi_index is not None:
+            return self._diariovi_index.row_count
         kardex_scope = build_kardex_ventas_where(
             self.col_cache,
             self._cur,
@@ -78,23 +79,14 @@ class ExportTransactionEnricher:
             since_watermark=since_watermark,
             table_alias="k",
         )
-        if self._diariovi_index is None:
-            self._diariovi_index = build_sale_erp_line_index(
-                self._cur,
-                "diariovi",
-                col_cache=self.col_cache,
-                codigo_filter=codigo_filter,
-                kardex_scope_where=kardex_scope,
-            )
-        if self._ventasi_index is None:
-            self._ventasi_index = build_sale_erp_line_index(
-                self._cur,
-                "ventasi",
-                col_cache=self.col_cache,
-                codigo_filter=codigo_filter,
-                kardex_scope_where=kardex_scope,
-            )
-        return (self._ventasi_index.row_count, self._diariovi_index.row_count)
+        self._diariovi_index = build_sale_erp_line_index(
+            self._cur,
+            "diariovi",
+            col_cache=self.col_cache,
+            codigo_filter=codigo_filter,
+            kardex_scope_where=kardex_scope,
+        )
+        return self._diariovi_index.row_count
 
     def enrich_purchase(self, payload: dict[str, Any]) -> dict[str, Any]:
         prep = prepare_purchase_payload_for_hub(
@@ -145,7 +137,6 @@ class ExportTransactionEnricher:
             mysql=self.mysql,
             cur=self._cur,
             col_cache=self.col_cache,
-            ventasi_index=self._ventasi_index,
             diariovi_index=self._diariovi_index,
         )
         out = dict(prep.payload or payload)

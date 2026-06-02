@@ -1,4 +1,4 @@
-"""Filtros kardex (ventas) compartidos entre export .ndjson.gz e índice diariovi/ventasi."""
+"""Filtros kardex (ventas) compartidos entre export .ndjson.gz e índice diariovi."""
 
 from __future__ import annotations
 
@@ -70,7 +70,7 @@ def build_sale_erp_scoped_to_kardex_exists(
     kardex_params: list[Any],
 ) -> tuple[str, tuple[Any, ...]]:
     """
-    Solo filas diariovi/ventasi que pueden enlazar alguna fila kardex del mismo alcance
+    Solo filas diariovi que pueden enlazar alguna fila kardex del mismo alcance
     (mismo criterio de match que lookup_sale_line_in_index).
     """
     erp_cols = col_cache.columns(cur, erp_table)

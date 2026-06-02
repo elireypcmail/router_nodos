@@ -1,9 +1,8 @@
 """
-Enriquece ventas con línea ERP sellada.
+Enriquece ventas con línea ERP sellada en diariovi.
 
-- **ventasi**: nombre lógico del outbox (trigger kardex).
-- **diariovi**: misma forma de línea; en muchas tiendas es donde están precio/subtotal2
-  (ver backup-FF23834: kardex.codigo + kardex.numero + kardex.ventas ↔ diariovi).
+El outbox nombra el evento ``ventasi`` (trigger kardex), pero el precio/monto sale de
+``diariovi`` (kardex.codigo + kardex.numero + kardex.ventas ↔ diariovi).
 
 Match (orden): (codigo, numero, cantidad) → (codigo, contador) → (codigo, numero) → fecha+cantidad.
 """
@@ -11,7 +10,7 @@ Match (orden): (codigo, numero, cantidad) → (codigo, contador) → (codigo, nu
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from db.mysql import MySqlClient
 from db.schema_cache import TableColumnCache
@@ -22,7 +21,6 @@ from outbox.sale_erp_line import (
     erp_sale_line_has_pricing,
     lookup_sale_line_in_table,
 )
-from outbox.sale_ventasi import lookup_ventasi_sale_line
 
 
 @dataclass(frozen=True)
@@ -59,21 +57,16 @@ def _resolve_sale_erp_line(
     mysql: MySqlClient,
     cur: Any | None,
     col_cache: TableColumnCache | None,
-    ventasi_index: SaleErpLineIndex | None,
     diariovi_index: SaleErpLineIndex | None,
 ) -> tuple[dict[str, Any] | None, str]:
-    """diariovi primero (suele tener las líneas); luego ventasi."""
-    sources: list[tuple[str, SaleErpLineIndex | None, Callable[..., dict | None]]] = [
-        ("diariovi", diariovi_index, lookup_diariovi_sale_line),
-        ("ventasi", ventasi_index, lookup_ventasi_sale_line),
-    ]
-    for source, index, lookup_sql in sources:
-        if index is not None:
-            row = lookup_sale_line_in_index(index, payload)
-        else:
-            row = lookup_sql(mysql, payload, cur=cur, col_cache=col_cache)
-        if row and erp_sale_line_has_pricing(row):
-            return row, source
+    if diariovi_index is not None:
+        row = lookup_sale_line_in_index(diariovi_index, payload)
+    else:
+        row = lookup_diariovi_sale_line(
+            mysql, payload, cur=cur, col_cache=col_cache
+        )
+    if row and erp_sale_line_has_pricing(row):
+        return row, "diariovi"
     return None, ""
 
 
@@ -83,7 +76,6 @@ def prepare_sale_payload_for_hub(
     mysql: MySqlClient | None = None,
     cur: Any | None = None,
     col_cache: TableColumnCache | None = None,
-    ventasi_index: SaleErpLineIndex | None = None,
     diariovi_index: SaleErpLineIndex | None = None,
 ) -> SaleDiarioViPrepareResult:
     out = dict(payload)
@@ -104,7 +96,6 @@ def prepare_sale_payload_for_hub(
         mysql=client,
         cur=cur,
         col_cache=col_cache,
-        ventasi_index=ventasi_index,
         diariovi_index=diariovi_index,
     )
     if row and source:

@@ -1,4 +1,4 @@
-"""Enriquece ventas del outbox con línea ERP sellada en ventasi (precio1, subtotal2)."""
+"""Legacy: lookup en tabla ventasi (no usada en export ni outbox enriquecido; ver sale_diariovi)."""
 
 from __future__ import annotations
 

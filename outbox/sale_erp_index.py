@@ -1,5 +1,5 @@
 """
-Índice en memoria de ventasi/diariovi para export transaccional masivo.
+Índice en memoria de diariovi para export transaccional masivo de ventas.
 
 Match kardex → línea ERP (mismo criterio que backup-FF23834):
   codigo (SKU) + numero (factura) + cantidad; luego contador; luego fecha+cantidad.
@@ -86,10 +86,10 @@ def build_sale_erp_line_index(
     kardex_scope_where: tuple[list[str], list[Any]] | None = None,
 ) -> SaleErpLineIndex:
     """
-    Una sola lectura de ventasi/diariovi; claves más recientes ganan (ORDER BY fecha, contador ASC).
+    Una sola lectura de diariovi; claves más recientes ganan (ORDER BY fecha, contador ASC).
 
     Si ``kardex_scope_where`` viene del export (mismo WHERE que kardex ventas), solo se indexan
-    líneas ERP enlazables a ese subconjunto — evita cargar diariovi/ventasi completos.
+    líneas enlazables a ese subconjunto — evita cargar diariovi completo.
     """
     cache = col_cache or TableColumnCache()
     cols = cache.columns(cur, table)

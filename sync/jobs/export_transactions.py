@@ -245,7 +245,7 @@ def export_transaction_push_file(
     - mode="purchase" -> entity_type purchase
     - mode="sale" -> entity_type sale
 
-    Lee kardex por lotes (fetchmany) y enriquece con índices en memoria (scom / ventasi).
+    Lee kardex por lotes (fetchmany) y enriquece con índices en memoria (scom / diariovi).
     """
     if mode not in {"purchase", "sale"}:
         raise RuntimeError("mode must be purchase|sale")
@@ -291,14 +291,13 @@ def export_transaction_push_file(
                 kardex_rows=kardex_count,
             )
         elif mode == "sale" and kardex_count > 0:
-            v_n, d_n = enricher.warm_sale_erp_indexes(
+            d_n = enricher.warm_sale_diariovi_index(
                 codigo_filter=codigo,
                 since_watermark=since_watermark,
             )
             trace(
-                "sync.export.warm_sale_erp_index",
+                "sync.export.warm_sale_diariovi_index",
                 job_id=job_id,
-                ventasi_rows=v_n,
                 diariovi_rows=d_n,
                 kardex_rows=kardex_count,
                 scoped_to_kardex=True,
