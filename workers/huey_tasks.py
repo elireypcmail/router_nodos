@@ -153,6 +153,10 @@ async def _catalog_transaction_mode_push_job_async(
 
     phase = "compras" if mode == "purchase" else "ventas"
     job_meta = await fetch_hub_job_meta(hub, job_id)
+    if mode == "sale":
+        from sync.jobs.catalog_job_runner import wait_purchase_upload_before_sale_export
+
+        await wait_purchase_upload_before_sale_export(hub, job_meta)
     since_wm = resolve_transaction_since(job_meta, mode)
     mysql = MySqlClient()
 
