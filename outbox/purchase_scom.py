@@ -10,6 +10,7 @@ from typing import Any
 from core.config import settings
 from db.mysql import MySqlClient
 from db.schema_cache import TableColumnCache
+from outbox.purchase_scom_index import PurchaseScomIndex, lookup_scom_in_index
 
 _KOBS_INDICE_RE = re.compile(r"Ind:\s*(\d+)", re.IGNORECASE)
 
@@ -227,6 +228,7 @@ def prepare_purchase_payload_for_hub(
     mysql: MySqlClient | None = None,
     cur: Any | None = None,
     col_cache: TableColumnCache | None = None,
+    scom_index: PurchaseScomIndex | None = None,
 ) -> PurchaseScomPrepareResult:
     """
     Resuelve scom antes de enviar al hub.
@@ -241,12 +243,15 @@ def prepare_purchase_payload_for_hub(
         out["monto_source"] = "kardex.fallback_no_mysql"
         return PurchaseScomPrepareResult(payload=out, defer=False)
 
-    scom = lookup_scom_purchase_line(
-        client,
-        payload,
-        cur=cur,
-        col_cache=col_cache,
-    )
+    if scom_index is not None:
+        scom = lookup_scom_in_index(scom_index, payload)
+    else:
+        scom = lookup_scom_purchase_line(
+            client,
+            payload,
+            cur=cur,
+            col_cache=col_cache,
+        )
     if scom and _to_float(scom.get("subtotal2")) > 0:
         enriched = apply_scom_to_purchase_payload(payload, scom)
         return PurchaseScomPrepareResult(payload=enriched, defer=False)

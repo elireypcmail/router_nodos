@@ -179,6 +179,21 @@ def lookup_sale_line_in_table(
         return None
 
     def _lookup(active_cur: Any) -> dict[str, Any] | None:
+        numero = str(payload.get("numero") or payload.get("numdoc") or "").strip()
+        cantidad = _to_float(payload.get("cantidad"))
+
+        if numero and cantidad > 0:
+            row = _fetch_sale_line_by_numero(
+                active_cur,
+                table=table,
+                codigo=codigo,
+                numero=numero,
+                cantidad=cantidad,
+                col_cache=col_cache,
+            )
+            if row:
+                return row
+
         contador_raw = payload.get("contador")
         if contador_raw is not None and str(contador_raw).strip() != "":
             try:
@@ -196,15 +211,13 @@ def lookup_sale_line_in_table(
                 if row:
                     return row
 
-        numero = str(payload.get("numero") or payload.get("numdoc") or "").strip()
-        cantidad = _to_float(payload.get("cantidad"))
         if numero:
             row = _fetch_sale_line_by_numero(
                 active_cur,
                 table=table,
                 codigo=codigo,
                 numero=numero,
-                cantidad=cantidad if cantidad > 0 else None,
+                cantidad=None,
                 col_cache=col_cache,
             )
             if row:
@@ -233,6 +246,23 @@ def lookup_sale_line_in_table(
         conn.close()
 
 
+def erp_sale_unit_price(line: dict[str, Any]) -> float:
+    """precio1; en diariovi/ventasi la columna costo suele ser precio unitario de venta."""
+    return _to_float(
+        _get_row_value(line, "precio1", "precio", "nprecio1", "pventa", "costo")
+    )
+
+
+def erp_sale_line_monto(line: dict[str, Any]) -> float:
+    return _to_float(
+        _get_row_value(line, "subtotal2", "subtotal1", "total", "subtotal", "monto")
+    )
+
+
+def erp_sale_line_has_pricing(line: dict[str, Any]) -> bool:
+    return erp_sale_unit_price(line) > 0 or erp_sale_line_monto(line) > 0
+
+
 def apply_erp_sale_line_to_payload(
     payload: dict[str, Any],
     line: dict[str, Any],
@@ -247,21 +277,22 @@ def apply_erp_sale_line_to_payload(
         out["numero"] = numero
         out["numdoc"] = numero
 
-    precio = _to_float(
-        _get_row_value(line, "precio1", "precio", "pventa", "nprecio1")
-    )
+    precio = erp_sale_unit_price(line)
     if precio:
         out["precio"] = precio
 
-    monto = _to_float(
-        _get_row_value(line, "subtotal2", "total", "subtotal", "monto")
-    )
+    monto = erp_sale_line_monto(line)
     if monto:
         out["monto"] = monto
-        out["monto_source"] = f"{source}.subtotal2"
+        if _to_float(line.get("subtotal2")):
+            out["monto_source"] = f"{source}.subtotal2"
+        elif _to_float(line.get("subtotal1")):
+            out["monto_source"] = f"{source}.subtotal1"
+        else:
+            out["monto_source"] = f"{source}.line_total"
     elif precio and _to_float(out.get("cantidad")):
         out["monto"] = round(_to_float(out.get("cantidad")) * precio, 2)
-        out["monto_source"] = f"{source}.cantidad_x_precio1"
+        out["monto_source"] = f"{source}.cantidad_x_precio"
 
     indice = _get_row_value(line, "indice")
     if indice is not None:

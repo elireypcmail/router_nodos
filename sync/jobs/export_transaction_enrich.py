@@ -9,15 +9,23 @@ from db.schema_cache import TableColumnCache
 from hub.catalog_snapshot import load_node_catalog_with_cursor
 from outbox.purchase_lots import load_purchase_lot_snapshot
 from outbox.purchase_scom import prepare_purchase_payload_for_hub
+from outbox.purchase_scom_index import PurchaseScomIndex, build_purchase_scom_index
 from outbox.sale_diariovi import prepare_sale_payload_for_hub
+from outbox.sale_erp_index import SaleErpLineIndex, build_sale_erp_line_index
 from sync.jobs.node_stock_snapshot import attach_node_stock_fields
 
 
 class ExportTransactionEnricher:
-    """Reutiliza conexión MySQL y cachés durante export masivo de kardex."""
+    """Reutiliza conexión MySQL, índices ERP y cachés durante export masivo."""
 
-    def __init__(self, mysql: MySqlClient) -> None:
+    def __init__(
+        self,
+        mysql: MySqlClient,
+        *,
+        bulk_file_export: bool = False,
+    ) -> None:
         self.mysql = mysql
+        self.bulk_file_export = bulk_file_export
         self.col_cache = TableColumnCache()
         self._conn = None
         self._cur = None
@@ -25,6 +33,9 @@ class ExportTransactionEnricher:
         self._catalog: dict[str, dict[str, Any] | None] = {}
         self._catego: dict[str, dict[str, Any] | None] = {}
         self._sprv: dict[str, dict[str, Any] | None] = {}
+        self._scom_index: PurchaseScomIndex | None = None
+        self._ventasi_index: SaleErpLineIndex | None = None
+        self._diariovi_index: SaleErpLineIndex | None = None
 
     def __enter__(self) -> ExportTransactionEnricher:
         self._conn = self.mysql.connect()
@@ -39,6 +50,36 @@ class ExportTransactionEnricher:
         self._cur = None
         self._conn = None
 
+    def warm_purchase_scom_index(self, codigo_filter: str | None = None) -> int:
+        if self._cur is None:
+            return 0
+        if self._scom_index is None:
+            self._scom_index = build_purchase_scom_index(
+                self._cur,
+                col_cache=self.col_cache,
+                codigo_filter=codigo_filter,
+            )
+        return self._scom_index.row_count
+
+    def warm_sale_erp_indexes(self, codigo_filter: str | None = None) -> tuple[int, int]:
+        if self._cur is None:
+            return (0, 0)
+        if self._diariovi_index is None:
+            self._diariovi_index = build_sale_erp_line_index(
+                self._cur,
+                "diariovi",
+                col_cache=self.col_cache,
+                codigo_filter=codigo_filter,
+            )
+        if self._ventasi_index is None:
+            self._ventasi_index = build_sale_erp_line_index(
+                self._cur,
+                "ventasi",
+                col_cache=self.col_cache,
+                codigo_filter=codigo_filter,
+            )
+        return (self._ventasi_index.row_count, self._diariovi_index.row_count)
+
     def enrich_purchase(self, payload: dict[str, Any]) -> dict[str, Any]:
         prep = prepare_purchase_payload_for_hub(
             payload,
@@ -46,40 +87,41 @@ class ExportTransactionEnricher:
             mysql=self.mysql,
             cur=self._cur,
             col_cache=self.col_cache,
+            scom_index=self._scom_index,
         )
         out = dict(prep.payload or payload)
         codigo = str(out.get("codigo") or "").strip()
-        if codigo:
-            costo = float(out.get("costo_actual_factura") or out.get("precio") or 0)
-            lotes = load_purchase_lot_snapshot(
-                self.mysql,
-                codigo,
-                preferred_costo=costo or None,
-                preferred_costopro=costo or None,
-                cur=self._cur,
-                detalle_rows_cache=self._detalle_rows,
-            )
-            if lotes:
-                out["lotes"] = lotes
-            catalog = load_node_catalog_with_cursor(
-                self._cur,
-                codigo,
-                product_cache=self._catalog,
-                catego_cache=self._catego,
-                provider_cache=self._sprv,
-            )
-            if catalog:
-                out["node_catalog"] = catalog
-            out = attach_node_stock_fields(
-                out,
-                mysql=self.mysql,
-                cur=self._cur,
-                codigo=codigo,
-                detalle_rows_cache=self._detalle_rows,
-                preferred_costo=costo or None,
-                preferred_costopro=costo or None,
-            )
-        return out
+        if not codigo or self.bulk_file_export:
+            return out
+        costo = float(out.get("costo_actual_factura") or out.get("precio") or 0)
+        lotes = load_purchase_lot_snapshot(
+            self.mysql,
+            codigo,
+            preferred_costo=costo or None,
+            preferred_costopro=costo or None,
+            cur=self._cur,
+            detalle_rows_cache=self._detalle_rows,
+        )
+        if lotes:
+            out["lotes"] = lotes
+        catalog = load_node_catalog_with_cursor(
+            self._cur,
+            codigo,
+            product_cache=self._catalog,
+            catego_cache=self._catego,
+            provider_cache=self._sprv,
+        )
+        if catalog:
+            out["node_catalog"] = catalog
+        return attach_node_stock_fields(
+            out,
+            mysql=self.mysql,
+            cur=self._cur,
+            codigo=codigo,
+            detalle_rows_cache=self._detalle_rows,
+            preferred_costo=costo or None,
+            preferred_costopro=costo or None,
+        )
 
     def enrich_sale(self, payload: dict[str, Any]) -> dict[str, Any]:
         prep = prepare_sale_payload_for_hub(
@@ -87,37 +129,41 @@ class ExportTransactionEnricher:
             mysql=self.mysql,
             cur=self._cur,
             col_cache=self.col_cache,
+            ventasi_index=self._ventasi_index,
+            diariovi_index=self._diariovi_index,
         )
         out = dict(prep.payload or payload)
+        if self.bulk_file_export:
+            return out
         codigo = str(out.get("codigo") or "").strip()
-        if codigo:
-            catalog = load_node_catalog_with_cursor(
-                self._cur,
-                codigo,
-                product_cache=self._catalog,
-                catego_cache=self._catego,
-                provider_cache=self._sprv,
-            )
-            if catalog:
-                out["node_catalog"] = catalog
-            out = attach_node_stock_fields(
-                out,
-                mysql=self.mysql,
-                cur=self._cur,
-                codigo=codigo,
-                detalle_rows_cache=self._detalle_rows,
-            )
-        return out
+        if not codigo:
+            return out
+        catalog = load_node_catalog_with_cursor(
+            self._cur,
+            codigo,
+            product_cache=self._catalog,
+            catego_cache=self._catego,
+            provider_cache=self._sprv,
+        )
+        if catalog:
+            out["node_catalog"] = catalog
+        return attach_node_stock_fields(
+            out,
+            mysql=self.mysql,
+            cur=self._cur,
+            codigo=codigo,
+            detalle_rows_cache=self._detalle_rows,
+        )
 
     def enrich_kardex_adjustment(self, payload: dict[str, Any]) -> dict[str, Any]:
         out = dict(payload)
         codigo = str(out.get("codigo") or "").strip()
-        if codigo and self._cur is not None:
-            out = attach_node_stock_fields(
-                out,
-                mysql=self.mysql,
-                cur=self._cur,
-                codigo=codigo,
-                detalle_rows_cache=self._detalle_rows,
-            )
-        return out
+        if not codigo or self._cur is None or self.bulk_file_export:
+            return out
+        return attach_node_stock_fields(
+            out,
+            mysql=self.mysql,
+            cur=self._cur,
+            codigo=codigo,
+            detalle_rows_cache=self._detalle_rows,
+        )

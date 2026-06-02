@@ -2,18 +2,23 @@ from __future__ import annotations
 
 import gzip
 import json
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from core.json_util import json_safe
+from core.categoria_trace import trace
 from db.mysql import MySqlClient
 from db.schema_cache import TableColumnCache
 from sync.jobs.export_transaction_enrich import ExportTransactionEnricher
 from sync.jobs.node_stock_snapshot import append_stock_snapshot_lines
 from sync.jobs.transaction_sync_types import (
     TransactionWatermark,
-    max_watermark_from_rows,
+    merge_watermark,
 )
+
+KARDEX_FETCH_BATCH = 5000
 
 
 def _num(value: Any) -> float:
@@ -67,121 +72,115 @@ def _apply_watermark_filter(
         params.append(watermark.fecha)
 
 
-def _iter_kardex_rows(
-    mysql: MySqlClient,
+@dataclass(frozen=True)
+class _KardexQuery:
+    sql: str
+    params: tuple[Any, ...]
+
+
+def _build_kardex_query(
+    col_cache: TableColumnCache,
+    cur: Any,
     *,
     mode: str,
     codigo: str | None,
-    since_watermark: TransactionWatermark | None = None,
-) -> list[dict[str, Any]]:
+    since_watermark: TransactionWatermark | None,
+    adjustments_only: bool,
+) -> _KardexQuery:
     where_parts: list[str] = []
     params: list[Any] = []
-    if mode == "purchase":
+
+    if adjustments_only:
+        where_parts.extend(
+            [
+                "IFNULL(compras, 0) = 0",
+                "IFNULL(ventas, 0) = 0",
+                (
+                    "(IFNULL(ajustesp, 0) <> 0 OR IFNULL(ajustesn, 0) <> 0 "
+                    "OR IFNULL(devoc, 0) <> 0 OR IFNULL(devov, 0) <> 0)"
+                ),
+            ]
+        )
+        select = """
+            SELECT indice_placeholder AS indice, contador, numero, codigo, fecha,
+                   compras, ventas, ajustesp, ajustesn, devoc, devov, costo, kobs
+        """
+    elif mode == "purchase":
         where_parts.append("IFNULL(compras, 0) <> 0")
+        select = """
+            SELECT indice_placeholder AS indice, contador, numero, codigo, fecha, costo,
+                   compras, ventas, cajero, kobs
+        """
     else:
         where_parts.append("IFNULL(ventas, 0) <> 0")
+        select = """
+            SELECT indice_placeholder AS indice, contador, numero, codigo, fecha, costo,
+                   compras, ventas, cajero, kobs
+        """
+
     if codigo:
         where_parts.append("TRIM(codigo) = %s")
         params.append(codigo.strip())
-    conn = mysql.connect()
-    col_cache = TableColumnCache()
-    try:
-        with conn.cursor(dictionary=True) as cur:
-            kardex_cols = col_cache.columns(cur, "kardex")
-            has_fecha = "fecha" in kardex_cols
-            has_indice = "indice" in kardex_cols
-            has_contador = "contador" in kardex_cols
 
-            _apply_watermark_filter(
-                where_parts,
-                params,
-                since_watermark,
-                has_fecha=has_fecha,
-                has_contador=has_contador,
-            )
+    kardex_cols = col_cache.columns(cur, "kardex")
+    has_fecha = "fecha" in kardex_cols
+    has_indice = "indice" in kardex_cols
+    has_contador = "contador" in kardex_cols
 
-            indice_select = "indice" if has_indice else "NULL"
-            if has_fecha and has_indice:
-                order_by = "fecha ASC, indice ASC, numero ASC, codigo ASC"
-            elif has_fecha and has_contador:
-                order_by = "fecha ASC, contador ASC, numero ASC, codigo ASC"
-            elif has_fecha:
-                order_by = "fecha ASC, numero ASC, codigo ASC"
-            elif has_indice:
-                order_by = "indice ASC"
-            elif has_contador:
-                order_by = "contador ASC, numero ASC, codigo ASC"
-            else:
-                order_by = "numero ASC, codigo ASC"
+    _apply_watermark_filter(
+        where_parts,
+        params,
+        since_watermark,
+        has_fecha=has_fecha,
+        has_contador=has_contador,
+    )
 
-            where = " AND ".join(where_parts)
-            query = f"""
-                SELECT {indice_select} AS indice, contador, numero, codigo, fecha, costo, compras, ventas, cajero, kobs
-                FROM kardex
-                WHERE {where}
-                ORDER BY {order_by}
-            """
-            cur.execute(query, tuple(params))
-            return list(cur.fetchall() or [])
-    finally:
-        conn.close()
+    indice_select = "indice" if has_indice else "NULL"
+    if has_fecha and has_indice:
+        order_by = "fecha ASC, indice ASC, numero ASC, codigo ASC"
+    elif has_fecha and has_contador:
+        order_by = "fecha ASC, contador ASC, numero ASC, codigo ASC"
+    elif has_fecha:
+        order_by = "fecha ASC, numero ASC, codigo ASC"
+    elif has_indice:
+        order_by = "indice ASC"
+    elif has_contador:
+        order_by = "contador ASC, numero ASC, codigo ASC"
+    else:
+        order_by = "numero ASC, codigo ASC"
+
+    select = select.replace("indice_placeholder", indice_select)
+    where = " AND ".join(where_parts)
+    sql = f"""
+        {select}
+        FROM kardex
+        WHERE {where}
+        ORDER BY {order_by}
+    """
+    return _KardexQuery(sql=sql, params=tuple(params))
 
 
-def _iter_kardex_adjustment_rows(
-    mysql: MySqlClient,
+def _count_kardex_query(cur: Any, query: _KardexQuery) -> int:
+    sql = f"SELECT COUNT(*) AS c FROM ({query.sql}) AS kq"
+    cur.execute(sql, query.params)
+    row = cur.fetchone()
+    if not row:
+        return 0
+    return int(row.get("c") or 0)
+
+
+def _stream_kardex_batches(
+    cur: Any,
+    query: _KardexQuery,
     *,
-    codigo: str | None,
-    since_watermark: TransactionWatermark | None = None,
-) -> list[dict[str, Any]]:
-    """Ajustes y devoluciones (sin compra/venta en el renglón)."""
-    where_parts: list[str] = [
-        "IFNULL(compras, 0) = 0",
-        "IFNULL(ventas, 0) = 0",
-        (
-            "(IFNULL(ajustesp, 0) <> 0 OR IFNULL(ajustesn, 0) <> 0 "
-            "OR IFNULL(devoc, 0) <> 0 OR IFNULL(devov, 0) <> 0)"
-        ),
-    ]
-    params: list[Any] = []
-    if codigo:
-        where_parts.append("TRIM(codigo) = %s")
-        params.append(codigo.strip())
-    conn = mysql.connect()
-    col_cache = TableColumnCache()
-    try:
-        with conn.cursor(dictionary=True) as cur:
-            kardex_cols = col_cache.columns(cur, "kardex")
-            has_fecha = "fecha" in kardex_cols
-            has_indice = "indice" in kardex_cols
-            has_contador = "contador" in kardex_cols
-            _apply_watermark_filter(
-                where_parts,
-                params,
-                since_watermark,
-                has_fecha=has_fecha,
-                has_contador=has_contador,
-            )
-            indice_select = "indice" if has_indice else "NULL"
-            if has_fecha and has_indice:
-                order_by = "fecha ASC, indice ASC, numero ASC, codigo ASC"
-            elif has_fecha and has_contador:
-                order_by = "fecha ASC, contador ASC, numero ASC, codigo ASC"
-            elif has_fecha:
-                order_by = "fecha ASC, numero ASC, codigo ASC"
-            else:
-                order_by = "numero ASC, codigo ASC"
-            where = " AND ".join(where_parts)
-            query = f"""
-                SELECT {indice_select} AS indice, contador, numero, codigo, fecha,
-                       compras, ventas, ajustesp, ajustesn, devoc, devov, costo, kobs
-                FROM kardex
-                WHERE {where}
-                ORDER BY {order_by}
-            """
-            cur.execute(query, tuple(params))
-            return list(cur.fetchall() or [])
-    finally:
-        conn.close()
+    batch_size: int = KARDEX_FETCH_BATCH,
+) -> Iterator[list[dict[str, Any]]]:
+    cur.execute(query.sql, query.params)
+    while True:
+        batch = cur.fetchmany(batch_size)
+        if not batch:
+            break
+        yield list(batch)
 
 
 def _kardex_adjustment_payload(row: dict[str, Any]) -> dict[str, Any]:
@@ -224,12 +223,18 @@ def _sale_payload(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "numero": str(row.get("numero") or "").strip(),
         "codigo": str(row.get("codigo") or "").strip(),
-        "contador": row.get("contador") or row.get("indice"),
+        "contador": row.get("contador"),
         "ccaja": str(row.get("cajero") or "").strip(),
         "fecha": row.get("fecha"),
         "cantidad": ventas,
         "kardex_indice": row.get("indice"),
     }
+
+
+def _track_codigo(codigos_seen: set[str], row: dict[str, Any]) -> None:
+    c = str(row.get("codigo") or "").strip()
+    if c:
+        codigos_seen.add(c)
 
 
 def export_transaction_push_file(
@@ -248,105 +253,144 @@ def export_transaction_push_file(
     - mode="purchase" -> entity_type purchase
     - mode="sale" -> entity_type sale
 
-    since_watermark: filtro desde hub (None = exportar todo).
+    Lee kardex por lotes (fetchmany) y enriquece con índices en memoria (scom / ventasi).
     """
     if mode not in {"purchase", "sale"}:
         raise RuntimeError("mode must be purchase|sale")
 
     path = _job_file(job_id)
     tmp = Path(f"{path}.tmp")
-    rows = _iter_kardex_rows(
-        mysql,
-        mode=mode,
-        codigo=codigo,
-        since_watermark=since_watermark,
-    )
-    adjustment_rows = _iter_kardex_adjustment_rows(
-        mysql,
-        codigo=codigo,
-        since_watermark=since_watermark,
-    )
     codigos_seen: set[str] = set()
-    for r in rows:
-        c = str(r.get("codigo") or "").strip()
-        if c:
-            codigos_seen.add(c)
-    for r in adjustment_rows:
-        c = str(r.get("codigo") or "").strip()
-        if c:
-            codigos_seen.add(c)
-    total = len(rows) + len(adjustment_rows) + len(codigos_seen)
+    max_watermark: TransactionWatermark | None = None
     written = 0
-    max_watermark = max_watermark_from_rows(rows + adjustment_rows)
 
-    if on_progress and total >= 0:
-        on_progress(0, total, 0)
+    with ExportTransactionEnricher(mysql, bulk_file_export=True) as enricher:
+        col_cache = enricher.col_cache
+        cur = enricher._cur
+        if cur is None:
+            raise RuntimeError("export enricher sin cursor MySQL")
 
-    with gzip.open(tmp, "wt", encoding="utf-8") as gz:
-        manifest = {
-            "v": 1,
-            "direction": "push",
-            "entity": mode,
-            "nodoId": nodo_id,
-            "totalRows": total,
-            "schema": f"{mode}_v1",
-            "codigo": (codigo or "").strip() or None,
-            "sinceWatermark": since_watermark.to_dict() if since_watermark else None,
-            "maxWatermark": {
-                mode: max_watermark.to_dict() if max_watermark else None,
-            },
-        }
-        gz.write(json.dumps(manifest, ensure_ascii=True) + "\n")
+        main_query = _build_kardex_query(
+            col_cache,
+            cur,
+            mode=mode,
+            codigo=codigo,
+            since_watermark=since_watermark,
+            adjustments_only=False,
+        )
+        adj_query = _build_kardex_query(
+            col_cache,
+            cur,
+            mode=mode,
+            codigo=codigo,
+            since_watermark=since_watermark,
+            adjustments_only=True,
+        )
+        kardex_count = _count_kardex_query(cur, main_query)
+        adj_count = _count_kardex_query(cur, adj_query)
+        total = kardex_count + adj_count
+
+        if mode == "purchase" and kardex_count > 0:
+            scom_n = enricher.warm_purchase_scom_index(codigo_filter=codigo)
+            trace(
+                "sync.export.warm_purchase_scom_index",
+                job_id=job_id,
+                scom_rows=scom_n,
+                kardex_rows=kardex_count,
+            )
+        elif mode == "sale" and kardex_count > 0:
+            v_n, d_n = enricher.warm_sale_erp_indexes(codigo_filter=codigo)
+            trace(
+                "sync.export.warm_sale_erp_index",
+                job_id=job_id,
+                ventasi_rows=v_n,
+                diariovi_rows=d_n,
+                kardex_rows=kardex_count,
+            )
+
+        if on_progress and total >= 0:
+            on_progress(0, total, 0)
 
         progress_stride = max(total // 100, 1) if total > 0 else 1
-        with ExportTransactionEnricher(mysql) as enricher:
-            for row in rows:
+        progress_every = min(250, progress_stride) if total > 0 else 1
+
+        with gzip.open(tmp, "wt", encoding="utf-8") as gz:
+            manifest = {
+                "v": 1,
+                "direction": "push",
+                "entity": mode,
+                "nodoId": nodo_id,
+                "totalRows": total,
+                "schema": f"{mode}_v1",
+                "codigo": (codigo or "").strip() or None,
+                "sinceWatermark": since_watermark.to_dict() if since_watermark else None,
+                "maxWatermark": {
+                    mode: None,
+                },
+            }
+            gz.write(json.dumps(manifest, ensure_ascii=True) + "\n")
+
+            for batch in _stream_kardex_batches(cur, main_query):
                 if should_cancel:
                     should_cancel()
-                if mode == "purchase":
-                    payload = enricher.enrich_purchase(_purchase_payload(row))
-                else:
-                    payload = enricher.enrich_sale(_sale_payload(row))
+                max_watermark = merge_watermark(max_watermark, batch)
+                for row in batch:
+                    _track_codigo(codigos_seen, row)
+                    if mode == "purchase":
+                        payload = enricher.enrich_purchase(_purchase_payload(row))
+                    else:
+                        payload = enricher.enrich_sale(_sale_payload(row))
 
-                event = json_safe(
-                    {
-                        "entity_type": mode,
-                        "event_id": _row_event_id(mode, row),
-                        "payload": json_safe(payload),
-                        "occurred_at": row.get("fecha"),
-                    }
-                )
-                gz.write(json.dumps(event, ensure_ascii=True) + "\n")
-                written += 1
-                if on_progress and total > 0 and (
-                    written == total
-                    or written == 1
-                    or written % progress_stride == 0
-                ):
-                    pct = int((written / total) * 100)
-                    on_progress(written, total, pct)
+                    event = json_safe(
+                        {
+                            "entity_type": mode,
+                            "event_id": _row_event_id(mode, row),
+                            "payload": json_safe(payload),
+                            "occurred_at": row.get("fecha"),
+                        }
+                    )
+                    gz.write(json.dumps(event, ensure_ascii=True) + "\n")
+                    written += 1
+                    if on_progress and total > 0 and (
+                        written == total
+                        or written == 1
+                        or written % progress_every == 0
+                        or written % progress_stride == 0
+                    ):
+                        pct = min(100, int((written / total) * 100))
+                        on_progress(written, total, pct)
 
-            for row in adjustment_rows:
+            for batch in _stream_kardex_batches(cur, adj_query):
                 if should_cancel:
                     should_cancel()
-                payload = enricher.enrich_kardex_adjustment(
-                    _kardex_adjustment_payload(row)
-                )
-                event = json_safe(
-                    {
-                        "entity_type": "kardex",
-                        "event_id": _row_event_id("kardex", row),
-                        "payload": json_safe(payload),
-                        "occurred_at": row.get("fecha"),
-                    }
-                )
-                gz.write(json.dumps(event, ensure_ascii=True) + "\n")
-                written += 1
+                max_watermark = merge_watermark(max_watermark, batch)
+                for row in batch:
+                    _track_codigo(codigos_seen, row)
+                    payload = enricher.enrich_kardex_adjustment(
+                        _kardex_adjustment_payload(row)
+                    )
+                    event = json_safe(
+                        {
+                            "entity_type": "kardex",
+                            "event_id": _row_event_id("kardex", row),
+                            "payload": json_safe(payload),
+                            "occurred_at": row.get("fecha"),
+                        }
+                    )
+                    gz.write(json.dumps(event, ensure_ascii=True) + "\n")
+                    written += 1
+                    if on_progress and total > 0 and (
+                        written == total
+                        or written % progress_every == 0
+                        or written % progress_stride == 0
+                    ):
+                        pct = min(100, int((written / total) * 100))
+                        on_progress(written, total, pct)
 
             snapshot_rows = append_stock_snapshot_lines(
                 gz,
                 mysql=mysql,
-                cur=enricher._cur,
+                cur=cur,
                 nodo_id=nodo_id,
                 codigos=codigos_seen,
                 job_tag=job_id,

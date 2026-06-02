@@ -69,6 +69,18 @@ def max_watermark_from_rows(rows: list[dict[str, Any]]) -> TransactionWatermark 
     return best
 
 
+def merge_watermark(
+    current: TransactionWatermark | None,
+    rows: list[dict[str, Any]],
+) -> TransactionWatermark | None:
+    candidate = max_watermark_from_rows(rows)
+    if candidate is None:
+        return current
+    if current is None:
+        return candidate
+    return candidate if _watermark_gt(candidate, current) else current
+
+
 def _watermark_gt(a: TransactionWatermark, b: TransactionWatermark) -> bool:
     if a.fecha > b.fecha:
         return True

@@ -1,15 +1,25 @@
-"""Enriquece ventas: ventasi (línea sellada ERP) y fallback diariovi."""
+"""
+Enriquece ventas con línea ERP sellada.
+
+- **ventasi**: nombre lógico del outbox (trigger kardex).
+- **diariovi**: misma forma de línea; en muchas tiendas es donde están precio/subtotal2
+  (ver backup-FF23834: kardex.codigo + kardex.numero + kardex.ventas ↔ diariovi).
+
+Match (orden): (codigo, numero, cantidad) → (codigo, contador) → (codigo, numero) → fecha+cantidad.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from db.mysql import MySqlClient
 from db.schema_cache import TableColumnCache
+from outbox.sale_erp_index import SaleErpLineIndex, lookup_sale_line_in_index
 from outbox.sale_erp_line import (
     _to_float,
     apply_erp_sale_line_to_payload,
+    erp_sale_line_has_pricing,
     lookup_sale_line_in_table,
 )
 from outbox.sale_ventasi import lookup_ventasi_sale_line
@@ -43,17 +53,39 @@ def apply_diariovi_to_sale_payload(
     return apply_erp_sale_line_to_payload(payload, diariovi, source="diariovi")
 
 
+def _resolve_sale_erp_line(
+    payload: dict[str, Any],
+    *,
+    mysql: MySqlClient,
+    cur: Any | None,
+    col_cache: TableColumnCache | None,
+    ventasi_index: SaleErpLineIndex | None,
+    diariovi_index: SaleErpLineIndex | None,
+) -> tuple[dict[str, Any] | None, str]:
+    """diariovi primero (suele tener las líneas); luego ventasi."""
+    sources: list[tuple[str, SaleErpLineIndex | None, Callable[..., dict | None]]] = [
+        ("diariovi", diariovi_index, lookup_diariovi_sale_line),
+        ("ventasi", ventasi_index, lookup_ventasi_sale_line),
+    ]
+    for source, index, lookup_sql in sources:
+        if index is not None:
+            row = lookup_sale_line_in_index(index, payload)
+        else:
+            row = lookup_sql(mysql, payload, cur=cur, col_cache=col_cache)
+        if row and erp_sale_line_has_pricing(row):
+            return row, source
+    return None, ""
+
+
 def prepare_sale_payload_for_hub(
     payload: dict[str, Any],
     *,
     mysql: MySqlClient | None = None,
     cur: Any | None = None,
     col_cache: TableColumnCache | None = None,
+    ventasi_index: SaleErpLineIndex | None = None,
+    diariovi_index: SaleErpLineIndex | None = None,
 ) -> SaleDiarioViPrepareResult:
-    """
-    Resuelve ventasi (precio1 + subtotal2 sellado) antes de enviar al hub.
-    Si no hay fila en ventasi, intenta diariovi; si no, fallback kardex.
-    """
     out = dict(payload)
     cantidad = _to_float(out.get("cantidad"))
     precio_k = _to_float(out.get("precio"))
@@ -67,39 +99,16 @@ def prepare_sale_payload_for_hub(
     if not client.is_configured():
         return SaleDiarioViPrepareResult(payload=out)
 
-    ventasi = lookup_ventasi_sale_line(
-        client,
+    row, source = _resolve_sale_erp_line(
         payload,
+        mysql=client,
         cur=cur,
         col_cache=col_cache,
+        ventasi_index=ventasi_index,
+        diariovi_index=diariovi_index,
     )
-    if ventasi:
-        subtotal_v = _to_float(ventasi.get("subtotal2"))
-        precio_v = _to_float(
-            ventasi.get("precio1") or ventasi.get("precio") or ventasi.get("nprecio1")
-        )
-        if subtotal_v > 0 or precio_v > 0:
-            enriched = apply_erp_sale_line_to_payload(out, ventasi, source="ventasi")
-            return SaleDiarioViPrepareResult(payload=enriched)
-
-    diariovi = lookup_diariovi_sale_line(
-        client,
-        payload,
-        cur=cur,
-        col_cache=col_cache,
-    )
-    if diariovi:
-        monto_line = _to_float(
-            diariovi.get("subtotal2")
-            or diariovi.get("total")
-            or diariovi.get("subtotal")
-            or diariovi.get("monto")
-        )
-        precio_line = _to_float(
-            diariovi.get("precio1") or diariovi.get("precio") or diariovi.get("pventa")
-        )
-        if monto_line > 0 or precio_line > 0:
-            enriched = apply_erp_sale_line_to_payload(out, diariovi, source="diariovi")
-            return SaleDiarioViPrepareResult(payload=enriched)
+    if row and source:
+        enriched = apply_erp_sale_line_to_payload(out, row, source=source)
+        return SaleDiarioViPrepareResult(payload=enriched)
 
     return SaleDiarioViPrepareResult(payload=out)
