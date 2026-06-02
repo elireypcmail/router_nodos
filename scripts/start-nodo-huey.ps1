@@ -1,6 +1,7 @@
 # Starts the nodo Huey consumer (outbox + catalog sync jobs) in the background.
 param(
-    [string]$NodoDir = ""
+    [string]$NodoDir = "",
+    [switch]$SkipMutex
 )
 
 $ErrorActionPreference = "Stop"
@@ -73,7 +74,6 @@ function Start-MultishopHueyConsumer {
         }
     }
 
-    $logOut = Join-Path $DeployDir "nodo-huey.out.log"
     $logErr = Join-Path $DeployDir "nodo-huey.err.log"
 
     $env:PYTHONUTF8 = "1"
@@ -81,32 +81,32 @@ function Start-MultishopHueyConsumer {
 
     Write-HueyStartLog "Starting: $venvPython -m huey.bin.huey_consumer huey_tasks.huey (cwd $NodoDirPath)"
 
+    # Sin redirección de stdout/stderr: huey_consumer es long-running y puede bloquear
+    # el pipe si el padre no lee (instalador con -Wait quedaría colgado).
     $proc = Start-Process -FilePath $venvPython `
         -ArgumentList @("-m", "huey.bin.huey_consumer", "-w", "1", "huey_tasks.huey") `
         -WorkingDirectory $NodoDirPath `
         -WindowStyle Hidden `
-        -RedirectStandardOutput $logOut `
-        -RedirectStandardError $logErr `
         -PassThru
 
-    Start-Sleep -Seconds 4
+    Start-Sleep -Seconds 3
 
     if ($proc.HasExited) {
         $errTail = ""
         if (Test-Path -LiteralPath $logErr) {
-            $errTail = (Get-Content -LiteralPath $logErr -Tail 5 -ErrorAction SilentlyContinue) -join " | "
+            $errTail = (Get-Content -LiteralPath $logErr -Tail 8 -ErrorAction SilentlyContinue) -join " | "
         }
-        throw "Huey exited immediately (code $($proc.ExitCode)). See $logErr. $errTail"
+        throw "Huey exited immediately (code $($proc.ExitCode)). Revise $logErr. $errTail"
     }
 
-    Write-HueyStartLog "Huey consumer active PID $($proc.Id)"
+    Write-HueyStartLog "Huey consumer active PID $($proc.Id) (logs en consola del proceso; errores previos en $logErr si existen)"
 }
 
 try {
-    if (Get-Command Invoke-MultishopStartMutex -ErrorAction SilentlyContinue) {
-        Invoke-MultishopStartMutex -Name "Huey" -ScriptBlock { Start-MultishopHueyConsumer -NodoDirPath $NodoDir }
-    } else {
+    if ($SkipMutex -or -not (Get-Command Invoke-MultishopStartMutex -ErrorAction SilentlyContinue)) {
         Start-MultishopHueyConsumer -NodoDirPath $NodoDir
+    } else {
+        Invoke-MultishopStartMutex -Name "Huey" -ScriptBlock { Start-MultishopHueyConsumer -NodoDirPath $NodoDir }
     }
 } catch {
     Write-HueyStartLog "ERROR: $($_.Exception.Message)"

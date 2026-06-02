@@ -1,132 +1,23 @@
-"""Enriquece ventas del outbox con montos ERP desde diariovi."""
+"""Enriquece ventas: ventasi (línea sellada ERP) y fallback diariovi."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
 from typing import Any
 
 from db.mysql import MySqlClient
 from db.schema_cache import TableColumnCache
+from outbox.sale_erp_line import (
+    _to_float,
+    apply_erp_sale_line_to_payload,
+    lookup_sale_line_in_table,
+)
+from outbox.sale_ventasi import lookup_ventasi_sale_line
 
 
 @dataclass(frozen=True)
 class SaleDiarioViPrepareResult:
     payload: dict[str, Any]
-
-
-def _to_float(value: Any) -> float:
-    if value is None:
-        return 0.0
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _parse_fecha(raw: Any) -> date | None:
-    if raw is None:
-        return None
-    if isinstance(raw, date) and not isinstance(raw, datetime):
-        return raw
-    text = str(raw).strip()[:10]
-    if not text:
-        return None
-    try:
-        return date.fromisoformat(text)
-    except ValueError:
-        return None
-
-
-def _get_row_value(row: dict[str, Any], *keys: str) -> Any:
-    for key in keys:
-        if key in row and row.get(key) is not None:
-            return row.get(key)
-    return None
-
-
-def _table_has_column(
-    cur: Any,
-    table: str,
-    column: str,
-    *,
-    col_cache: TableColumnCache | None = None,
-) -> bool:
-    if col_cache is not None:
-        return col_cache.has_column(cur, table, column)
-    cur.execute(f"SHOW COLUMNS FROM `{table}`")
-    rows = cur.fetchall() or []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        field = str(row.get("Field") or "").strip().lower()
-        if field == column.strip().lower():
-            return True
-    return False
-
-
-def _fetch_diariovi_by_numero(
-    cur: Any,
-    *,
-    codigo: str,
-    numero: str,
-    col_cache: TableColumnCache | None = None,
-) -> dict[str, Any] | None:
-    has_fecha = _table_has_column(cur, "diariovi", "fecha", col_cache=col_cache)
-    has_indice = _table_has_column(cur, "diariovi", "indice", col_cache=col_cache)
-    if has_fecha and has_indice:
-        order_by = "fecha DESC, indice DESC, numero DESC"
-    elif has_fecha:
-        order_by = "fecha DESC, numero DESC"
-    elif has_indice:
-        order_by = "indice DESC, numero DESC"
-    else:
-        order_by = "numero DESC"
-    cur.execute(
-        f"""
-        SELECT *
-        FROM diariovi
-        WHERE codigo = %s
-          AND numero = %s
-        ORDER BY {order_by}
-        LIMIT 1
-        """,
-        (codigo, numero[:30]),
-    )
-    return cur.fetchone()
-
-
-def _fetch_diariovi_by_match(
-    cur: Any,
-    *,
-    codigo: str,
-    fecha: date,
-    cantidad: float,
-    col_cache: TableColumnCache | None = None,
-) -> dict[str, Any] | None:
-    has_fecha = _table_has_column(cur, "diariovi", "fecha", col_cache=col_cache)
-    has_indice = _table_has_column(cur, "diariovi", "indice", col_cache=col_cache)
-    if has_fecha and has_indice:
-        order_by = "fecha DESC, indice DESC, numero DESC"
-    elif has_fecha:
-        order_by = "fecha DESC, numero DESC"
-    elif has_indice:
-        order_by = "indice DESC, numero DESC"
-    else:
-        order_by = "numero DESC"
-    cur.execute(
-        f"""
-        SELECT *
-        FROM diariovi
-        WHERE codigo = %s
-          AND fecha = %s
-          AND ABS(IFNULL(cantidad, 0) - %s) < 0.001
-        ORDER BY {order_by}
-        LIMIT 1
-        """,
-        (codigo, fecha, cantidad),
-    )
-    return cur.fetchone()
 
 
 def lookup_diariovi_sale_line(
@@ -136,75 +27,20 @@ def lookup_diariovi_sale_line(
     cur: Any | None = None,
     col_cache: TableColumnCache | None = None,
 ) -> dict[str, Any] | None:
-    codigo = str(payload.get("codigo") or "").strip()
-    if not codigo:
-        return None
-
-    def _lookup(active_cur: Any) -> dict[str, Any] | None:
-        numero = str(payload.get("numero") or payload.get("numdoc") or "").strip()
-        if numero:
-            row = _fetch_diariovi_by_numero(
-                active_cur,
-                codigo=codigo,
-                numero=numero,
-                col_cache=col_cache,
-            )
-            if row:
-                return row
-
-        fecha = _parse_fecha(payload.get("fecha"))
-        if not fecha:
-            return None
-        cantidad = _to_float(payload.get("cantidad"))
-        return _fetch_diariovi_by_match(
-            active_cur,
-            codigo=codigo,
-            fecha=fecha,
-            cantidad=cantidad,
-            col_cache=col_cache,
-        )
-
-    if cur is not None:
-        return _lookup(cur)
-
-    conn = mysql.connect()
-    try:
-        with conn.cursor(dictionary=True) as active_cur:
-            return _lookup(active_cur)
-    finally:
-        conn.close()
+    return lookup_sale_line_in_table(
+        mysql,
+        payload,
+        table="diariovi",
+        cur=cur,
+        col_cache=col_cache,
+    )
 
 
 def apply_diariovi_to_sale_payload(
     payload: dict[str, Any], diariovi: dict[str, Any]
 ) -> dict[str, Any]:
-    out = dict(payload)
-
-    numero = str(_get_row_value(diariovi, "numero") or "").strip()
-    if numero:
-        out["numero"] = numero
-        out["numdoc"] = numero
-
-    precio = _to_float(_get_row_value(diariovi, "precio", "pventa", "precio1"))
-    if precio:
-        out["precio"] = precio
-
-    monto = _to_float(
-        _get_row_value(diariovi, "total", "subtotal2", "subtotal", "monto")
-    )
-    if monto:
-        out["monto"] = monto
-        out["monto_source"] = "diariovi"
-
-    indice = _get_row_value(diariovi, "indice")
-    if indice is not None:
-        out["diariovi_indice"] = str(indice).strip()
-
-    ccaja = str(_get_row_value(diariovi, "ccaja", "cajero") or "").strip()
-    if ccaja:
-        out["ccaja"] = ccaja
-
-    return out
+    """Compatibilidad: mismo contrato que apply_erp_sale_line_to_payload."""
+    return apply_erp_sale_line_to_payload(payload, diariovi, source="diariovi")
 
 
 def prepare_sale_payload_for_hub(
@@ -214,20 +50,56 @@ def prepare_sale_payload_for_hub(
     cur: Any | None = None,
     col_cache: TableColumnCache | None = None,
 ) -> SaleDiarioViPrepareResult:
+    """
+    Resuelve ventasi (precio1 + subtotal2 sellado) antes de enviar al hub.
+    Si no hay fila en ventasi, intenta diariovi; si no, fallback kardex.
+    """
     out = dict(payload)
-    out.setdefault("monto", _to_float(out.get("cantidad")) * _to_float(out.get("precio")))
+    cantidad = _to_float(out.get("cantidad"))
+    precio_k = _to_float(out.get("precio"))
+    if cantidad and precio_k:
+        out.setdefault("monto", round(cantidad * precio_k, 2))
+    else:
+        out.setdefault("monto", 0.0)
     out.setdefault("monto_source", "kardex.fallback")
 
     client = mysql or MySqlClient()
     if not client.is_configured():
         return SaleDiarioViPrepareResult(payload=out)
 
-    row = lookup_diariovi_sale_line(
+    ventasi = lookup_ventasi_sale_line(
         client,
         payload,
         cur=cur,
         col_cache=col_cache,
     )
-    if row:
-        out = apply_diariovi_to_sale_payload(out, row)
+    if ventasi:
+        subtotal_v = _to_float(ventasi.get("subtotal2"))
+        precio_v = _to_float(
+            ventasi.get("precio1") or ventasi.get("precio") or ventasi.get("nprecio1")
+        )
+        if subtotal_v > 0 or precio_v > 0:
+            enriched = apply_erp_sale_line_to_payload(out, ventasi, source="ventasi")
+            return SaleDiarioViPrepareResult(payload=enriched)
+
+    diariovi = lookup_diariovi_sale_line(
+        client,
+        payload,
+        cur=cur,
+        col_cache=col_cache,
+    )
+    if diariovi:
+        monto_line = _to_float(
+            diariovi.get("subtotal2")
+            or diariovi.get("total")
+            or diariovi.get("subtotal")
+            or diariovi.get("monto")
+        )
+        precio_line = _to_float(
+            diariovi.get("precio1") or diariovi.get("precio") or diariovi.get("pventa")
+        )
+        if monto_line > 0 or precio_line > 0:
+            enriched = apply_erp_sale_line_to_payload(out, diariovi, source="diariovi")
+            return SaleDiarioViPrepareResult(payload=enriched)
+
     return SaleDiarioViPrepareResult(payload=out)
