@@ -607,13 +607,38 @@ class HubClient:
             "Authorization": f"Bearer {settings.nodo_api_token}",
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.patch(url, json=json_safe(body), headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            if isinstance(data, dict):
-                return data
-            return {"ok": True}
+        retry_status = {502, 503, 504}
+        last_exc: Exception | None = None
+        for attempt in range(5):
+            try:
+                async with httpx.AsyncClient(timeout=90.0) as client:
+                    resp = await client.patch(
+                        url, json=json_safe(body), headers=headers
+                    )
+                    if resp.status_code in retry_status and attempt < 4:
+                        await anyio.sleep(min(2**attempt, 15))
+                        continue
+                    resp.raise_for_status()
+                    data = resp.json()
+                    if isinstance(data, dict):
+                        return data
+                    return {"ok": True}
+            except httpx.HTTPStatusError as exc:
+                last_exc = exc
+                code = exc.response.status_code
+                if code in retry_status and attempt < 4:
+                    await anyio.sleep(min(2**attempt, 15))
+                    continue
+                raise
+            except (httpx.TimeoutException, httpx.ConnectError) as exc:
+                last_exc = exc
+                if attempt < 4:
+                    await anyio.sleep(min(2**attempt, 15))
+                    continue
+                raise
+        if last_exc is not None:
+            raise last_exc
+        return {"ok": True}
 
     async def upload_sync_job_file(self, job_id: str, file_path) -> dict:
         from pathlib import Path

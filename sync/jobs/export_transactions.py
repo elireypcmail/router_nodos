@@ -23,6 +23,16 @@ from sync.jobs.transaction_sync_types import (
 )
 
 KARDEX_FETCH_BATCH = 5000
+# 1–8 %: preparación MySQL (claves kardex + índice diariovi); 9–94 %: volcado gzip
+EXPORT_PREPARE_PCT_MAX = 8
+EXPORT_ROW_PCT_MAX = 94
+
+
+def _export_row_progress_pct(written: int, total: int) -> int:
+    if total <= 0:
+        return EXPORT_PREPARE_PCT_MAX
+    span = EXPORT_ROW_PCT_MAX - EXPORT_PREPARE_PCT_MAX
+    return EXPORT_PREPARE_PCT_MAX + int((written / total) * span)
 
 
 def _num(value: Any) -> float:
@@ -292,19 +302,30 @@ def export_transaction_push_file(
                 kardex_rows=kardex_count,
             )
         elif mode == "sale" and kardex_count > 0:
+            prepare_pct_holder = [0]
+
+            def _on_prepare_pct(pct: int) -> None:
+                prepare_pct_holder[0] = pct
+                if on_progress and total > 0:
+                    on_progress(0, total, pct)
+
             d_n = enricher.warm_sale_diariovi_index(
                 codigo_filter=codigo,
                 since_watermark=since_watermark,
+                kardex_rows=kardex_count,
+                on_prepare_pct=_on_prepare_pct if on_progress else None,
             )
             trace(
                 "sync.export.warm_sale_diariovi_index",
                 job_id=job_id,
                 diariovi_rows=d_n,
                 kardex_rows=kardex_count,
+                prepare_pct=prepare_pct_holder[0],
             )
 
         if on_progress and total >= 0:
-            on_progress(0, total, 0)
+            start_pct = EXPORT_PREPARE_PCT_MAX if mode == "sale" and kardex_count > 0 else 0
+            on_progress(0, total, start_pct)
 
         progress_stride = max(total // 100, 1) if total > 0 else 1
         progress_every = min(250, progress_stride) if total > 0 else 1
@@ -352,7 +373,7 @@ def export_transaction_push_file(
                         or written % progress_every == 0
                         or written % progress_stride == 0
                     ):
-                        pct = min(100, int((written / total) * 100))
+                        pct = _export_row_progress_pct(written, total)
                         on_progress(written, total, pct)
 
             for batch in _stream_kardex_batches(cur, adj_query):
@@ -379,7 +400,7 @@ def export_transaction_push_file(
                         or written % progress_every == 0
                         or written % progress_stride == 0
                     ):
-                        pct = min(100, int((written / total) * 100))
+                        pct = _export_row_progress_pct(written, total)
                         on_progress(written, total, pct)
 
             snapshot_rows = append_stock_snapshot_lines(

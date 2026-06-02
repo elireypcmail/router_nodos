@@ -7,7 +7,9 @@ Match kardex → línea ERP (mismo criterio que backup-FF23834):
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
@@ -162,12 +164,40 @@ def build_sale_erp_line_index(
     return index
 
 
+def count_diariovi_lookup_queries(
+    keys: KardexSaleLookupKeys,
+    *,
+    cols: set[str],
+) -> int:
+    """Número de SELECT a diariovi al indexar por claves kardex."""
+    total = 0
+    numeros_by_codigo: dict[str, set[str]] = defaultdict(set)
+    for codigo, numero in keys.by_numero:
+        numeros_by_codigo[codigo].add(numero)
+    for numeros in numeros_by_codigo.values():
+        total += max(1, math.ceil(len(numeros) / DIARIOVI_LOOKUP_BATCH))
+    if "contador" in cols:
+        cont_by_codigo: dict[str, set[int]] = defaultdict(set)
+        for codigo, contador in keys.by_contador:
+            cont_by_codigo[codigo].add(contador)
+        for contadores in cont_by_codigo.values():
+            total += max(1, math.ceil(len(contadores) / DIARIOVI_LOOKUP_BATCH))
+    if "fecha" in cols and keys.by_fecha_qty:
+        fechas_by_codigo: dict[str, set[str]] = defaultdict(set)
+        for codigo, fecha, _qty in keys.by_fecha_qty:
+            fechas_by_codigo[codigo].add(fecha)
+        for fechas in fechas_by_codigo.values():
+            total += len(fechas)
+    return max(1, total)
+
+
 def build_sale_erp_line_index_from_kardex_keys(
     cur: Any,
     table: str,
     keys: KardexSaleLookupKeys,
     *,
     col_cache: TableColumnCache | None = None,
+    on_query_done: Callable[[int, int], None] | None = None,
 ) -> SaleErpLineIndex:
     """
     Carga diariovi por claves obtenidas de kardex (numero / contador / fecha+cantidad).
@@ -182,6 +212,14 @@ def build_sale_erp_line_index_from_kardex_keys(
     col_sql = ", ".join(f"`{c}`" for c in select_cols)
     order_by = _sale_erp_order_by(cols)
     index = SaleErpLineIndex()
+    queries_total = count_diariovi_lookup_queries(keys, cols=cols)
+    queries_done = 0
+
+    def _tick_query() -> None:
+        nonlocal queries_done
+        queries_done += 1
+        if on_query_done is not None:
+            on_query_done(queries_done, queries_total)
 
     numeros_by_codigo: dict[str, set[str]] = defaultdict(set)
     for codigo, numero in keys.by_numero:
@@ -204,6 +242,7 @@ def build_sale_erp_line_index_from_kardex_keys(
             )
             for row in cur.fetchall() or []:
                 _index_row(index, row)
+            _tick_query()
 
     if "contador" in cols:
         cont_by_codigo: dict[str, set[int]] = defaultdict(set)
@@ -226,6 +265,7 @@ def build_sale_erp_line_index_from_kardex_keys(
                 )
                 for row in cur.fetchall() or []:
                     _index_row(index, row)
+                _tick_query()
 
     if "fecha" in cols and keys.by_fecha_qty:
         fecha_by_codigo: dict[str, set[str]] = defaultdict(set)
@@ -249,6 +289,7 @@ def build_sale_erp_line_index_from_kardex_keys(
                 for row in cur.fetchall() or []:
                     if _qty_key(_to_float(row.get("cantidad"))) in allowed_qty:
                         _index_row(index, row)
+                _tick_query()
 
     return index
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from db.mysql import MySqlClient
@@ -71,11 +72,15 @@ class ExportTransactionEnricher:
         codigo_filter: str | None = None,
         *,
         since_watermark: TransactionWatermark | None = None,
+        kardex_rows: int = 0,
+        on_prepare_pct: Callable[[int], None] | None = None,
     ) -> int:
         if self._cur is None:
             return 0
         if self._diariovi_index is not None:
             return self._diariovi_index.row_count
+        if on_prepare_pct is not None:
+            on_prepare_pct(1)
         if codigo_filter:
             self._diariovi_index = build_sale_erp_line_index(
                 self._cur,
@@ -83,19 +88,38 @@ class ExportTransactionEnricher:
                 col_cache=self.col_cache,
                 codigo_filter=codigo_filter,
             )
+            if on_prepare_pct is not None:
+                on_prepare_pct(8)
         else:
             keys = collect_kardex_sale_lookup_keys(
                 self._cur,
                 self.col_cache,
                 codigo=None,
                 since_watermark=since_watermark,
+                on_rows_read=(
+                    None
+                    if on_prepare_pct is None or kardex_rows <= 0
+                    else lambda n: on_prepare_pct(
+                        2 + min(3, int(3 * n / max(1, kardex_rows)))
+                    )
+                ),
             )
+            diariovi_cols = self.col_cache.columns(self._cur, "diariovi")
+
+            def _on_queries(done: int, total: int) -> None:
+                if on_prepare_pct is None or total <= 0:
+                    return
+                on_prepare_pct(5 + min(3, int(3 * done / total)))
+
             self._diariovi_index = build_sale_erp_line_index_from_kardex_keys(
                 self._cur,
                 "diariovi",
                 keys,
                 col_cache=self.col_cache,
+                on_query_done=_on_queries if on_prepare_pct else None,
             )
+            if on_prepare_pct is not None:
+                on_prepare_pct(8)
         return self._diariovi_index.row_count
 
     def enrich_purchase(self, payload: dict[str, Any]) -> dict[str, Any]:

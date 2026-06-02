@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
 from hub.client import HubClient
+
+logger = logging.getLogger("multishop.sync.progress")
 
 _last_report: dict[str, tuple[float, int]] = {}
 
@@ -18,7 +21,11 @@ async def report_progress(
     total_rows: int | None = None,
     processed_rows: int | None = None,
     force: bool = False,
-) -> None:
+    raise_on_error: bool = False,
+) -> bool:
+    """
+    Reporta progreso al hub. Por defecto no aborta el export si el hub responde 503.
+    """
     from core.config import settings as app_settings
 
     throttle_ms = int(app_settings.catalog_sync_progress_throttle_ms)
@@ -30,7 +37,7 @@ async def report_progress(
         and (now - last[0]) * 1000 < throttle_ms
         and abs(progress_nodo - last[1]) < 1
     ):
-        return
+        return True
     _last_report[job_id] = (now, progress_nodo)
     body: dict[str, Any] = {
         "phase": phase,
@@ -42,4 +49,17 @@ async def report_progress(
         body["total_rows"] = total_rows
     if processed_rows is not None:
         body["processed_rows"] = processed_rows
-    await hub.patch_sync_job_progress(job_id, body)
+    try:
+        await hub.patch_sync_job_progress(job_id, body)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "patch progress job=%s phase=%s pct=%s failed: %s",
+            job_id,
+            phase,
+            progress_nodo,
+            exc,
+        )
+        if raise_on_error:
+            raise
+        return False

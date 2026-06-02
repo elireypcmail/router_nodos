@@ -197,8 +197,9 @@ async def _catalog_transaction_mode_push_job_async(
         progress_nodo=95,
         progress_hub=0,
         total_rows=int(file_rows or 0),
-        processed_rows=0,
+        processed_rows=int(file_rows or 0),
         force=True,
+        raise_on_error=True,
     )
     await hub.upload_sync_job_file(job_id, path)
     delete_job_file(job_id)

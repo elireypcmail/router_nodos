@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
@@ -116,6 +117,7 @@ def collect_kardex_sale_lookup_keys(
     *,
     codigo: str | None,
     since_watermark: TransactionWatermark | None,
+    on_rows_read: Callable[[int], None] | None = None,
 ) -> KardexSaleLookupKeys:
     """Lee solo kardex (ventas) y arma claves para lookup puntual en diariovi."""
     where_parts, params = build_kardex_ventas_where(
@@ -135,10 +137,14 @@ def collect_kardex_sale_lookup_keys(
         tuple(params),
     )
     keys = KardexSaleLookupKeys()
+    rows_read = 0
     while True:
         batch = cur.fetchmany(KARDEX_KEYS_FETCH_BATCH)
         if not batch:
             break
         for row in batch:
             keys.add_row(row)
+        rows_read += len(batch)
+        if on_rows_read is not None:
+            on_rows_read(rows_read)
     return keys
