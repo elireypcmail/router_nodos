@@ -113,6 +113,8 @@ def append_stock_snapshot_lines(
 
     from core.json_util import json_safe
 
+    from sync.jobs.ingest_event_ids import bounded_event_id
+
     written = 0
     for codigo in sorted(codigos):
         snap = build_stock_snapshot_payload(
@@ -127,7 +129,7 @@ def append_stock_snapshot_lines(
         event = json_safe(
             {
                 "entity_type": "stock_snapshot",
-                "event_id": f"stock-snap-{job_tag}-{codigo}",
+                "event_id": bounded_event_id("stock-snap", job_tag, codigo),
                 "payload": snap,
             }
         )

@@ -46,6 +46,9 @@ def _num(value: Any) -> float:
         return 0.0
 
 
+from sync.jobs.ingest_event_ids import bounded_event_id
+
+
 def _job_file(job_id: str) -> Path:
     from sync.jobs.files import job_file_path
 
@@ -58,12 +61,18 @@ def _row_event_id(
 ) -> str:
     indice = str(row.get("indice") or "").strip()
     if indice:
-        return f"{mode}-kardex-{indice}"
+        return bounded_event_id(f"{mode}-kardex", indice)
     contador = str(row.get("contador") or "").strip()
     numero = str(row.get("numero") or "").strip()
     fecha = str(row.get("fecha") or "").strip()[:10]
     codigo = str(row.get("codigo") or "").strip()
-    return f"{mode}-kardex-fallback-{contador or '-'}-{numero or '-'}-{fecha or '-'}-{codigo or '-'}"
+    return bounded_event_id(
+        f"{mode}-kardex-fallback",
+        contador or "-",
+        numero or "-",
+        fecha or "-",
+        codigo or "-",
+    )
 
 
 @dataclass(frozen=True)

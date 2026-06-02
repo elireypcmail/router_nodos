@@ -26,6 +26,17 @@ logger = logging.getLogger("multishop.outbox")
 _MISSING_CODIGO = "-"
 
 
+def _normalize_ingest_event_for_hub(event: dict[str, Any]) -> dict[str, Any]:
+    """Ajusta campos que el ValidationPipe del hub rechaza (ISO8601)."""
+    out = dict(event)
+    occurred = out.get("occurred_at")
+    if isinstance(occurred, str):
+        text = occurred.strip()
+        if text and " " in text and "T" not in text:
+            out["occurred_at"] = text.replace(" ", "T", 1)
+    return out
+
+
 def _num_field(row: dict, key: str) -> float:
     raw = row.get(key)
     if raw is None:
@@ -670,6 +681,14 @@ class HubClient:
             json=json_safe({"events": events}),
             headers=headers,
         )
+        if resp.status_code >= 400:
+            detail = resp.text[:2000] if resp.text else resp.reason_phrase
+            logger.error(
+                "[hub-ingest-file] batch rejected status=%s detail=%s events=%s",
+                resp.status_code,
+                detail,
+                len(events),
+            )
         resp.raise_for_status()
         body = resp.json()
         if isinstance(body, dict):
@@ -700,7 +719,7 @@ class HubClient:
 
         async with httpx.AsyncClient(timeout=600.0) as client:
             for event in _iter_events_from_ndjson_gz(path):
-                batch.append(event)
+                batch.append(_normalize_ingest_event_for_hub(event))
                 if len(batch) < chunk_size:
                     continue
                 chunk_index += 1
