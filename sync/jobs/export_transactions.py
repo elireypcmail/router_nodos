@@ -60,6 +60,7 @@ def _row_event_id(
 class _KardexQuery:
     sql: str
     params: tuple[Any, ...]
+    count_sql: str
 
 
 def _build_kardex_query(
@@ -143,18 +144,18 @@ def _build_kardex_query(
 
     select = select.replace("indice_placeholder", indice_select)
     where = " AND ".join(where_parts)
+    count_sql = f"SELECT COUNT(*) AS c FROM kardex WHERE {where}"
     sql = f"""
         {select}
         FROM kardex
         WHERE {where}
         ORDER BY {order_by}
     """
-    return _KardexQuery(sql=sql, params=tuple(params))
+    return _KardexQuery(sql=sql, params=tuple(params), count_sql=count_sql)
 
 
 def _count_kardex_query(cur: Any, query: _KardexQuery) -> int:
-    sql = f"SELECT COUNT(*) AS c FROM ({query.sql}) AS kq"
-    cur.execute(sql, query.params)
+    cur.execute(query.count_sql, query.params)
     row = cur.fetchone()
     if not row:
         return 0
@@ -300,7 +301,6 @@ def export_transaction_push_file(
                 job_id=job_id,
                 diariovi_rows=d_n,
                 kardex_rows=kardex_count,
-                scoped_to_kardex=True,
             )
 
         if on_progress and total >= 0:

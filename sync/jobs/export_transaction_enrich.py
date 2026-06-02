@@ -11,8 +11,12 @@ from outbox.purchase_lots import load_purchase_lot_snapshot
 from outbox.purchase_scom import prepare_purchase_payload_for_hub
 from outbox.purchase_scom_index import PurchaseScomIndex, build_purchase_scom_index
 from outbox.sale_diariovi import prepare_sale_payload_for_hub
-from outbox.sale_erp_index import SaleErpLineIndex, build_sale_erp_line_index
-from sync.jobs.kardex_sale_scope import build_kardex_ventas_where
+from outbox.sale_erp_index import (
+    SaleErpLineIndex,
+    build_sale_erp_line_index,
+    build_sale_erp_line_index_from_kardex_keys,
+)
+from sync.jobs.kardex_sale_scope import collect_kardex_sale_lookup_keys
 from sync.jobs.node_stock_snapshot import attach_node_stock_fields
 from sync.jobs.transaction_sync_types import TransactionWatermark
 
@@ -39,7 +43,7 @@ class ExportTransactionEnricher:
         self._diariovi_index: SaleErpLineIndex | None = None
 
     def __enter__(self) -> ExportTransactionEnricher:
-        self._conn = self.mysql.connect()
+        self._conn = self.mysql.connect_bulk_export()
         self._cur = self._conn.cursor(dictionary=True)
         return self
 
@@ -72,20 +76,26 @@ class ExportTransactionEnricher:
             return 0
         if self._diariovi_index is not None:
             return self._diariovi_index.row_count
-        kardex_scope = build_kardex_ventas_where(
-            self.col_cache,
-            self._cur,
-            codigo=codigo_filter,
-            since_watermark=since_watermark,
-            table_alias="k",
-        )
-        self._diariovi_index = build_sale_erp_line_index(
-            self._cur,
-            "diariovi",
-            col_cache=self.col_cache,
-            codigo_filter=codigo_filter,
-            kardex_scope_where=kardex_scope,
-        )
+        if codigo_filter:
+            self._diariovi_index = build_sale_erp_line_index(
+                self._cur,
+                "diariovi",
+                col_cache=self.col_cache,
+                codigo_filter=codigo_filter,
+            )
+        else:
+            keys = collect_kardex_sale_lookup_keys(
+                self._cur,
+                self.col_cache,
+                codigo=None,
+                since_watermark=since_watermark,
+            )
+            self._diariovi_index = build_sale_erp_line_index_from_kardex_keys(
+                self._cur,
+                "diariovi",
+                keys,
+                col_cache=self.col_cache,
+            )
         return self._diariovi_index.row_count
 
     def enrich_purchase(self, payload: dict[str, Any]) -> dict[str, Any]:

@@ -58,11 +58,27 @@ class MySqlClient:
         )
 
     def connect(self, *, attempts: int = 4) -> MySqlConnection:
+        return self._connect(attempts=attempts, read_timeout=60, write_timeout=60)
+
+    def connect_bulk_export(self, *, attempts: int = 4) -> MySqlConnection:
+        """Conexión con timeouts largos para export transaccional masivo."""
+        return self._connect(attempts=attempts, read_timeout=7200, write_timeout=7200)
+
+    def _connect(
+        self,
+        *,
+        attempts: int,
+        read_timeout: int,
+        write_timeout: int,
+    ) -> MySqlConnection:
         last_err: Exception | None = None
         tries = max(1, attempts)
         for attempt in range(tries):
             try:
-                return self._connect_once()
+                return self._connect_once(
+                    read_timeout=read_timeout,
+                    write_timeout=write_timeout,
+                )
             except pymysql.Error as exc:
                 last_err = exc
                 if not is_transient_mysql_error(exc) or attempt >= tries - 1:
@@ -71,7 +87,12 @@ class MySqlClient:
         assert last_err is not None
         raise last_err
 
-    def _connect_once(self) -> MySqlConnection:
+    def _connect_once(
+        self,
+        *,
+        read_timeout: int = 60,
+        write_timeout: int = 60,
+    ) -> MySqlConnection:
         raw = pymysql.connect(
             host=settings.mysql_host,
             port=settings.mysql_port,
@@ -81,8 +102,8 @@ class MySqlClient:
             charset="latin1",
             autocommit=False,
             connect_timeout=10,
-            read_timeout=60,
-            write_timeout=60,
+            read_timeout=read_timeout,
+            write_timeout=write_timeout,
         )
         return MySqlConnection(raw)
 

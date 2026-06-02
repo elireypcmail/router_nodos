@@ -7,13 +7,16 @@ Match kardex → línea ERP (mismo criterio que backup-FF23834):
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 
 from db.schema_cache import TableColumnCache
-
-from sync.jobs.kardex_sale_scope import build_sale_erp_scoped_to_kardex_exists
+from sync.jobs.kardex_sale_scope import (
+    DIARIOVI_LOOKUP_BATCH,
+    KardexSaleLookupKeys,
+)
 
 
 def _to_float(value: Any) -> float:
@@ -77,22 +80,7 @@ def _index_row(index: SaleErpLineIndex, row: dict[str, Any]) -> None:
         index.by_fecha_qty[(codigo, fecha, _qty_key(cantidad))] = row
 
 
-def build_sale_erp_line_index(
-    cur: Any,
-    table: str,
-    *,
-    col_cache: TableColumnCache | None = None,
-    codigo_filter: str | None = None,
-    kardex_scope_where: tuple[list[str], list[Any]] | None = None,
-) -> SaleErpLineIndex:
-    """
-    Una sola lectura de diariovi; claves más recientes ganan (ORDER BY fecha, contador ASC).
-
-    Si ``kardex_scope_where`` viene del export (mismo WHERE que kardex ventas), solo se indexan
-    líneas enlazables a ese subconjunto — evita cargar diariovi completo.
-    """
-    cache = col_cache or TableColumnCache()
-    cols = cache.columns(cur, table)
+def _sale_erp_select_cols(cols: set[str]) -> list[str]:
     wanted = (
         "codigo",
         "contador",
@@ -112,46 +100,48 @@ def build_sale_erp_line_index(
         "cajero",
         "indice",
     )
-    select_cols = [c for c in wanted if c in cols]
-    if "codigo" not in select_cols:
-        return SaleErpLineIndex()
+    return [c for c in wanted if c in cols]
 
+
+def _sale_erp_order_by(cols: set[str]) -> str:
     has_fecha = "fecha" in cols
     has_contador = "contador" in cols
     has_indice = "indice" in cols
-
     if has_fecha and has_contador:
-        order_by = "fecha ASC, contador ASC, numero ASC"
-    elif has_fecha and has_indice:
-        order_by = "fecha ASC, indice ASC, numero ASC"
-    elif has_fecha:
-        order_by = "fecha ASC, numero ASC"
-    elif has_contador:
-        order_by = "contador ASC, numero ASC"
-    else:
-        order_by = "numero ASC"
+        return "fecha ASC, contador ASC, numero ASC"
+    if has_fecha and has_indice:
+        return "fecha ASC, indice ASC, numero ASC"
+    if has_fecha:
+        return "fecha ASC, numero ASC"
+    if has_contador:
+        return "contador ASC, numero ASC"
+    return "numero ASC"
 
-    where_parts: list[str] = []
-    params: list[Any] = []
-    if codigo_filter:
-        where_parts.append("TRIM(codigo) = %s")
-        params.append(codigo_filter.strip())
-    if kardex_scope_where is not None:
-        exists_sql, exists_params = build_sale_erp_scoped_to_kardex_exists(
-            table,
-            cur,
-            cache,
-            kardex_scope_where[0],
-            kardex_scope_where[1],
-        )
-        where_parts.append(exists_sql)
-        params.extend(exists_params)
+
+def build_sale_erp_line_index(
+    cur: Any,
+    table: str,
+    *,
+    col_cache: TableColumnCache | None = None,
+    codigo_filter: str | None = None,
+) -> SaleErpLineIndex:
+    """
+    Lectura completa de diariovi filtrada por SKU (push portal por producto).
+    """
+    cache = col_cache or TableColumnCache()
+    cols = cache.columns(cur, table)
+    select_cols = _sale_erp_select_cols(cols)
+    if "codigo" not in select_cols:
+        return SaleErpLineIndex()
 
     where = ""
-    if where_parts:
-        where = " WHERE " + " AND ".join(where_parts)
+    params: tuple[Any, ...] = ()
+    if codigo_filter:
+        where = " WHERE TRIM(codigo) = %s"
+        params = (codigo_filter.strip(),)
 
     col_sql = ", ".join(f"`{c}`" for c in select_cols)
+    order_by = _sale_erp_order_by(cols)
     cur.execute(
         f"""
         SELECT {col_sql}
@@ -159,7 +149,7 @@ def build_sale_erp_line_index(
         {where}
         ORDER BY {order_by}
         """,
-        tuple(params),
+        params,
     )
 
     index = SaleErpLineIndex()
@@ -169,6 +159,97 @@ def build_sale_erp_line_index(
             break
         for row in batch:
             _index_row(index, row)
+    return index
+
+
+def build_sale_erp_line_index_from_kardex_keys(
+    cur: Any,
+    table: str,
+    keys: KardexSaleLookupKeys,
+    *,
+    col_cache: TableColumnCache | None = None,
+) -> SaleErpLineIndex:
+    """
+    Carga diariovi por claves obtenidas de kardex (numero / contador / fecha+cantidad).
+    Evita EXISTS sobre toda la tabla (timeout en tiendas grandes).
+    """
+    cache = col_cache or TableColumnCache()
+    cols = cache.columns(cur, table)
+    select_cols = _sale_erp_select_cols(cols)
+    if "codigo" not in select_cols:
+        return SaleErpLineIndex()
+
+    col_sql = ", ".join(f"`{c}`" for c in select_cols)
+    order_by = _sale_erp_order_by(cols)
+    index = SaleErpLineIndex()
+
+    numeros_by_codigo: dict[str, set[str]] = defaultdict(set)
+    for codigo, numero in keys.by_numero:
+        numeros_by_codigo[codigo].add(numero)
+
+    for codigo, numeros in numeros_by_codigo.items():
+        nums = sorted(numeros)
+        for i in range(0, len(nums), DIARIOVI_LOOKUP_BATCH):
+            chunk = nums[i : i + DIARIOVI_LOOKUP_BATCH]
+            placeholders = ", ".join(["%s"] * len(chunk))
+            cur.execute(
+                f"""
+                SELECT {col_sql}
+                FROM `{table}`
+                WHERE TRIM(codigo) = %s
+                  AND TRIM(numero) IN ({placeholders})
+                ORDER BY {order_by}
+                """,
+                (codigo, *chunk),
+            )
+            for row in cur.fetchall() or []:
+                _index_row(index, row)
+
+    if "contador" in cols:
+        cont_by_codigo: dict[str, set[int]] = defaultdict(set)
+        for codigo, contador in keys.by_contador:
+            cont_by_codigo[codigo].add(contador)
+        for codigo, contadores in cont_by_codigo.items():
+            cont_list = sorted(contadores)
+            for i in range(0, len(cont_list), DIARIOVI_LOOKUP_BATCH):
+                chunk = cont_list[i : i + DIARIOVI_LOOKUP_BATCH]
+                placeholders = ", ".join(["%s"] * len(chunk))
+                cur.execute(
+                    f"""
+                    SELECT {col_sql}
+                    FROM `{table}`
+                    WHERE TRIM(codigo) = %s
+                      AND contador IN ({placeholders})
+                    ORDER BY {order_by}
+                    """,
+                    (codigo, *chunk),
+                )
+                for row in cur.fetchall() or []:
+                    _index_row(index, row)
+
+    if "fecha" in cols and keys.by_fecha_qty:
+        fecha_by_codigo: dict[str, set[str]] = defaultdict(set)
+        qty_by_codigo_fecha: dict[tuple[str, str], set[float]] = defaultdict(set)
+        for codigo, fecha, qty in keys.by_fecha_qty:
+            fecha_by_codigo[codigo].add(fecha)
+            qty_by_codigo_fecha[(codigo, fecha)].add(qty)
+        for codigo, fechas in fecha_by_codigo.items():
+            for fecha in sorted(fechas):
+                allowed_qty = qty_by_codigo_fecha[(codigo, fecha)]
+                cur.execute(
+                    f"""
+                    SELECT {col_sql}
+                    FROM `{table}`
+                    WHERE TRIM(codigo) = %s
+                      AND DATE(fecha) = %s
+                    ORDER BY {order_by}
+                    """,
+                    (codigo, fecha),
+                )
+                for row in cur.fetchall() or []:
+                    if _qty_key(_to_float(row.get("cantidad"))) in allowed_qty:
+                        _index_row(index, row)
+
     return index
 
 
