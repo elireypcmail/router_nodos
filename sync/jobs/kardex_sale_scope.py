@@ -1,18 +1,15 @@
-"""Filtros kardex (ventas) y claves de lookup hacia diariovi (export transaccional)."""
+"""Filtros kardex (ventas) y claves de lookup hacia diariovi/ventasi."""
 
 from __future__ import annotations
 
-from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date, datetime
 from typing import Any
 
 from db.schema_cache import TableColumnCache
 from sync.jobs.transaction_sync_types import TransactionWatermark
 
 KARDEX_KEYS_FETCH_BATCH = 5000
-DIARIOVI_LOOKUP_BATCH = 200
 
 
 def apply_kardex_watermark_filter(
@@ -66,31 +63,12 @@ def build_kardex_ventas_where(
     return where_parts, params
 
 
-def _parse_fecha(raw: Any) -> str | None:
-    if raw is None:
-        return None
-    if isinstance(raw, date) and not isinstance(raw, datetime):
-        return raw.isoformat()
-    text = str(raw).strip()[:10]
-    return text if text and text != "0000-00-00" else None
-
-
-def _qty_key(value: Any) -> float:
-    if value is None:
-        return 0.0
-    try:
-        return round(float(value), 3)
-    except (TypeError, ValueError):
-        return 0.0
-
-
 @dataclass
 class KardexSaleLookupKeys:
-    """Claves extraídas de kardex para buscar líneas en diariovi (sin escanear diariovi entero)."""
+    """Claves extraídas de kardex (numero / contador)."""
 
     by_numero: set[tuple[str, str]] = field(default_factory=set)
     by_contador: set[tuple[str, int]] = field(default_factory=set)
-    by_fecha_qty: set[tuple[str, str, float]] = field(default_factory=set)
 
     def add_row(self, row: dict[str, Any]) -> None:
         codigo = str(row.get("codigo") or "").strip()
@@ -105,10 +83,6 @@ class KardexSaleLookupKeys:
                 self.by_contador.add((codigo, int(contador_raw)))
             except (TypeError, ValueError):
                 pass
-        fecha = _parse_fecha(row.get("fecha"))
-        cantidad = _qty_key(row.get("ventas") if "ventas" in row else row.get("cantidad"))
-        if fecha and cantidad > 0:
-            self.by_fecha_qty.add((codigo, fecha, cantidad))
 
 
 def collect_kardex_sale_lookup_keys(
@@ -119,7 +93,7 @@ def collect_kardex_sale_lookup_keys(
     since_watermark: TransactionWatermark | None,
     on_rows_read: Callable[[int], None] | None = None,
 ) -> KardexSaleLookupKeys:
-    """Lee solo kardex (ventas) y arma claves para lookup puntual en diariovi."""
+    """Lee kardex (ventas) y arma claves numero/contador."""
     where_parts, params = build_kardex_ventas_where(
         col_cache,
         cur,
@@ -130,7 +104,7 @@ def collect_kardex_sale_lookup_keys(
     cur.execute(
         f"""
         SELECT TRIM(codigo) AS codigo, TRIM(numero) AS numero,
-               ventas, contador, fecha
+               ventas, contador
         FROM kardex
         WHERE {where}
         """,

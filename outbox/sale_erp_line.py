@@ -223,17 +223,7 @@ def lookup_sale_line_in_table(
             if row:
                 return row
 
-        fecha = _parse_fecha(payload.get("fecha"))
-        if not fecha:
-            return None
-        return _fetch_sale_line_by_match(
-            active_cur,
-            table=table,
-            codigo=codigo,
-            fecha=fecha,
-            cantidad=cantidad,
-            col_cache=col_cache,
-        )
+        return None
 
     if cur is not None:
         return _lookup(cur)

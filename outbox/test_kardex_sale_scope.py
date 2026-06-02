@@ -6,7 +6,7 @@ from sync.jobs.kardex_sale_scope import KardexSaleLookupKeys
 
 
 class TestKardexSaleLookupKeys(unittest.TestCase):
-    def test_add_row_collects_numero_contador_fecha_qty(self) -> None:
+    def test_add_row_collects_numero_contador(self) -> None:
         keys = KardexSaleLookupKeys()
         keys.add_row(
             {
@@ -19,7 +19,6 @@ class TestKardexSaleLookupKeys(unittest.TestCase):
         )
         self.assertIn(("FF23834", "1000052872"), keys.by_numero)
         self.assertIn(("FF23834", 226886), keys.by_contador)
-        self.assertIn(("FF23834", "2026-05-30", 2.0), keys.by_fecha_qty)
 
 
 if __name__ == "__main__":

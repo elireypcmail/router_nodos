@@ -1,10 +1,8 @@
 """
-Enriquece ventas con línea ERP sellada en diariovi.
+Enriquece ventas con línea ERP sellada (diariovi o ventasi).
 
-El outbox nombra el evento ``ventasi`` (trigger kardex), pero el precio/monto sale de
-``diariovi`` (kardex.codigo + kardex.numero + kardex.ventas ↔ diariovi).
-
-Match (orden): (codigo, numero, cantidad) → (codigo, contador) → (codigo, numero) → fecha+cantidad.
+Bulk: JOIN kardex.numero → diariovi / ventasi por numero de factura.
+Match: (codigo, numero, cantidad) → (codigo, contador) → (codigo, numero).
 """
 
 from __future__ import annotations
@@ -15,6 +13,7 @@ from typing import Any
 from db.mysql import MySqlClient
 from db.schema_cache import TableColumnCache
 from outbox.sale_erp_index import SaleErpLineIndex, lookup_sale_line_in_index
+from outbox.sale_erp_index import erp_table_for_index_row
 from outbox.sale_erp_line import (
     _to_float,
     apply_erp_sale_line_to_payload,
@@ -61,12 +60,18 @@ def _resolve_sale_erp_line(
 ) -> tuple[dict[str, Any] | None, str]:
     if diariovi_index is not None:
         row = lookup_sale_line_in_index(diariovi_index, payload)
-    else:
-        row = lookup_diariovi_sale_line(
-            mysql, payload, cur=cur, col_cache=col_cache
+        if row and erp_sale_line_has_pricing(row):
+            return row, erp_table_for_index_row(row)
+    for table in ("diariovi", "ventasi"):
+        row = lookup_sale_line_in_table(
+            mysql,
+            payload,
+            table=table,
+            cur=cur,
+            col_cache=col_cache,
         )
-    if row and erp_sale_line_has_pricing(row):
-        return row, "diariovi"
+        if row and erp_sale_line_has_pricing(row):
+            return row, table
     return None, ""
 
 
