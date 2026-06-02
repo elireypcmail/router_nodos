@@ -12,7 +12,7 @@ param(
     [switch]$StartNow
 )
 
-$MultishopWindowsInstallVersion = "20260531.2"
+$MultishopWindowsInstallVersion = "20260531.3"
 
 $ErrorActionPreference = "Stop"
 

@@ -648,9 +648,10 @@ function Wait-MultishopHueyProcessRunning {
     )
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
-        $pid = Test-MultishopHueyProcessRunning -NodoDir $NodoDir
-        if ($pid -gt 0) {
-            return $pid
+        # No usar $pid: en PowerShell es alias de solo lectura de $PID (proceso actual).
+        $runningHueyPid = Test-MultishopHueyProcessRunning -NodoDir $NodoDir
+        if ($runningHueyPid -gt 0) {
+            return $runningHueyPid
         }
         Start-Sleep -Seconds $IntervalSec
     }
