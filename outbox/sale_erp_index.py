@@ -27,7 +27,47 @@ def _to_float(value: Any) -> float:
 
 
 def _qty_key(cantidad: float) -> float:
-    return round(cantidad, 3)
+    """Clave de cantidad; devoluciones ERP usan valores negativos en kardex/diariovi."""
+    if cantidad == 0:
+        return 0.0
+    return round(abs(cantidad), 3)
+
+
+def _erp_line_has_pricing(line: dict[str, Any]) -> bool:
+    costo = _to_float(line.get("costo"))
+    if costo > 0:
+        return True
+    for key in ("precio1", "precio", "nprecio1"):
+        if _to_float(line.get(key)) > 0:
+            return True
+    for key in ("subtotal2", "subtotal1", "total", "subtotal", "monto"):
+        v = _to_float(line.get(key))
+        if v != 0:
+            return True
+    return False
+
+
+def _prefer_index_row(
+    existing: dict[str, Any] | None,
+    new: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    ventasi suele espejar la línea sin precios; diariovi trae costo/subtotal2.
+    No reemplazar una fila con precio por un stub vacío de la otra tabla.
+    """
+    if existing is None:
+        return new
+    old_p = _erp_line_has_pricing(existing)
+    new_p = _erp_line_has_pricing(new)
+    if old_p and not new_p:
+        return existing
+    if new_p and not old_p:
+        return new
+    if str(existing.get("_erp_table") or "") == "diariovi":
+        return existing
+    if str(new.get("_erp_table") or "") == "diariovi":
+        return new
+    return new
 
 
 @dataclass
@@ -58,16 +98,25 @@ def _index_row(
     if contador_raw is not None and str(contador_raw).strip() != "":
         try:
             contador = int(contador_raw)
-            index.by_contador[(codigo, contador)] = stored
+            key = (codigo, contador)
+            index.by_contador[key] = _prefer_index_row(
+                index.by_contador.get(key),
+                stored,
+            )
         except (TypeError, ValueError):
             pass
 
     numero = str(stored.get("numero") or "").strip()
     cantidad = _to_float(stored.get("cantidad"))
     if numero:
-        index.by_numero[(codigo, numero)] = stored
-        if cantidad > 0:
-            index.by_numero_qty[(codigo, numero, _qty_key(cantidad))] = stored
+        nkey = (codigo, numero)
+        index.by_numero[nkey] = _prefer_index_row(index.by_numero.get(nkey), stored)
+        if cantidad != 0:
+            qkey = (codigo, numero, _qty_key(cantidad))
+            index.by_numero_qty[qkey] = _prefer_index_row(
+                index.by_numero_qty.get(qkey),
+                stored,
+            )
 
 
 def _sale_erp_select_cols(cols: set[str]) -> list[str]:
@@ -259,7 +308,7 @@ def lookup_sale_line_in_index(
     numero = str(payload.get("numero") or payload.get("numdoc") or "").strip()
     cantidad = _to_float(payload.get("cantidad"))
 
-    if numero and cantidad > 0:
+    if numero and cantidad != 0:
         row = index.by_numero_qty.get((codigo, numero, _qty_key(cantidad)))
         if row:
             return row

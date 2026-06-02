@@ -182,13 +182,13 @@ def lookup_sale_line_in_table(
         numero = str(payload.get("numero") or payload.get("numdoc") or "").strip()
         cantidad = _to_float(payload.get("cantidad"))
 
-        if numero and cantidad > 0:
+        if numero and cantidad != 0:
             row = _fetch_sale_line_by_numero(
                 active_cur,
                 table=table,
                 codigo=codigo,
                 numero=numero,
-                cantidad=cantidad,
+                cantidad=abs(cantidad),
                 col_cache=col_cache,
             )
             if row:
