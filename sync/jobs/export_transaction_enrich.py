@@ -35,6 +35,7 @@ class ExportTransactionEnricher:
         self.col_cache = TableColumnCache()
         self._conn = None
         self._cur = None
+        self._detalle_rows: dict[str, list[dict[str, Any]]] = {}
         self._scom_index: PurchaseScomIndex | None = None
         self._diariovi_index: SaleErpLineIndex | None = None
 
