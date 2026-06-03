@@ -128,43 +128,111 @@ function Update-SessionPathFromRegistry {
     }
 }
 
+function Test-IsPyLauncherExe {
+    param([string]$Path)
+    if (-not $Path) { return $false }
+    return ((Split-Path -Leaf $Path) -ieq "py.exe")
+}
+
+function Get-Python311CandidatePaths {
+    $paths = @(
+        (Join-Path $env:LocalAppData "Programs\Python\Python311\python.exe"),
+        (Join-Path ${env:ProgramFiles} "Python311\python.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "Python311-32\python.exe")
+    )
+    $pythonCoreRoot = Join-Path $env:LocalAppData "Python"
+    if (Test-Path -LiteralPath $pythonCoreRoot) {
+        $paths += Get-ChildItem -LiteralPath $pythonCoreRoot -Directory -Filter "pythoncore-3.11*" -ErrorAction SilentlyContinue |
+            ForEach-Object { Join-Path $_.FullName "python.exe" }
+    }
+    return $paths | Select-Object -Unique
+}
+
 function Find-Python311Info {
-    $py = Get-Command py -ErrorAction SilentlyContinue
-    if ($py) {
-        $info = Try-GetPythonInfo -Exe $py.Source -ArgsPrefix @("-3.11")
+    foreach ($candidate in Get-Python311CandidatePaths) {
+        if (-not (Test-Path -LiteralPath $candidate)) { continue }
+        $info = Try-GetPythonInfo -Exe $candidate -ArgsPrefix @()
         if ($info -and $info.Version.Minor -eq $PreferredPythonMinor) {
+            $info.UsePyLauncher = $false
             return $info
         }
     }
 
-    foreach ($candidate in @(
-            (Join-Path $env:LocalAppData "Programs\Python\Python311\python.exe"),
-            (Join-Path ${env:ProgramFiles} "Python311\python.exe"),
-            (Join-Path ${env:ProgramFiles(x86)} "Python311-32\python.exe")
-        )) {
-        if (-not (Test-Path -LiteralPath $candidate)) { continue }
-        $info = Try-GetPythonInfo -Exe $candidate -ArgsPrefix @()
+    $pyLaunchers = @(
+        (Join-Path $env:WINDIR "py.exe")
+    )
+    $pyCmd = Get-Command py -ErrorAction SilentlyContinue
+    if ($pyCmd -and (Test-IsPyLauncherExe -Path $pyCmd.Source)) {
+        $pyLaunchers += $pyCmd.Source
+    }
+    foreach ($pyExe in ($pyLaunchers | Select-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath $pyExe)) { continue }
+        try {
+            $resolvedLines = & $pyExe -3.11 -c "import sys; print(sys.executable)" 2>&1
+            $resolved = ($resolvedLines | Where-Object { "$_" -match '\.exe$' } | Select-Object -Last 1)
+            if ($resolved) {
+                $resolved = $resolved.ToString().Trim()
+                if (Test-Path -LiteralPath $resolved) {
+                    $info = Try-GetPythonInfo -Exe $resolved -ArgsPrefix @()
+                    if ($info -and $info.Version.Minor -eq $PreferredPythonMinor) {
+                        $info.UsePyLauncher = $false
+                        return $info
+                    }
+                }
+            }
+        } catch {
+            # ignore; fallback to launcher mode below
+        }
+
+        $info = Try-GetPythonInfo -Exe $pyExe -ArgsPrefix @("-3.11")
         if ($info -and $info.Version.Minor -eq $PreferredPythonMinor) {
+            $info.UsePyLauncher = $true
             return $info
         }
     }
+
     return $null
+}
+
+function Invoke-Python311 {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$PythonInfo,
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$PythonArgs
+    )
+
+    if ($PythonInfo.UsePyLauncher) {
+        & $PythonInfo.Exe @($PythonInfo.ArgsPrefix + $PythonArgs)
+    } else {
+        & $PythonInfo.Exe @PythonArgs
+    }
+    if ($LASTEXITCODE -ne 0) {
+        $cmd = if ($PythonInfo.UsePyLauncher) {
+            "$($PythonInfo.Exe) $($PythonInfo.ArgsPrefix -join ' ') $($PythonArgs -join ' ')"
+        } else {
+            "$($PythonInfo.Exe) $($PythonArgs -join ' ')"
+        }
+        throw "Python 3.11 fallo (codigo $LASTEXITCODE): $cmd"
+    }
 }
 
 function Get-PythonCommand {
     $candidates = @()
-    $py = Get-Command py -ErrorAction SilentlyContinue
-    if ($py) {
-        $candidates += @{ Exe = $py.Source; ArgsPrefix = @("-3.11") }
-        $candidates += @{ Exe = $py.Source; ArgsPrefix = @("-3.12") }
-        $candidates += @{ Exe = $py.Source; ArgsPrefix = @("-3.10") }
-        $candidates += @{ Exe = $py.Source; ArgsPrefix = @("-3") }
+    $pyExe = Join-Path $env:WINDIR "py.exe"
+    if (Test-Path -LiteralPath $pyExe) {
+        $candidates += @{ Exe = $pyExe; ArgsPrefix = @("-3.11") }
+        $candidates += @{ Exe = $pyExe; ArgsPrefix = @("-3.12") }
+        $candidates += @{ Exe = $pyExe; ArgsPrefix = @("-3.10") }
     }
     $python = Get-Command python -ErrorAction SilentlyContinue
     if ($python) {
         $candidates += @{ Exe = $python.Source; ArgsPrefix = @() }
     }
     foreach ($c in $candidates) {
+        if ($c.ArgsPrefix.Count -gt 0 -and -not (Test-IsPyLauncherExe -Path $c.Exe)) {
+            continue
+        }
         $info = Try-GetPythonInfo -Exe $c.Exe -ArgsPrefix $c.ArgsPrefix
         if ($info -and (Test-PythonVersionSupported -V $info.Version)) {
             return $info
@@ -242,7 +310,8 @@ function Test-VenvNeedsRecreate {
 function Ensure-Python311ForNodo {
     $info = Find-Python311Info
     if ($info) {
-        Write-Host "Python 3.11 OK: $($info.VersionText) ($($info.Exe) $($info.ArgsPrefix -join ' '))" -ForegroundColor Green
+        $via = if ($info.UsePyLauncher) { "launcher py -3.11" } else { "directo" }
+        Write-Host "Python 3.11 OK: $($info.VersionText) ($via -> $($info.Exe))" -ForegroundColor Green
         return $info
     }
 
@@ -257,7 +326,8 @@ function Ensure-Python311ForNodo {
 
     $info2 = Find-Python311Info
     if ($info2) {
-        Write-Host "Python 3.11 instalado: $($info2.VersionText)" -ForegroundColor Green
+        $via = if ($info2.UsePyLauncher) { "launcher py -3.11" } else { "directo" }
+        Write-Host "Python 3.11 instalado: $($info2.VersionText) ($via -> $($info2.Exe))" -ForegroundColor Green
         return $info2
     }
 
@@ -727,8 +797,7 @@ Write-Host "Paso 4/6 - Python 3.11 + venv ..."
 $pythonInfo = Ensure-Python311ForNodo
 
 $venvDir = Join-Path $NodoDir 'venv'
-$venvPython = Join-Path $venvDir 'Scripts\\python.exe'
-$venvPip = Join-Path $venvDir 'Scripts\\pip.exe'
+$venvPython = Join-Path $venvDir 'Scripts\python.exe'
 
 if (Test-VenvNeedsRecreate -VenvPythonExe $venvPython -KeepVenv:$KeepVenv) {
     if (Test-Path -LiteralPath $venvDir) {
@@ -744,12 +813,21 @@ if (Test-VenvNeedsRecreate -VenvPythonExe $venvPython -KeepVenv:$KeepVenv) {
             # ignore
         }
     }
-    & $pythonInfo.Exe @($pythonInfo.ArgsPrefix + @('-m', 'venv', $venvDir))
+    Write-Host "Creando venv en $venvDir ..." -ForegroundColor Cyan
+    Invoke-Python311 -PythonInfo $pythonInfo '-m' 'venv' $venvDir
 } else {
     Write-Host "venv existente OK (Python 3.11, -KeepVenv)." -ForegroundColor Green
 }
 
-& $venvPip install -r (Join-Path $NodoDir 'requirements.txt')
+if (-not (Test-Path -LiteralPath $venvPython)) {
+    throw "No se creo $venvPython. Revise que Python 3.11 tenga el modulo venv (instalacion completa, no embeddable)."
+}
+
+Write-Host "Instalando dependencias (pip) ..." -ForegroundColor Cyan
+& $venvPython -m pip install -r (Join-Path $NodoDir 'requirements.txt')
+if ($LASTEXITCODE -ne 0) {
+    throw "pip install fallo (codigo $LASTEXITCODE)"
+}
 
 $envHelperEarly = Join-Path $ScriptsDir 'nodo-env.ps1'
 if (Test-Path -LiteralPath $envHelperEarly) {
