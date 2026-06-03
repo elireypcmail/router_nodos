@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     mysql_user: str = ""
     mysql_password: str = ""
     mysql_database: str = ""
+    # Reintentos al arrancar (HUEY/HUB_PUSH esperan sync_outbox en MySQL).
+    nodo_mysql_startup_attempts: int = 30
+    nodo_mysql_startup_delay_seconds: float = 2.0
 
 
 settings = Settings()

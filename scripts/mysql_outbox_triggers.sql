@@ -1,6 +1,9 @@
 -- Outbox Multishop → hub. Instalación: scripts/apply_mysql_outbox_triggers.py
 -- (siempre DROP de trg_* y ms_json_* del manifiesto y CREATE de nuevo; no pegar este archivo a mano).
 --
+-- Tablas auxiliares sync_outbox / catalog_push_digest: ENGINE=MyISAM (evita colisión de
+-- InnoDB tablespace IDs con mysql.innodb_*_stats en MySQL 5.6 tras crash o mysql_upgrade).
+--
 -- Transaccional compra/venta/ajuste: una sola fuente = tabla kardex (trg_kardex_*).
 -- Compra: outbox solo datos kardex; scom.subtotal2 se resuelve al procesar sync_outbox (Python).
 -- No hay triggers en comprasdbf, ventasi ni kardexd (evita duplicar con cabecera/detalle ERP).
@@ -19,7 +22,20 @@ CREATE TABLE IF NOT EXISTS sync_outbox (
   PRIMARY KEY (id),
   KEY idx_status_id (status, id),
   KEY idx_table_created (table_name, created_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+) ENGINE=MyISAM DEFAULT CHARSET=utf8;
+
+CREATE TABLE IF NOT EXISTS catalog_push_digest (
+  entity_key VARCHAR(80) NOT NULL,
+  table_name VARCHAR(16) NOT NULL,
+  digest CHAR(64) NOT NULL,
+  updated_at DATETIME(3) NOT NULL,
+  PRIMARY KEY (entity_key),
+  KEY idx_table_updated (table_name, updated_at)
+) ENGINE=MyISAM DEFAULT CHARSET=utf8;
+
+-- Migración suave: instalaciones previas con InnoDB pasan a MyISAM sin DROP.
+ALTER TABLE sync_outbox ENGINE=MyISAM;
+ALTER TABLE catalog_push_digest ENGINE=MyISAM;
 
 -- Helpers JSON para MySQL 5.6 (sin tipo JSON nativo)
 DROP FUNCTION IF EXISTS ms_json_escape;

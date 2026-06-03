@@ -84,7 +84,11 @@ async def lifespan(_app: FastAPI):
         if not mysql.is_configured():
             raise RuntimeError("HUB_PUSH_ENABLED requires MYSQL_* configured")
         outbox_repo = OutboxRepository(mysql)
-        await _ensure_outbox_schema_with_retry(outbox_repo)
+        await _ensure_outbox_schema_with_retry(
+            outbox_repo,
+            attempts=settings.nodo_mysql_startup_attempts,
+            delay_seconds=settings.nodo_mysql_startup_delay_seconds,
+        )
         hub = HubClient()
         outbox_worker = OutboxWorker(
             outbox_repo,
@@ -97,7 +101,11 @@ async def lifespan(_app: FastAPI):
         if not mysql.is_configured():
             raise RuntimeError("HUEY_ENABLED requires MYSQL_* configured")
         outbox_repo = OutboxRepository(mysql)
-        await _ensure_outbox_schema_with_retry(outbox_repo)
+        await _ensure_outbox_schema_with_retry(
+            outbox_repo,
+            attempts=settings.nodo_mysql_startup_attempts,
+            delay_seconds=settings.nodo_mysql_startup_delay_seconds,
+        )
         from workers.huey_tasks import bootstrap_outbox_scheduler
 
         bootstrap_outbox_scheduler()

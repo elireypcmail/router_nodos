@@ -49,7 +49,7 @@ class OutboxRepository:
                     PRIMARY KEY (id),
                     KEY idx_status_id (status, id),
                     KEY idx_table_created (table_name, created_at)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+                ) ENGINE=MyISAM DEFAULT CHARSET=utf8;
                 """
             )
             conn.commit()

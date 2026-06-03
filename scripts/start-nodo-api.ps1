@@ -127,17 +127,22 @@ function Start-MultishopNodoApi {
 
         $apiPort = Get-MultishopNodoApiPort -NodoDir $NodoDir
 
-        if (Get-Command Test-MultishopNodoApiProcessRunning -ErrorAction SilentlyContinue) {
-            $existingPid = Test-MultishopNodoApiProcessRunning -NodoDir $NodoDir
-            if ($existingPid -gt 0) {
-                Write-NodoApiLog "API ya corre (PID $existingPid); no se inicia otra instancia."
-                return
-            }
-        }
-
         if (Test-NodoApiPortOpen -Port $apiPort) {
             Write-NodoApiLog "API ya escucha en puerto $apiPort; no se inicia otra instancia."
             return
+        }
+
+        if (Get-Command Stop-MultishopNodoApiLeaderProcess -ErrorAction SilentlyContinue) {
+            if (Stop-MultishopNodoApiLeaderProcess -NodoDir $NodoDir -Reason "puerto $apiPort no escucha") {
+                Write-NodoApiLog "Proceso main.py previo sin puerto $apiPort; detenido antes de reiniciar."
+            }
+        } elseif (Get-Command Test-MultishopNodoApiProcessRunning -ErrorAction SilentlyContinue) {
+            $existingPid = Test-MultishopNodoApiProcessRunning -NodoDir $NodoDir
+            if ($existingPid -gt 0) {
+                Write-NodoApiLog "Proceso main.py PID $existingPid sin puerto $apiPort; deteniendo ..."
+                Stop-Process -Id $existingPid -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 2
+            }
         }
 
         $python = Join-Path $NodoDir "venv\Scripts\python.exe"
@@ -145,7 +150,19 @@ function Start-MultishopNodoApi {
             throw "No hay venv en $NodoDir (venv\Scripts\python.exe)"
         }
 
-        Write-NodoApiLog "Iniciando API: $python main.py (cwd $NodoDir)"
+        if (Get-Command Wait-MultishopNodoMysqlReady -ErrorAction SilentlyContinue) {
+            Wait-MultishopNodoMysqlReady -NodoDir $NodoDir -LogFn {
+                param($Message)
+                Write-NodoApiLog $Message
+            }
+        }
+
+        $startupWaitSec = 45
+        if (Get-Command Get-MultishopNodoApiStartupWaitSeconds -ErrorAction SilentlyContinue) {
+            $startupWaitSec = Get-MultishopNodoApiStartupWaitSeconds -NodoDir $NodoDir
+        }
+
+        Write-NodoApiLog "Iniciando API: $python main.py (cwd $NodoDir, espera puerto ${startupWaitSec}s)"
 
         $proc = Start-Process -FilePath $python `
             -ArgumentList "main.py" `
@@ -155,7 +172,7 @@ function Start-MultishopNodoApi {
             -RedirectStandardError $logErr `
             -PassThru
 
-        $deadline = (Get-Date).AddSeconds(45)
+        $deadline = (Get-Date).AddSeconds($startupWaitSec)
         $listening = $false
         while ((Get-Date) -lt $deadline) {
             if ($proc.HasExited) {
@@ -177,7 +194,11 @@ function Start-MultishopNodoApi {
         }
 
         if (-not $listening) {
-            throw "python sigue vivo (PID $($proc.Id)) pero puerto $apiPort no escucha tras 45s. Revise $logErr y $logOut"
+            if (-not $proc.HasExited) {
+                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                Write-NodoApiLog "Proceso PID $($proc.Id) detenido: no escuchaba en puerto $apiPort tras ${startupWaitSec}s."
+            }
+            throw "python no escucho en puerto $apiPort tras ${startupWaitSec}s. Revise $logErr y $logOut"
         }
 
         Write-NodoApiLog "API activa PID $($proc.Id) puerto $apiPort"

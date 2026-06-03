@@ -7,6 +7,7 @@ Variables de entorno:
   MS_MYSQL_HOST, MS_MYSQL_USER, MS_MYSQL_PASSWORD, MS_MYSQL_DATABASE, MS_MYSQL_PORT
   MS_SQL_FILE - ruta al .sql (default: scripts/mysql_outbox_triggers.sql junto a este script)
   MS_OUTBOX_SKIP_PREFLIGHT=1 - solo reaplicar SQL sin DROP previo (no recomendado)
+  MS_OUTBOX_RECREATE_TABLES=1 - DROP sync_outbox y catalog_push_digest antes de CREATE (reparación)
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from pymysql import err as pymysql_errors
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _DEFAULT_SQL = _SCRIPT_DIR / "mysql_outbox_triggers.sql"
+_NODO_AUX_TABLES = ("sync_outbox", "catalog_push_digest")
 
 
 def parse_sql_statements(text: str) -> list[str]:
@@ -120,6 +122,12 @@ def preflight_drop_outbox_objects(
         cur.execute(f"DROP FUNCTION IF EXISTS `{name}`")
 
 
+def preflight_drop_aux_tables(cur: pymysql.cursors.Cursor) -> None:
+    """Elimina tablas auxiliares del nodo (cola outbox + digest catálogo)."""
+    for name in _NODO_AUX_TABLES:
+        cur.execute(f"DROP TABLE IF EXISTS `{name}`")
+
+
 def apply_sql_file(
     *,
     host: str,
@@ -129,6 +137,7 @@ def apply_sql_file(
     database: str,
     sql_path: str | Path,
     skip_preflight: bool = False,
+    recreate_tables: bool = False,
 ) -> int:
     sql_path = Path(sql_path)
     if not sql_path.is_file():
@@ -168,6 +177,12 @@ def apply_sql_file(
                     f"{len(functions)} ms_json_* functions (clean install)..."
                 )
                 preflight_drop_outbox_objects(cur, triggers=triggers, functions=functions)
+                if recreate_tables:
+                    print(
+                        "Outbox: recreating aux tables "
+                        f"({', '.join(_NODO_AUX_TABLES)})..."
+                    )
+                    preflight_drop_aux_tables(cur)
 
             for idx, stmt in enumerate(stmts, 1):
                 s = stmt.strip()
@@ -221,6 +236,11 @@ def main() -> int:
         "true",
         "yes",
     )
+    recreate_tables = os.environ.get("MS_OUTBOX_RECREATE_TABLES", "").strip() in (
+        "1",
+        "true",
+        "yes",
+    )
 
     if not all([host, user, password, database]):
         print(
@@ -268,6 +288,7 @@ def main() -> int:
         database=database,
         sql_path=sql_path,
         skip_preflight=skip_preflight,
+        recreate_tables=recreate_tables,
     )
 
 

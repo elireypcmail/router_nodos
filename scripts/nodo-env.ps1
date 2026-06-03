@@ -566,6 +566,37 @@ function Test-MultishopNodoApiPortListening {
     return (Test-MultishopNodoApiTcpPortListening -Port $port)
 }
 
+function Stop-MultishopNodoApiLeaderProcess {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDir,
+        [string]$Reason = ""
+    )
+    $apiPid = Test-MultishopNodoApiProcessRunning -NodoDir $NodoDir
+    if ($apiPid -le 0) {
+        return $false
+    }
+    $msg = "Stopping stale Multishop API PID $apiPid"
+    if ($Reason) {
+        $msg += " ($Reason)"
+    }
+    Write-Host "$msg ..."
+    Stop-Process -Id $apiPid -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+    return $true
+}
+
+function Test-MultishopNodoApiHealthy {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDir
+    )
+    if (-not (Test-MultishopNodoApiPortListening -NodoDir $NodoDir)) {
+        return $false
+    }
+    return ((Test-MultishopNodoApiProcessRunning -NodoDir $NodoDir) -gt 0)
+}
+
 function Wait-MultishopNodoApiPortListening {
     param(
         [Parameter(Mandatory = $true)]
@@ -656,6 +687,122 @@ function Wait-MultishopHueyProcessRunning {
         Start-Sleep -Seconds $IntervalSec
     }
     return 0
+}
+
+function Test-MultishopEnvFlagTrue {
+    param([AllowNull()][string]$Value)
+    if (-not $Value) { return $false }
+    return ($Value.Trim() -match '^(?i:true|1|yes)$')
+}
+
+function Test-MultishopNodoNeedsMysqlAtStartup {
+    param([hashtable]$EnvMap)
+    if (-not $EnvMap) { return $false }
+    if (-not $EnvMap["MYSQL_USER"] -or -not $EnvMap["MYSQL_DATABASE"]) {
+        return $false
+    }
+    if (Test-MultishopEnvFlagTrue -Value $EnvMap["HUEY_ENABLED"]) { return $true }
+    if (Test-MultishopEnvFlagTrue -Value $EnvMap["HUB_PUSH_ENABLED"]) { return $true }
+    return $false
+}
+
+function Wait-MultishopNodoMysqlReady {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDir,
+        [int]$MaxTries = 60,
+        [double]$SleepSeconds = 2.0,
+        [scriptblock]$LogFn = $null
+    )
+    $envPath = Join-Path $NodoDir ".env"
+    $map = Read-MultishopEnvFile -Path $envPath
+    if (-not (Test-MultishopNodoNeedsMysqlAtStartup -EnvMap $map)) {
+        return $true
+    }
+
+    $python = Join-Path $NodoDir "venv\Scripts\python.exe"
+    $waitScript = Join-Path $NodoDir "scripts\mysql_wait_ready.py"
+    if (-not (Test-Path -LiteralPath $python)) {
+        throw "Missing venv python: $python"
+    }
+    if (-not (Test-Path -LiteralPath $waitScript)) {
+        if ($LogFn) { & $LogFn "mysql_wait_ready.py no encontrado; omitiendo espera MySQL" }
+        return $true
+    }
+
+    $saved = @{}
+    foreach ($key in @(
+            "MYSQL_HOST", "MYSQL_PORT", "MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_DATABASE",
+            "MYSQL_WAIT_TRIES", "MYSQL_WAIT_SLEEP"
+        )) {
+        $saved[$key] = [Environment]::GetEnvironmentVariable($key, "Process")
+    }
+    try {
+        if ($map["MYSQL_HOST"]) { $env:MYSQL_HOST = $map["MYSQL_HOST"] }
+        if ($map["MYSQL_PORT"]) { $env:MYSQL_PORT = $map["MYSQL_PORT"] } else { $env:MYSQL_PORT = "3306" }
+        $env:MYSQL_USER = $map["MYSQL_USER"]
+        $env:MYSQL_PASSWORD = $map["MYSQL_PASSWORD"]
+        $env:MYSQL_DATABASE = $map["MYSQL_DATABASE"]
+        $env:MYSQL_WAIT_TRIES = "$MaxTries"
+        $env:MYSQL_WAIT_SLEEP = "$SleepSeconds"
+
+        $hostPort = "$($env:MYSQL_HOST):$($env:MYSQL_PORT)"
+        if ($LogFn) {
+            & $LogFn "Esperando MySQL $hostPort (hasta $MaxTries intentos) ..."
+        } else {
+            Write-Host "Esperando MySQL $hostPort (hasta $MaxTries intentos) ..."
+        }
+
+        & $python $waitScript 2>&1 | ForEach-Object {
+            $line = "$_"
+            if ($LogFn) { & $LogFn $line } else { Write-Host $line }
+        }
+        if ($LASTEXITCODE -ne 0) {
+            throw "MySQL no respondio en $hostPort tras $MaxTries intentos. Revise el servicio MySQL del ERP."
+        }
+        if ($LogFn) { & $LogFn "MySQL listo en $hostPort" }
+        return $true
+    } finally {
+        foreach ($key in $saved.Keys) {
+            if ($null -eq $saved[$key]) {
+                Remove-Item -Path "Env:$key" -ErrorAction SilentlyContinue
+            } else {
+                Set-Item -Path "Env:$key" -Value $saved[$key]
+            }
+        }
+    }
+}
+
+function Get-MultishopNodoApiStartupWaitSeconds {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDir
+    )
+    $map = Read-MultishopEnvFile -Path (Join-Path $NodoDir ".env")
+    $base = 45
+    if (-not (Test-MultishopNodoNeedsMysqlAtStartup -EnvMap $map)) {
+        return $base
+    }
+    $attempts = 30
+    $delay = 2.0
+    if ($map["NODO_MYSQL_STARTUP_ATTEMPTS"]) {
+        [void][int]::TryParse($map["NODO_MYSQL_STARTUP_ATTEMPTS"].Trim(), [ref]$attempts)
+    }
+    if ($map["NODO_MYSQL_STARTUP_DELAY_SECONDS"]) {
+        [void][double]::TryParse($map["NODO_MYSQL_STARTUP_DELAY_SECONDS"].Trim(), [ref]$delay)
+    }
+    $mysqlWait = 60 * 2
+    if ($map["MYSQL_WAIT_TRIES"]) {
+        [void][int]::TryParse($map["MYSQL_WAIT_TRIES"].Trim(), [ref]$mysqlWait)
+    }
+    $mysqlSleep = 2.0
+    if ($map["MYSQL_WAIT_SLEEP"]) {
+        [void][double]::TryParse($map["MYSQL_WAIT_SLEEP"].Trim(), [ref]$mysqlSleep)
+    }
+    $computed = [int][Math]::Ceiling(($mysqlWait * $mysqlSleep) + ($attempts * $delay) + 15)
+    if ($computed -lt $base) { return $base }
+    if ($computed -gt 300) { return 300 }
+    return $computed
 }
 
 function Get-MultishopNodoApiStartFailureHint {

@@ -33,10 +33,19 @@ try {
     $portOpen = [bool](netstat -ano 2>$null | Select-String ":$apiPort\s")
 }
 
+$apiLeaderPid = 0
+if ($nodoDir -and (Get-Command Test-MultishopNodoApiProcessRunning -ErrorAction SilentlyContinue)) {
+    $apiLeaderPid = Test-MultishopNodoApiProcessRunning -NodoDir $nodoDir
+}
+
 if ($portOpen) {
     Write-Host "Puerto $apiPort (NODO_PORT): ESCUCHANDO" -ForegroundColor Green
 } else {
     Write-Host "Puerto $apiPort (NODO_PORT): no activo" -ForegroundColor Yellow
+    if ($apiLeaderPid -gt 0) {
+        Write-Host "  AVISO: hay main.py (PID $apiLeaderPid) pero el puerto no escucha (proceso colgado)." -ForegroundColor Red
+        Write-Host "  Accion: wscript.exe //nologo $DeployDir\start-nodo-api.vbs (reinicia tras matar el zombie)"
+    }
 }
 
 $procs = Get-Process python, pythonw -ErrorAction SilentlyContinue
@@ -70,6 +79,9 @@ if (Test-Path $logErr) {
     Get-Content $logErr -Tail 15 -ErrorAction SilentlyContinue
 }
 
+Write-Host ""
+Write-Host "Puerto en netstat (NODO_PORT=$apiPort):"
+Write-Host "  netstat -ano | findstr `":$apiPort`""
 Write-Host ""
 Write-Host "Health:"
 Write-Host "  curl http://127.0.0.1:$apiPort/api/health -H `"Authorization: Bearer <TOKEN>`""

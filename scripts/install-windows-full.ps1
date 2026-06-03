@@ -76,6 +76,9 @@ $HubVpnIp = "10.66.0.1"
 
 $MinPythonMajor = 3
 $MinPythonMinor = 10
+$MaxPythonMinor = 13
+$PreferredPythonMinor = 11
+$WingetPython311Id = "Python.Python.3.11"
 
 function Parse-PythonVersion {
     param([string]$VersionText)
@@ -87,12 +90,13 @@ function Parse-PythonVersion {
     return $null
 }
 
-function Test-PythonMeetsMinimum {
+function Test-PythonVersionSupported {
     param([hashtable]$V)
     if (-not $V) { return $false }
-    if ($V.Major -gt $MinPythonMajor) { return $true }
-    if ($V.Major -lt $MinPythonMajor) { return $false }
-    return ($V.Minor -ge $MinPythonMinor)
+    if ($V.Major -ne $MinPythonMajor) { return $false }
+    if ($V.Minor -lt $MinPythonMinor) { return $false }
+    if ($V.Minor -gt $MaxPythonMinor) { return $false }
+    return $true
 }
 
 function Try-GetPythonInfo {
@@ -113,13 +117,48 @@ function Try-GetPythonInfo {
     return $null
 }
 
+function Update-SessionPathFromRegistry {
+    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $parts = @()
+    if ($machinePath) { $parts += $machinePath }
+    if ($userPath) { $parts += $userPath }
+    if ($parts.Count -gt 0) {
+        $env:Path = ($parts -join ";")
+    }
+}
+
+function Find-Python311Info {
+    $py = Get-Command py -ErrorAction SilentlyContinue
+    if ($py) {
+        $info = Try-GetPythonInfo -Exe $py.Source -ArgsPrefix @("-3.11")
+        if ($info -and $info.Version.Minor -eq $PreferredPythonMinor) {
+            return $info
+        }
+    }
+
+    foreach ($candidate in @(
+            (Join-Path $env:LocalAppData "Programs\Python\Python311\python.exe"),
+            (Join-Path ${env:ProgramFiles} "Python311\python.exe"),
+            (Join-Path ${env:ProgramFiles(x86)} "Python311-32\python.exe")
+        )) {
+        if (-not (Test-Path -LiteralPath $candidate)) { continue }
+        $info = Try-GetPythonInfo -Exe $candidate -ArgsPrefix @()
+        if ($info -and $info.Version.Minor -eq $PreferredPythonMinor) {
+            return $info
+        }
+    }
+    return $null
+}
+
 function Get-PythonCommand {
     $candidates = @()
     $py = Get-Command py -ErrorAction SilentlyContinue
     if ($py) {
-        $candidates += @{ Exe = $py.Source; ArgsPrefix = @("-3") }
         $candidates += @{ Exe = $py.Source; ArgsPrefix = @("-3.11") }
+        $candidates += @{ Exe = $py.Source; ArgsPrefix = @("-3.12") }
         $candidates += @{ Exe = $py.Source; ArgsPrefix = @("-3.10") }
+        $candidates += @{ Exe = $py.Source; ArgsPrefix = @("-3") }
     }
     $python = Get-Command python -ErrorAction SilentlyContinue
     if ($python) {
@@ -127,23 +166,110 @@ function Get-PythonCommand {
     }
     foreach ($c in $candidates) {
         $info = Try-GetPythonInfo -Exe $c.Exe -ArgsPrefix $c.ArgsPrefix
-        if ($info -and (Test-PythonMeetsMinimum -V $info.Version)) {
+        if ($info -and (Test-PythonVersionSupported -V $info.Version)) {
             return $info
         }
     }
     return $null
 }
 
-function Install-PythonAutomatically {
-    Write-Host "Python $MinPythonMajor.$MinPythonMinor+ requerido. Intentando instalar automaticamente ..." -ForegroundColor Yellow
+function Install-Python311WithWinget {
+    Write-Host "Instalando Python 3.11 (winget $WingetPython311Id) ..." -ForegroundColor Cyan
     $winget = Get-Command winget -ErrorAction SilentlyContinue
     if (-not $winget) {
-        throw "No se encontró winget. Instale Python manualmente (recomendado 3.11+) y vuelva a ejecutar."
+        throw @(
+            "No se encontro winget para instalar Python 3.11."
+            "Opciones:"
+            "  winget install $WingetPython311Id -e"
+            "  https://www.python.org/downloads/release/python-3119/ (Windows installer, marcar Add to PATH)"
+        ) -join "`n"
     }
-    & $winget.Source install --id Python.Python.3.11 -e --source winget
+
+    & $winget.Source install --id $WingetPython311Id -e --source winget `
+        --accept-package-agreements --accept-source-agreements
+    Update-SessionPathFromRegistry
+    Start-Sleep -Seconds 3
+
     if ($LASTEXITCODE -ne 0) {
-        throw "winget no pudo instalar Python (codigo $LASTEXITCODE). Instale Python manualmente y vuelva a ejecutar."
+        $already = Find-Python311Info
+        if ($already) {
+            Write-Host "Python 3.11 ya instalado: $($already.VersionText)" -ForegroundColor Green
+            return
+        }
+        throw "winget no pudo instalar Python 3.11 (codigo $LASTEXITCODE). Instale manualmente: winget install $WingetPython311Id -e"
     }
+}
+
+function Install-PythonAutomatically {
+    Install-Python311WithWinget
+}
+
+function Get-VenvPythonVersion {
+    param([string]$VenvPythonExe)
+    if (-not (Test-Path -LiteralPath $VenvPythonExe)) { return $null }
+    try {
+        $out = & $VenvPythonExe --version 2>&1
+        return Parse-PythonVersion -VersionText (($out | Select-Object -First 1) -as [string])
+    } catch {
+        return $null
+    }
+}
+
+function Test-VenvNeedsRecreate {
+    param(
+        [string]$VenvPythonExe,
+        [switch]$KeepVenv
+    )
+    if (-not (Test-Path -LiteralPath $VenvPythonExe)) {
+        return $true
+    }
+    if (-not $KeepVenv) {
+        return $true
+    }
+    $venvVer = Get-VenvPythonVersion -VenvPythonExe $VenvPythonExe
+    if (-not $venvVer) {
+        return $true
+    }
+    if (-not (Test-PythonVersionSupported -V $venvVer)) {
+        return $true
+    }
+    if ($venvVer.Minor -ne $PreferredPythonMinor) {
+        return $true
+    }
+    return $false
+}
+
+function Ensure-Python311ForNodo {
+    $info = Find-Python311Info
+    if ($info) {
+        Write-Host "Python 3.11 OK: $($info.VersionText) ($($info.Exe) $($info.ArgsPrefix -join ' '))" -ForegroundColor Green
+        return $info
+    }
+
+    $other = Get-PythonCommand
+    if ($other) {
+        Write-Host "Python detectado: $($other.VersionText) (no es 3.11; se instalara 3.11 para el nodo)." -ForegroundColor Yellow
+    } else {
+        Write-Host "Python 3.10-3.13 no encontrado; se instalara Python 3.11 ..." -ForegroundColor Yellow
+    }
+
+    Install-Python311WithWinget
+
+    $info2 = Find-Python311Info
+    if ($info2) {
+        Write-Host "Python 3.11 instalado: $($info2.VersionText)" -ForegroundColor Green
+        return $info2
+    }
+
+    throw @(
+        "Python 3.11 sigue sin estar disponible tras la instalacion."
+        "Cierre y reabra PowerShell como Administrador y vuelva a ejecutar install-windows.cmd"
+        "O manualmente: winget install $WingetPython311Id -e"
+    ) -join "`n"
+}
+
+function Ensure-PythonCompatible {
+    return (Ensure-Python311ForNodo)
 }
 
 function Enable-VenvPowerShellExecutionPolicy {
@@ -176,23 +302,6 @@ function Enable-VenvPowerShellExecutionPolicy {
     Set-ExecutionPolicy -ExecutionPolicy $target -Scope $scope -Force
     $after = Get-ExecutionPolicy -Scope $scope
     Write-Host "ExecutionPolicy $scope = $after" -ForegroundColor Green
-}
-
-function Ensure-PythonCompatible {
-    $info = Get-PythonCommand
-    if ($info) {
-        Write-Host "Python OK: $($info.VersionText) ($($info.Exe) $($info.ArgsPrefix -join ' '))" -ForegroundColor Green
-        return $info
-    }
-
-    Install-PythonAutomatically
-
-    $info2 = Get-PythonCommand
-    if ($info2) {
-        Write-Host "Python instalado: $($info2.VersionText)" -ForegroundColor Green
-        return $info2
-    }
-    throw "Python sigue sin estar disponible tras instalación. Cierre y reabra PowerShell e intente de nuevo."
 }
 
 function Install-WireGuardTunnel {
@@ -447,6 +556,32 @@ function Parse-EnvFile {
     return $map
 }
 
+function Invoke-MysqlUpgradeIfAvailable {
+    param(
+        [string]$MysqlBinDir = "C:\MySQL\MySQL Server 5.6\bin",
+        [string]$MysqlUser = "root",
+        [string]$MysqlPassword = ""
+    )
+
+    $upgradeExe = Join-Path $MysqlBinDir "mysql_upgrade.exe"
+    if (-not (Test-Path -LiteralPath $upgradeExe)) {
+        Write-Host "mysql_upgrade.exe no encontrado en $MysqlBinDir; omitiendo." -ForegroundColor DarkGray
+        return
+    }
+
+    Write-Host "MySQL: mysql_upgrade (repara mysql.innodb_*_stats) ..." -ForegroundColor Cyan
+    $args = @("-u", $MysqlUser)
+    if ($MysqlPassword) {
+        $args += @("-p$MysqlPassword")
+    }
+    & $upgradeExe @args
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "mysql_upgrade salió con código $LASTEXITCODE (continuando con triggers/outbox)."
+    } else {
+        Write-Host "mysql_upgrade OK." -ForegroundColor Green
+    }
+}
+
 function Enable-OutboxTriggersWithPython {
     param(
         [string]$NodoDirPath,
@@ -483,6 +618,8 @@ function Enable-OutboxTriggersWithPython {
 
     Write-Host "Validando conectividad MySQL (${mysqlHost}:${port} / $db / usuario $user) ..." -ForegroundColor Cyan
 
+    Invoke-MysqlUpgradeIfAvailable -MysqlUser $user -MysqlPassword $pass
+
     $applyScript = Join-Path $NodoDirPath 'scripts\apply_mysql_outbox_triggers.py'
     if (-not (Test-Path -LiteralPath $applyScript)) {
         Write-Warning "No se encontró $applyScript. Omitiendo triggers/outbox fuera de Docker."
@@ -496,11 +633,13 @@ function Enable-OutboxTriggersWithPython {
     $env:MS_MYSQL_PORT = $port
     $env:MS_SQL_FILE = $sqlFile
     Remove-Item Env:MS_OUTBOX_SKIP_PREFLIGHT -ErrorAction SilentlyContinue
-    Write-Host "Outbox: desinstalar triggers Multishop y reinstalar desde cero ..." -ForegroundColor Cyan
+    $env:MS_OUTBOX_RECREATE_TABLES = "1"
+    Write-Host "Outbox: desinstalar triggers Multishop, recrear tablas aux (MyISAM) y reinstalar ..." -ForegroundColor Cyan
     & $VenvPython $applyScript
     if ($LASTEXITCODE -ne 0) {
         throw "apply_mysql_outbox_triggers.py salió con código $LASTEXITCODE"
     }
+    Remove-Item Env:MS_OUTBOX_RECREATE_TABLES -ErrorAction SilentlyContinue
 }
 
 # --- inicio ---
@@ -583,23 +722,33 @@ if ($envSource) {
 }
 
 Write-Host ""
-Write-Host "Paso 4/6 - API Python (venv) ..."
+Write-Host "Paso 4/6 - Python 3.11 + venv ..."
 
-$pythonInfo = Ensure-PythonCompatible
+$pythonInfo = Ensure-Python311ForNodo
 
 $venvDir = Join-Path $NodoDir 'venv'
-if ((Test-Path -LiteralPath $venvDir) -and (-not $KeepVenv)) {
-    try {
-        Remove-Item -LiteralPath $venvDir -Recurse -Force -ErrorAction SilentlyContinue
-    } catch {
-        # ignore
-    }
-}
-
 $venvPython = Join-Path $venvDir 'Scripts\\python.exe'
 $venvPip = Join-Path $venvDir 'Scripts\\pip.exe'
 
-& $pythonInfo.Exe @($pythonInfo.ArgsPrefix + @('-m', 'venv', $venvDir))
+if (Test-VenvNeedsRecreate -VenvPythonExe $venvPython -KeepVenv:$KeepVenv) {
+    if (Test-Path -LiteralPath $venvDir) {
+        $venvVer = Get-VenvPythonVersion -VenvPythonExe $venvPython
+        if ($venvVer) {
+            Write-Host "Recreando venv (tenia Python $($venvVer.Major).$($venvVer.Minor); se usa 3.11) ..." -ForegroundColor Yellow
+        } else {
+            Write-Host "Recreando venv ..." -ForegroundColor Yellow
+        }
+        try {
+            Remove-Item -LiteralPath $venvDir -Recurse -Force -ErrorAction SilentlyContinue
+        } catch {
+            # ignore
+        }
+    }
+    & $pythonInfo.Exe @($pythonInfo.ArgsPrefix + @('-m', 'venv', $venvDir))
+} else {
+    Write-Host "venv existente OK (Python 3.11, -KeepVenv)." -ForegroundColor Green
+}
+
 & $venvPip install -r (Join-Path $NodoDir 'requirements.txt')
 
 $envHelperEarly = Join-Path $ScriptsDir 'nodo-env.ps1'

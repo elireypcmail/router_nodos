@@ -91,7 +91,7 @@ class CatalogPushDigestStore:
                   updated_at DATETIME(3) NOT NULL,
                   PRIMARY KEY (entity_key),
                   KEY idx_table_updated (table_name, updated_at)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+                ) ENGINE=MyISAM DEFAULT CHARSET=utf8;
                 """
             )
             conn.commit()
