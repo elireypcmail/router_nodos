@@ -28,6 +28,10 @@ from catalog.pull.inventory_deps import (
     fetch_row_dependencies_from_hub,
 )
 from catalog.pull_common import fetch_codes_existing
+from db.sinv_price_from_cost import (
+    SINV_COST_PRICE_FETCH,
+    apply_sinv_cost_and_prices,
+)
 from db.sinv_store import delete_sinv, prepare_sinv_upsert, upsert_sinv
 from db.sprv_store import delete_sprv, upsert_sprv
 from sync.models import SyncApplyRequest
@@ -280,8 +284,9 @@ def _fetch_sinv_cost_row(cur, codigo: str) -> dict | None:
     key = codigo.strip()
     if not key:
         return None
+    cols = ", ".join(SINV_COST_PRICE_FETCH)
     cur.execute(
-        "SELECT codigo, costo, costopro FROM sinv WHERE TRIM(codigo) = %s LIMIT 1",
+        f"SELECT {cols} FROM sinv WHERE TRIM(codigo) = %s LIMIT 1",
         (key,),
     )
     return cur.fetchone()
@@ -293,6 +298,7 @@ async def sync_cost_propose(body: SyncEventBody, _: None = Depends(verify_bearer
     Propuesta de actualización de costo (hub -> nodo).
 
     No modifica tablas si el CPP propuesto (hub) es menor que sinv.costopro local.
+    Si aplica, recalcula precio1..5 con pg1..5 programados (pgN > 0).
     """
     entity = body.entity_type.strip().lower()
     if entity not in {"inventory_cost_update", "cost_update", "inventory_cost"}:
@@ -353,9 +359,13 @@ async def sync_cost_propose(body: SyncEventBody, _: None = Depends(verify_bearer
                 costo_actual_factura if costo_actual_factura != 0 else costo_propuesto
             )
 
-            cur.execute(
-                "UPDATE sinv SET costoant=%s, costo=%s, costopro=%s WHERE codigo=%s",
-                (costoant, nuevo_costo, costo_propuesto, codigo_db),
+            precios = apply_sinv_cost_and_prices(
+                cur,
+                codigo_db,
+                row,
+                costoant=costoant,
+                nuevo_costo=nuevo_costo,
+                costopro_nuevo=costo_propuesto,
             )
             conn.commit()
 
@@ -365,6 +375,7 @@ async def sync_cost_propose(body: SyncEventBody, _: None = Depends(verify_bearer
                 "costo_local": costo_local,
                 "costopro_local": costopro_local,
                 "costo_propuesto": costo_propuesto,
+                "precios_recalculados": precios,
             }
         finally:
             try:
@@ -384,6 +395,7 @@ async def sync_cost_apply(body: SyncEventBody, _: None = Depends(verify_bearer))
     Forzar actualización de costo (hub -> nodo).
 
     Se usa después de que el usuario confirma en el portal.
+    Recalcula precio1..5 con pg1..5 programados (pgN > 0).
     """
     entity = body.entity_type.strip().lower()
     if entity not in {"inventory_cost_update", "cost_update", "inventory_cost"}:
@@ -422,9 +434,13 @@ async def sync_cost_apply(body: SyncEventBody, _: None = Depends(verify_bearer))
                 costo_actual_factura if costo_actual_factura != 0 else costo_propuesto
             )
 
-            cur.execute(
-                "UPDATE sinv SET costoant=%s, costo=%s, costopro=%s WHERE codigo=%s",
-                (costo_local, nuevo_costo, costo_propuesto, codigo_db),
+            precios = apply_sinv_cost_and_prices(
+                cur,
+                codigo_db,
+                row,
+                costoant=costo_local,
+                nuevo_costo=nuevo_costo,
+                costopro_nuevo=costo_propuesto,
             )
             conn.commit()
             return {
@@ -432,6 +448,7 @@ async def sync_cost_apply(body: SyncEventBody, _: None = Depends(verify_bearer))
                 "codigo": codigo_db,
                 "costo_local": costo_local,
                 "costo_propuesto": costo_propuesto,
+                "precios_recalculados": precios,
             }
         finally:
             try:
