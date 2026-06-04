@@ -19,6 +19,7 @@ from db.mysql import MySqlClient
 from core.json_util import json_safe
 from catalog.push.detalle_sql import DETALLE_PUSH_FROM, DETALLE_PUSH_SELECT
 from db.sprv_store import SPRV_BODY_FIELDS
+from db.sinv_store import SINV_HUB_FIELDS
 
 SINV_PUSH_EXTRA_FIELDS = ("existencia", "costo", "costopro", "costoant")
 
