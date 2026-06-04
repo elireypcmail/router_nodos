@@ -336,7 +336,7 @@ trap cleanup_dev EXIT INT TERM
 
 if [[ "$(load_env_var HUEY_ENABLED)" == "true" ]]; then
   log "Iniciando Huey consumer en background..."
-  "${PYTHON_BIN}" -m huey.bin.huey_consumer huey_tasks.huey &
+  "${PYTHON_BIN}" -m huey.bin.huey_consumer -q huey_tasks.huey &
   HUEY_PID=$!
 fi
 

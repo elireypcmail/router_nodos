@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from core.categoria_trace import is_categoria_entity, trace, trace_exc, trace_warn
 from core.config import settings
 from db.mysql import MySqlClient
+from db.outbox_suppress import hub_origin_write
 from hub.client import HubClient
 from middleware.auth import verify_bearer
 from catalog.apply import (
@@ -136,22 +137,23 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
             conn = mysql.connect()
             try:
                 cur = conn.cursor()
-                cur.execute(
-                    """
-                    INSERT INTO catego (ccate, ncate, pganancia, pdescu)
-                    VALUES (%s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                      ncate = VALUES(ncate),
-                      pganancia = VALUES(pganancia),
-                      pdescu = VALUES(pdescu)
-                    """,
-                    (
-                        ccate,
-                        ncate,
-                        pganancia,
-                        pdescu,
-                    ),
-                )
+                with hub_origin_write(cur):
+                    cur.execute(
+                        """
+                        INSERT INTO catego (ccate, ncate, pganancia, pdescu)
+                        VALUES (%s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                          ncate = VALUES(ncate),
+                          pganancia = VALUES(pganancia),
+                          pdescu = VALUES(pdescu)
+                        """,
+                        (
+                            ccate,
+                            ncate,
+                            pganancia,
+                            pdescu,
+                        ),
+                    )
                 conn.commit()
                 trace("sync.events.categoria.mysql.done", ccate=ccate)
             except Exception as exc:
@@ -178,13 +180,14 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
             conn = mysql.connect()
             try:
                 cur = conn.cursor()
-                if action == "delete":
-                    cod_prv = str(row.get("cod_prv") or "").strip()
-                    if not cod_prv:
-                        raise RuntimeError("provider row requires cod_prv")
-                    delete_sprv(cur, cod_prv)
-                else:
-                    upsert_sprv(cur, row)
+                with hub_origin_write(cur):
+                    if action == "delete":
+                        cod_prv = str(row.get("cod_prv") or "").strip()
+                        if not cod_prv:
+                            raise RuntimeError("provider row requires cod_prv")
+                        delete_sprv(cur, cod_prv)
+                    else:
+                        upsert_sprv(cur, row)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -215,30 +218,31 @@ async def sync_events(body: SyncEventBody, _: None = Depends(verify_bearer)):
             conn = mysql.connect()
             try:
                 cur = conn.cursor()
-                if action == "delete":
-                    codigo = str(row.get("codigo") or "").strip()
-                    if not codigo:
-                        raise RuntimeError("inventory row requires codigo")
-                    delete_sinv(cur, codigo)
-                else:
-                    if hub_catego or hub_prv:
-                        ccate = str(row.get("ccate") or "").strip()
-                        cod_prv = str(row.get("cod_prv") or "").strip()
-                        local_ccates = fetch_codes_existing(
-                            mysql, "catego", "ccate", [ccate] if ccate else []
-                        )
-                        local_prv = fetch_codes_existing(
-                            mysql, "sprv", "cod_prv", [cod_prv] if cod_prv else []
-                        )
-                        apply_inventory_row_dependencies(
-                            cur,
-                            row,
-                            hub_catego=hub_catego,
-                            hub_prv=hub_prv,
-                            local_ccates=local_ccates,
-                            local_prv=local_prv,
-                        )
-                    upsert_sinv(cur, row)
+                with hub_origin_write(cur):
+                    if action == "delete":
+                        codigo = str(row.get("codigo") or "").strip()
+                        if not codigo:
+                            raise RuntimeError("inventory row requires codigo")
+                        delete_sinv(cur, codigo)
+                    else:
+                        if hub_catego or hub_prv:
+                            ccate = str(row.get("ccate") or "").strip()
+                            cod_prv = str(row.get("cod_prv") or "").strip()
+                            local_ccates = fetch_codes_existing(
+                                mysql, "catego", "ccate", [ccate] if ccate else []
+                            )
+                            local_prv = fetch_codes_existing(
+                                mysql, "sprv", "cod_prv", [cod_prv] if cod_prv else []
+                            )
+                            apply_inventory_row_dependencies(
+                                cur,
+                                row,
+                                hub_catego=hub_catego,
+                                hub_prv=hub_prv,
+                                local_ccates=local_ccates,
+                                local_prv=local_prv,
+                            )
+                        upsert_sinv(cur, row)
                 conn.commit()
             except Exception:
                 conn.rollback()

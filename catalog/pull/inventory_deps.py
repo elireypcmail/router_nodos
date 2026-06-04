@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from catalog.apply import apply_categoria_row, apply_proveedor_row
+from db.outbox_suppress import hub_origin_write
 from hub.client import HubClient
 from catalog.pull_common import fetch_codes_existing
 
@@ -95,17 +96,18 @@ def apply_inventory_row_dependencies(
     ccate = str(hub_row.get("ccate") or "").strip()
     cod_prv = str(hub_row.get("cod_prv") or "").strip()
 
-    if ccate and ccate not in local_ccates:
-        cat_row = hub_catego.get(ccate)
-        if cat_row:
-            apply_categoria_row(cur, cat_row)
-            local_ccates.add(ccate)
+    with hub_origin_write(cur):
+        if ccate and ccate not in local_ccates:
+            cat_row = hub_catego.get(ccate)
+            if cat_row:
+                apply_categoria_row(cur, cat_row)
+                local_ccates.add(ccate)
 
-    if cod_prv and cod_prv not in local_prv:
-        prv_row = hub_prv.get(cod_prv)
-        if prv_row:
-            apply_proveedor_row(cur, prv_row)
-            local_prv.add(cod_prv)
+        if cod_prv and cod_prv not in local_prv:
+            prv_row = hub_prv.get(cod_prv)
+            if prv_row:
+                apply_proveedor_row(cur, prv_row)
+                local_prv.add(cod_prv)
 
 
 async def fetch_row_dependencies_from_hub(

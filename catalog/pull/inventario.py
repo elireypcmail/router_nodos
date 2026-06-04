@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from db.mysql import MySqlClient
+from db.outbox_suppress import hub_origin_write
 from hub.client import HubClient
 from catalog.pull_common import fetch_codes_existing
 from catalog.pull.inventory_deps import (
@@ -195,21 +196,22 @@ def _process_inventory_pull(
         conn = mysql.connect()
         try:
             cur = conn.cursor()
-            for row in to_insert:
-                apply_inventory_row_dependencies(
-                    cur,
-                    row,
-                    hub_catego=hub_catego,
-                    hub_prv=hub_prv,
-                    local_ccates=local_ccates,
-                    local_prv=local_prv,
-                )
-                upsert_sinv(cur, row)
-                inserted += 1
-            for patch in to_patch:
-                keys = {k for k in patch if k != "codigo"}
-                upsert_sinv(cur, patch, patch_keys=keys)
-                patched += 1
+            with hub_origin_write(cur):
+                for row in to_insert:
+                    apply_inventory_row_dependencies(
+                        cur,
+                        row,
+                        hub_catego=hub_catego,
+                        hub_prv=hub_prv,
+                        local_ccates=local_ccates,
+                        local_prv=local_prv,
+                    )
+                    upsert_sinv(cur, row)
+                    inserted += 1
+                for patch in to_patch:
+                    keys = {k for k in patch if k != "codigo"}
+                    upsert_sinv(cur, patch, patch_keys=keys)
+                    patched += 1
             conn.commit()
         except Exception:
             conn.rollback()

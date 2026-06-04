@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from db.outbox_suppress import hub_origin_write
+
 PRICE_PG_PAIRS: tuple[tuple[str, str], ...] = (
     ("precio1", "pg1"),
     ("precio2", "pg2"),
@@ -96,8 +98,9 @@ def apply_sinv_cost_and_prices(
         params.append(val)
     params.append(codigo_db)
 
-    cur.execute(
-        f"UPDATE sinv SET {', '.join(set_parts)} WHERE codigo=%s",
-        tuple(params),
-    )
+    with hub_origin_write(cur):
+        cur.execute(
+            f"UPDATE sinv SET {', '.join(set_parts)} WHERE codigo=%s",
+            tuple(params),
+        )
     return price_updates

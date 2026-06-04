@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from db.outbox_suppress import hub_origin_write
 from db.sprv_store import upsert_sprv
 from db.sinv_store import upsert_sinv
 
@@ -15,25 +16,28 @@ def apply_categoria_row(cur, it: dict) -> None:
     ncate = str(it.get("ncate") or "").strip()
     if not ccate or not ncate:
         raise ValueError("incomplete category row")
-    cur.execute(
-        """
-        INSERT INTO catego (ccate, ncate, pganancia, pdescu)
-        VALUES (%s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE
-          ncate = VALUES(ncate),
-          pganancia = VALUES(pganancia),
-          pdescu = VALUES(pdescu)
-        """,
-        (ccate, ncate, it.get("pganancia"), it.get("pdescu")),
-    )
+    with hub_origin_write(cur):
+        cur.execute(
+            """
+            INSERT INTO catego (ccate, ncate, pganancia, pdescu)
+            VALUES (%s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+              ncate = VALUES(ncate),
+              pganancia = VALUES(pganancia),
+              pdescu = VALUES(pdescu)
+            """,
+            (ccate, ncate, it.get("pganancia"), it.get("pdescu")),
+        )
 
 
 def apply_proveedor_row(cur, it: dict) -> None:
-    upsert_sprv(cur, it)
+    with hub_origin_write(cur):
+        upsert_sprv(cur, it)
 
 
 def apply_inventario_row(cur, it: dict) -> None:
-    upsert_sinv(cur, it)
+    with hub_origin_write(cur):
+        upsert_sinv(cur, it)
 
 
 def apply_inventario_dependency_rows(
@@ -43,18 +47,19 @@ def apply_inventario_dependency_rows(
     proveedor_row: dict | None,
 ) -> None:
     """Upsert de categoría/proveedor del hub en la misma transacción que sinv."""
-    if categoria_row and isinstance(categoria_row, dict):
-        logger.info(
-            "[apply-from-hub] inventory deps: applying category ccate=%s",
-            str(categoria_row.get("ccate") or "").strip(),
-        )
-        apply_categoria_row(cur, categoria_row)
-    if proveedor_row and isinstance(proveedor_row, dict):
-        logger.info(
-            "[apply-from-hub] inventory deps: applying provider cod_prv=%s",
-            str(proveedor_row.get("cod_prv") or "").strip(),
-        )
-        apply_proveedor_row(cur, proveedor_row)
+    with hub_origin_write(cur):
+        if categoria_row and isinstance(categoria_row, dict):
+            logger.info(
+                "[apply-from-hub] inventory deps: applying category ccate=%s",
+                str(categoria_row.get("ccate") or "").strip(),
+            )
+            apply_categoria_row(cur, categoria_row)
+        if proveedor_row and isinstance(proveedor_row, dict):
+            logger.info(
+                "[apply-from-hub] inventory deps: applying provider cod_prv=%s",
+                str(proveedor_row.get("cod_prv") or "").strip(),
+            )
+            apply_proveedor_row(cur, proveedor_row)
 
 
 def assert_inventario_dependencies(cur, row: dict) -> None:

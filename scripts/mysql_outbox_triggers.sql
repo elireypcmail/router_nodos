@@ -4,6 +4,9 @@
 -- Tablas auxiliares sync_outbox / catalog_push_digest: ENGINE=MyISAM (evita colisión de
 -- InnoDB tablespace IDs con mysql.innodb_*_stats en MySQL 5.6 tras crash o mysql_upgrade).
 --
+-- Escrituras hub -> tienda (cost/apply, sync/events, pull, apply-from-hub): en Python
+-- activar SET @ms_skip_outbox antes del UPDATE/INSERT; los triggers de catálogo no encolan.
+--
 -- Transaccional compra/venta/ajuste: una sola fuente = tabla kardex (trg_kardex_*).
 -- Compra: outbox solo datos kardex; scom.subtotal2 se resuelve al procesar sync_outbox (Python).
 -- No hay triggers en comprasdbf, ventasi ni kardexd (evita duplicar con cabecera/detalle ERP).
@@ -277,74 +280,86 @@ DROP TRIGGER IF EXISTS trg_sprv_ad;
 DELIMITER $$
 CREATE TRIGGER trg_sinv_ai AFTER INSERT ON sinv FOR EACH ROW
 BEGIN
-  INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
-  VALUES (
-    'sinv',
-    'I',
-    CONCAT('{','\"id_inv\":',ms_json_int(NEW.id_inv),',','\"codigo\":',ms_json_str(NEW.codigo),'}'),
-    CONCAT('{','\"id_inv\":',ms_json_int(NEW.id_inv),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"descrip\":',ms_json_str(NEW.descrip),',','\"barra\":',ms_json_str(NEW.barra),',','\"existencia\":',ms_json_num(NEW.existencia),',','\"precio1\":',ms_json_num(NEW.precio1),',','\"ccate\":',ms_json_str(NEW.ccate),',','\"cod_prv\":',ms_json_str(NEW.cod_prv),',','\"activo\":',ms_json_str(NEW.activo),'}'),
-    NOW(3)
-  );
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'sinv',
+      'I',
+      CONCAT('{','\"id_inv\":',ms_json_int(NEW.id_inv),',','\"codigo\":',ms_json_str(NEW.codigo),'}'),
+      CONCAT('{','\"id_inv\":',ms_json_int(NEW.id_inv),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"descrip\":',ms_json_str(NEW.descrip),',','\"barra\":',ms_json_str(NEW.barra),',','\"existencia\":',ms_json_num(NEW.existencia),',','\"precio1\":',ms_json_num(NEW.precio1),',','\"ccate\":',ms_json_str(NEW.ccate),',','\"cod_prv\":',ms_json_str(NEW.cod_prv),',','\"activo\":',ms_json_str(NEW.activo),'}'),
+      NOW(3)
+    );
+  END IF;
 END$$
 
 CREATE TRIGGER trg_sinv_au AFTER UPDATE ON sinv FOR EACH ROW
 BEGIN
-  INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
-  VALUES (
-    'sinv',
-    'U',
-    CONCAT('{','\"id_inv\":',ms_json_int(NEW.id_inv),',','\"codigo\":',ms_json_str(NEW.codigo),'}'),
-    CONCAT('{','\"id_inv\":',ms_json_int(NEW.id_inv),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"descrip\":',ms_json_str(NEW.descrip),',','\"barra\":',ms_json_str(NEW.barra),',','\"existencia\":',ms_json_num(NEW.existencia),',','\"precio1\":',ms_json_num(NEW.precio1),',','\"ccate\":',ms_json_str(NEW.ccate),',','\"cod_prv\":',ms_json_str(NEW.cod_prv),',','\"activo\":',ms_json_str(NEW.activo),'}'),
-    NOW(3)
-  );
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'sinv',
+      'U',
+      CONCAT('{','\"id_inv\":',ms_json_int(NEW.id_inv),',','\"codigo\":',ms_json_str(NEW.codigo),'}'),
+      CONCAT('{','\"id_inv\":',ms_json_int(NEW.id_inv),',','\"codigo\":',ms_json_str(NEW.codigo),',','\"descrip\":',ms_json_str(NEW.descrip),',','\"barra\":',ms_json_str(NEW.barra),',','\"existencia\":',ms_json_num(NEW.existencia),',','\"precio1\":',ms_json_num(NEW.precio1),',','\"ccate\":',ms_json_str(NEW.ccate),',','\"cod_prv\":',ms_json_str(NEW.cod_prv),',','\"activo\":',ms_json_str(NEW.activo),'}'),
+      NOW(3)
+    );
+  END IF;
 END$$
 
 CREATE TRIGGER trg_sinv_ad AFTER DELETE ON sinv FOR EACH ROW
 BEGIN
-  INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
-  VALUES (
-    'sinv',
-    'D',
-    CONCAT('{','\"id_inv\":',ms_json_int(OLD.id_inv),',','\"codigo\":',ms_json_str(OLD.codigo),'}'),
-    CONCAT('{','\"id_inv\":',ms_json_int(OLD.id_inv),',','\"codigo\":',ms_json_str(OLD.codigo),',','\"descrip\":',ms_json_str(OLD.descrip),',','\"barra\":',ms_json_str(OLD.barra),',','\"existencia\":',ms_json_num(OLD.existencia),',','\"precio1\":',ms_json_num(OLD.precio1),',','\"ccate\":',ms_json_str(OLD.ccate),',','\"cod_prv\":',ms_json_str(OLD.cod_prv),',','\"activo\":',ms_json_str(OLD.activo),'}'),
-    NOW(3)
-  );
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'sinv',
+      'D',
+      CONCAT('{','\"id_inv\":',ms_json_int(OLD.id_inv),',','\"codigo\":',ms_json_str(OLD.codigo),'}'),
+      CONCAT('{','\"id_inv\":',ms_json_int(OLD.id_inv),',','\"codigo\":',ms_json_str(OLD.codigo),',','\"descrip\":',ms_json_str(OLD.descrip),',','\"barra\":',ms_json_str(OLD.barra),',','\"existencia\":',ms_json_num(OLD.existencia),',','\"precio1\":',ms_json_num(OLD.precio1),',','\"ccate\":',ms_json_str(OLD.ccate),',','\"cod_prv\":',ms_json_str(OLD.cod_prv),',','\"activo\":',ms_json_str(OLD.activo),'}'),
+      NOW(3)
+    );
+  END IF;
 END$$
 
 CREATE TRIGGER trg_sprv_ai AFTER INSERT ON sprv FOR EACH ROW
 BEGIN
-  INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
-  VALUES (
-    'sprv',
-    'I',
-    CONCAT('{','\"id_sprv\":',ms_json_int(NEW.id_sprv),',','\"cod_prv\":',ms_json_str(NEW.cod_prv),'}'),
-    CONCAT('{','\"id_sprv\":',ms_json_int(NEW.id_sprv),',','\"cod_prv\":',ms_json_str(NEW.cod_prv),',','\"nom_prv\":',ms_json_str(NEW.nom_prv),',','\"rif_prv\":',ms_json_str(NEW.rif_prv),',','\"nit_prv\":',ms_json_str(NEW.nit_prv),',','\"dir1_prv\":',ms_json_str(NEW.dir1_prv),',','\"tel_prv\":',ms_json_str(NEW.tel_prv),',','\"email1_prv\":',ms_json_str(NEW.email1_prv),',','\"tipo_prv\":',ms_json_str(NEW.tipo_prv),',','\"plazo1\":',ms_json_num(NEW.plazo1),',','\"plazo2\":',ms_json_num(NEW.plazo2),',','\"plazo3\":',ms_json_num(NEW.plazo3),'}'),
-    NOW(3)
-  );
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'sprv',
+      'I',
+      CONCAT('{','\"id_sprv\":',ms_json_int(NEW.id_sprv),',','\"cod_prv\":',ms_json_str(NEW.cod_prv),'}'),
+      CONCAT('{','\"id_sprv\":',ms_json_int(NEW.id_sprv),',','\"cod_prv\":',ms_json_str(NEW.cod_prv),',','\"nom_prv\":',ms_json_str(NEW.nom_prv),',','\"rif_prv\":',ms_json_str(NEW.rif_prv),',','\"nit_prv\":',ms_json_str(NEW.nit_prv),',','\"dir1_prv\":',ms_json_str(NEW.dir1_prv),',','\"tel_prv\":',ms_json_str(NEW.tel_prv),',','\"email1_prv\":',ms_json_str(NEW.email1_prv),',','\"tipo_prv\":',ms_json_str(NEW.tipo_prv),',','\"plazo1\":',ms_json_num(NEW.plazo1),',','\"plazo2\":',ms_json_num(NEW.plazo2),',','\"plazo3\":',ms_json_num(NEW.plazo3),'}'),
+      NOW(3)
+    );
+  END IF;
 END$$
 
 CREATE TRIGGER trg_sprv_au AFTER UPDATE ON sprv FOR EACH ROW
 BEGIN
-  INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
-  VALUES (
-    'sprv',
-    'U',
-    CONCAT('{','\"id_sprv\":',ms_json_int(NEW.id_sprv),',','\"cod_prv\":',ms_json_str(NEW.cod_prv),'}'),
-    CONCAT('{','\"id_sprv\":',ms_json_int(NEW.id_sprv),',','\"cod_prv\":',ms_json_str(NEW.cod_prv),',','\"nom_prv\":',ms_json_str(NEW.nom_prv),',','\"rif_prv\":',ms_json_str(NEW.rif_prv),',','\"nit_prv\":',ms_json_str(NEW.nit_prv),',','\"dir1_prv\":',ms_json_str(NEW.dir1_prv),',','\"tel_prv\":',ms_json_str(NEW.tel_prv),',','\"email1_prv\":',ms_json_str(NEW.email1_prv),',','\"tipo_prv\":',ms_json_str(NEW.tipo_prv),',','\"plazo1\":',ms_json_num(NEW.plazo1),',','\"plazo2\":',ms_json_num(NEW.plazo2),',','\"plazo3\":',ms_json_num(NEW.plazo3),'}'),
-    NOW(3)
-  );
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'sprv',
+      'U',
+      CONCAT('{','\"id_sprv\":',ms_json_int(NEW.id_sprv),',','\"cod_prv\":',ms_json_str(NEW.cod_prv),'}'),
+      CONCAT('{','\"id_sprv\":',ms_json_int(NEW.id_sprv),',','\"cod_prv\":',ms_json_str(NEW.cod_prv),',','\"nom_prv\":',ms_json_str(NEW.nom_prv),',','\"rif_prv\":',ms_json_str(NEW.rif_prv),',','\"nit_prv\":',ms_json_str(NEW.nit_prv),',','\"dir1_prv\":',ms_json_str(NEW.dir1_prv),',','\"tel_prv\":',ms_json_str(NEW.tel_prv),',','\"email1_prv\":',ms_json_str(NEW.email1_prv),',','\"tipo_prv\":',ms_json_str(NEW.tipo_prv),',','\"plazo1\":',ms_json_num(NEW.plazo1),',','\"plazo2\":',ms_json_num(NEW.plazo2),',','\"plazo3\":',ms_json_num(NEW.plazo3),'}'),
+      NOW(3)
+    );
+  END IF;
 END$$
 
 CREATE TRIGGER trg_sprv_ad AFTER DELETE ON sprv FOR EACH ROW
 BEGIN
-  INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
-  VALUES (
-    'sprv',
-    'D',
-    CONCAT('{','\"id_sprv\":',ms_json_int(OLD.id_sprv),',','\"cod_prv\":',ms_json_str(OLD.cod_prv),'}'),
-    CONCAT('{','\"id_sprv\":',ms_json_int(OLD.id_sprv),',','\"cod_prv\":',ms_json_str(OLD.cod_prv),',','\"nom_prv\":',ms_json_str(OLD.nom_prv),',','\"rif_prv\":',ms_json_str(OLD.rif_prv),',','\"nit_prv\":',ms_json_str(OLD.nit_prv),',','\"dir1_prv\":',ms_json_str(OLD.dir1_prv),',','\"tel_prv\":',ms_json_str(OLD.tel_prv),',','\"email1_prv\":',ms_json_str(OLD.email1_prv),',','\"tipo_prv\":',ms_json_str(OLD.tipo_prv),',','\"plazo1\":',ms_json_num(OLD.plazo1),',','\"plazo2\":',ms_json_num(OLD.plazo2),',','\"plazo3\":',ms_json_num(OLD.plazo3),'}'),
-    NOW(3)
-  );
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'sprv',
+      'D',
+      CONCAT('{','\"id_sprv\":',ms_json_int(OLD.id_sprv),',','\"cod_prv\":',ms_json_str(OLD.cod_prv),'}'),
+      CONCAT('{','\"id_sprv\":',ms_json_int(OLD.id_sprv),',','\"cod_prv\":',ms_json_str(OLD.cod_prv),',','\"nom_prv\":',ms_json_str(OLD.nom_prv),',','\"rif_prv\":',ms_json_str(OLD.rif_prv),',','\"nit_prv\":',ms_json_str(OLD.nit_prv),',','\"dir1_prv\":',ms_json_str(OLD.dir1_prv),',','\"tel_prv\":',ms_json_str(OLD.tel_prv),',','\"email1_prv\":',ms_json_str(OLD.email1_prv),',','\"tipo_prv\":',ms_json_str(OLD.tipo_prv),',','\"plazo1\":',ms_json_num(OLD.plazo1),',','\"plazo2\":',ms_json_num(OLD.plazo2),',','\"plazo3\":',ms_json_num(OLD.plazo3),'}'),
+      NOW(3)
+    );
+  END IF;
 END$$
 DELIMITER ;
 
@@ -536,37 +551,43 @@ DROP TRIGGER IF EXISTS trg_catego_ad;
 DELIMITER $$
 CREATE TRIGGER trg_catego_ai AFTER INSERT ON catego FOR EACH ROW
 BEGIN
-  INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
-  VALUES (
-    'catego',
-    'I',
-    CONCAT('{','\"ccate\":',ms_json_str(NEW.ccate),'}'),
-    CONCAT('{','\"ccate\":',ms_json_str(NEW.ccate),',','\"ncate\":',ms_json_str(NEW.ncate),',','\"pganancia\":',ms_json_num(NEW.pganancia),',','\"pdescu\":',ms_json_num(NEW.pdescu),'}'),
-    NOW(3)
-  );
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'catego',
+      'I',
+      CONCAT('{','\"ccate\":',ms_json_str(NEW.ccate),'}'),
+      CONCAT('{','\"ccate\":',ms_json_str(NEW.ccate),',','\"ncate\":',ms_json_str(NEW.ncate),',','\"pganancia\":',ms_json_num(NEW.pganancia),',','\"pdescu\":',ms_json_num(NEW.pdescu),'}'),
+      NOW(3)
+    );
+  END IF;
 END$$
 
 CREATE TRIGGER trg_catego_au AFTER UPDATE ON catego FOR EACH ROW
 BEGIN
-  INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
-  VALUES (
-    'catego',
-    'U',
-    CONCAT('{','\"ccate\":',ms_json_str(NEW.ccate),'}'),
-    CONCAT('{','\"ccate\":',ms_json_str(NEW.ccate),',','\"ncate\":',ms_json_str(NEW.ncate),',','\"pganancia\":',ms_json_num(NEW.pganancia),',','\"pdescu\":',ms_json_num(NEW.pdescu),'}'),
-    NOW(3)
-  );
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'catego',
+      'U',
+      CONCAT('{','\"ccate\":',ms_json_str(NEW.ccate),'}'),
+      CONCAT('{','\"ccate\":',ms_json_str(NEW.ccate),',','\"ncate\":',ms_json_str(NEW.ncate),',','\"pganancia\":',ms_json_num(NEW.pganancia),',','\"pdescu\":',ms_json_num(NEW.pdescu),'}'),
+      NOW(3)
+    );
+  END IF;
 END$$
 
 CREATE TRIGGER trg_catego_ad AFTER DELETE ON catego FOR EACH ROW
 BEGIN
-  INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
-  VALUES (
-    'catego',
-    'D',
-    CONCAT('{','\"ccate\":',ms_json_str(OLD.ccate),'}'),
-    CONCAT('{','\"ccate\":',ms_json_str(OLD.ccate),',','\"ncate\":',ms_json_str(OLD.ncate),',','\"pganancia\":',ms_json_num(OLD.pganancia),',','\"pdescu\":',ms_json_num(OLD.pdescu),'}'),
-    NOW(3)
-  );
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    INSERT INTO sync_outbox(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'catego',
+      'D',
+      CONCAT('{','\"ccate\":',ms_json_str(OLD.ccate),'}'),
+      CONCAT('{','\"ccate\":',ms_json_str(OLD.ccate),',','\"ncate\":',ms_json_str(OLD.ncate),',','\"pganancia\":',ms_json_num(OLD.pganancia),',','\"pdescu\":',ms_json_num(OLD.pdescu),'}'),
+      NOW(3)
+    );
+  END IF;
 END$$
 DELIMITER ;

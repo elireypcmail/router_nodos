@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from db.mysql import MySqlClient
+from db.outbox_suppress import hub_origin_write
 
 
 def chunked(values: list[str], size: int) -> list[list[str]]:
@@ -95,9 +96,10 @@ def run_pull_with_compare(
             conn = mysql.connect()
             try:
                 cur = conn.cursor()
-                for row in to_insert:
-                    insert_row(cur, row)
-                    inserted += 1
+                with hub_origin_write(cur):
+                    for row in to_insert:
+                        insert_row(cur, row)
+                        inserted += 1
                 conn.commit()
             except Exception:
                 conn.rollback()

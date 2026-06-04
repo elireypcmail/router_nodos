@@ -4,6 +4,7 @@ from typing import Any
 
 from core.categoria_trace import trace, trace_exc
 from db.mysql import MySqlClient
+from db.outbox_suppress import hub_origin_write
 from db.sinv_store import delete_sinv, prepare_sinv_upsert, upsert_sinv
 from db.sprv_store import delete_sprv, upsert_sprv
 from sync.store import SyncEvent
@@ -60,26 +61,27 @@ class SyncApplier:
         conn = self._mysql.connect()
         try:
             cur = conn.cursor()
-            for item in items:
-                if not isinstance(item, dict):
-                    raise RuntimeError("each item must be an object")
-                ccate = str(item.get("ccate") or "").strip()
-                ncate = str(item.get("ncate") or "").strip()
-                if not ccate or not ncate:
-                    raise RuntimeError("category requires ccate and ncate")
+            with hub_origin_write(cur):
+                for item in items:
+                    if not isinstance(item, dict):
+                        raise RuntimeError("each item must be an object")
+                    ccate = str(item.get("ccate") or "").strip()
+                    ncate = str(item.get("ncate") or "").strip()
+                    if not ccate or not ncate:
+                        raise RuntimeError("category requires ccate and ncate")
 
-                trace("worker.apply.row", event_id=event.event_id, ccate=ccate, action=event.action)
-                if event.action == "upsert":
-                    cur.execute(
-                        """
-                        INSERT INTO catego (ccate, ncate)
-                        VALUES (%s, %s)
-                        ON DUPLICATE KEY UPDATE ncate = VALUES(ncate)
-                        """,
-                        (ccate, ncate),
-                    )
-                elif event.action == "delete":
-                    cur.execute("DELETE FROM catego WHERE ccate = %s", (ccate,))
+                    trace("worker.apply.row", event_id=event.event_id, ccate=ccate, action=event.action)
+                    if event.action == "upsert":
+                        cur.execute(
+                            """
+                            INSERT INTO catego (ccate, ncate)
+                            VALUES (%s, %s)
+                            ON DUPLICATE KEY UPDATE ncate = VALUES(ncate)
+                            """,
+                            (ccate, ncate),
+                        )
+                    elif event.action == "delete":
+                        cur.execute("DELETE FROM catego WHERE ccate = %s", (ccate,))
 
             conn.commit()
             trace("worker.apply.done", event_id=event.event_id)
@@ -105,10 +107,11 @@ class SyncApplier:
         conn = self._mysql.connect()
         try:
             cur = conn.cursor()
-            if event.action == "delete":
-                delete_sprv(cur, cod_prv)
-            else:
-                upsert_sprv(cur, row)
+            with hub_origin_write(cur):
+                if event.action == "delete":
+                    delete_sprv(cur, cod_prv)
+                else:
+                    upsert_sprv(cur, row)
             conn.commit()
         except Exception:
             conn.rollback()
@@ -131,10 +134,11 @@ class SyncApplier:
         conn = self._mysql.connect()
         try:
             cur = conn.cursor()
-            if event.action == "delete":
-                delete_sinv(cur, codigo)
-            else:
-                upsert_sinv(cur, prepare_sinv_upsert(row))
+            with hub_origin_write(cur):
+                if event.action == "delete":
+                    delete_sinv(cur, codigo)
+                else:
+                    upsert_sinv(cur, prepare_sinv_upsert(row))
             conn.commit()
         except Exception:
             conn.rollback()

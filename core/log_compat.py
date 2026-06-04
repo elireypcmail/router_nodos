@@ -75,8 +75,11 @@ def configure_node_logging(*, logger_names: tuple[str, ...] = ()) -> None:
     ascii_filter = AsciiSafeLogFilter()
     if ascii_filter not in root.filters:
         root.addFilter(ascii_filter)
+    huey_level_name = os.getenv("HUEY_LOG_LEVEL", "WARNING").upper()
+    huey_level = getattr(logging, huey_level_name, logging.WARNING)
+
     for name in (*_DEFAULT_LOGGER_NAMES, *logger_names):
         log = logging.getLogger(name)
-        log.setLevel(level)
+        log.setLevel(huey_level if name == "huey" else level)
         if ascii_filter not in log.filters:
             log.addFilter(ascii_filter)
