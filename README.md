@@ -1,87 +1,47 @@
 # Multishop Nodo API
 
-Nodo local de Multishop (FastAPI/Python) para operar con una **BD MySQL local** y sincronizarse con el **Hub/Orquestador**.
+Nodo local de Multishop (FastAPI/Python) para operar con una **BD MySQL local**.
 
-Este proyecto implementa un modelo híbrido:
-
-- **Sync entrante (Hub -> Nodo)**: cola FIFO persistente (SQLite) para aplicar eventos en orden y con idempotencia.
-- **CDC / Sync saliente (Nodo -> Hub)**: patrón **Outbox** en MySQL + **triggers** para registrar cambios locales y enviarlos al hub.
-- **Envío resiliente (opcional)**: **Huey** con backend SQLite para reintentos persistentes cuando haya fallas de conectividad.
-- **Conectividad (opcional)**: WireGuard (VPN) o red normal, dependiendo del provisioning.
-
-La guía completa y detallada está en:
-
-- `doc/doc.md`
-- **[Integración con el hub](../docs/nodo-integracion-hub.md)** — URLs, Bearer, `/api/nodo/events` (compras/ventas/kardex), `/api/sync/events` (push del hub)
+Este fork está enfocado en una **superficie mínima**: el hub accede al nodo por red privada (VPN o red interna) para lectura/escritura controlada de maestros y lectura de transaccional.
 
 ---
 
 ## Tabla de contenido
 
 - [Características](#características)
-- [Arquitectura (resumen)](#arquitectura-resumen)
+- [Alcance del fork](#alcance-del-fork)
 - [Estructura del proyecto](#estructura-del-proyecto)
 - [Requisitos](#requisitos)
-- [Configuración (.env)](#configuración-env)
+- [Configuración (env.txt/.env)](#configuración-envtxtenv)
 - [Instalación](#instalación)
   - [Windows (modo pro)](#windows-modo-pro)
   - [Linux](#linux)
 - [Ejecución](#ejecución)
   - [Arrancar API](#arrancar-api)
-  - [Huey consumer (opcional, recomendado)](#huey-consumer-opcional-recomendado)
-- [Triggers / Outbox (CDC)](#triggers--outbox-cdc)
 - [Notas sobre WireGuard vs red normal](#notas-sobre-wireguard-vs-red-normal)
 - [Verificación y troubleshooting](#verificación-y-troubleshooting)
 - [Seguridad](#seguridad)
 
 ---
 
-## Características
+## Alcance del fork
 
-- Sync entrante persistente (FIFO) para aplicar eventos del hub sin perder orden.
-- Outbox + triggers en MySQL para detectar cambios en tablas clave.
-- Envío de outbox al hub en batches.
-- Huey opcional para reintentos persistentes de envío (ideal si la conectividad es intermitente).
-- Instaladores para Windows y Linux.
+Este nodo expone únicamente una API privada para que el hub pueda:
+
+- consultar estado (`health`)
+- operar maestros (categorías, proveedores, inventario) con CRU
+  - **DELETE no está permitido** (responde `405`)
+- consultar transaccional (compras, ventas, movimientos, lotes) en modo lectura
 
 ---
 
-## Arquitectura (resumen)
+## API (resumen)
 
-### 1) Hub -> Nodo (push)
+Rutas montadas desde `main.py` (ver `routes/`):
 
-- Endpoint del nodo: `POST /api/sync/events`
-- El nodo encola eventos en SQLite (persistente) y los aplica en orden por `sequence`.
-
-Componentes:
-
-- `sync/store.py` (SQLite)
-- `sync/worker.py`
-- `sync/apply.py`
-- `routes/sync.py`
-
-### 2) Nodo -> Hub (CDC / push)
-
-- Triggers en MySQL generan filas en `sync_outbox` ante cambios en tablas monitoreadas.
-- Un worker drena `sync_outbox` y envía eventos al hub.
-
-Componentes:
-
-- `scripts/mysql_outbox_triggers.sql`
-- `outbox/mysql.py`
-- `outbox/worker.py`
-- `hub/client.py`
-
-### 3) Envío resiliente con Huey (opcional)
-
-- Huey reserva eventos `pending -> processing`.
-- Si el envío falla, repone a `pending` e incrementa `attempts`.
-- Un scheduler auto-programa el enqueue cada `HUEY_OUTBOX_ENQUEUE_INTERVAL_SECONDS`.
-
-Componentes:
-
-- `workers/huey_app.py` (shim raíz: `huey_app.py`)
-- `workers/huey_tasks.py` (consumer: `huey_tasks.huey` en raíz)
+- `GET /api/health`
+- `GET/POST/PATCH` de maestros (según recurso)
+- `GET` transaccional
 
 ---
 
@@ -90,7 +50,7 @@ Componentes:
 Layout por dominio: ver [docs/arquitectura-python.md](docs/arquitectura-python.md).
 
 - `main.py`: entry point de la API
-- `core/`, `db/`, `hub/`, `outbox/`, `catalog/`, `sync/`, `workers/`: lógica de negocio
+- `core/`, `db/`: lógica de negocio
 - `routes/`: endpoints FastAPI
 - `scripts/`: instaladores y utilidades
   - Windows:
@@ -102,7 +62,7 @@ Layout por dominio: ver [docs/arquitectura-python.md](docs/arquitectura-python.m
   - Linux:
     - `install-linux.sh`
   - DB:
-    - `mysql_outbox_triggers.sql`
+    - `mysql_schema.sql`
 
 ---
 
@@ -127,7 +87,7 @@ Layout por dominio: ver [docs/arquitectura-python.md](docs/arquitectura-python.m
 
 ---
 
-## Configuración (.env)
+## Configuración (env.txt/.env)
 
 Este servicio soporta configuración desde:
 
@@ -140,9 +100,7 @@ En local, puedes usar cualquiera. Si quieres ejecutar exportando variables en tu
 NODO_NOMBRE="Tienda Ejemplo"
 ```
 
-### `.env` mínimo recomendado (dev / fork-router)
-
-> Nota: en el fork-router el objetivo es superficie mínima; por defecto deja **deshabilitados** workers de sync/hub/outbox/huey.
+### `env.txt` mínimo recomendado (dev / fork-router)
 
 ```env
 # Identidad del nodo
@@ -164,7 +122,7 @@ NODO_ALLOW_INSECURE=true
 NODO_SSL_CERTFILE=
 NODO_SSL_KEYFILE=
 
-# Workers fuera de scope (fork-router)
+# Features fuera de alcance (fork-router)
 SYNC_WORKER_ENABLED=false
 HUB_PULL_ENABLED=false
 HUB_PUSH_ENABLED=false
@@ -211,11 +169,9 @@ Recomendado: ejecutar como **Administrador**.
 3. El instalador:
    - verifica/instala Python 3.10+ (automático vía `winget` si falta)
    - crea `venv` e instala `requirements.txt`
-   - configura `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser` (scripts del venv, Huey, `Activate.ps1`)
+   - configura `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser` (scripts del venv)
    - WireGuard (opcional): si hay `wg0.conf`, instala/levanta túnel como servicio
-   - triggers/outbox:
-     - primero intenta Docker (`mysql56-app`)
-     - si no, intenta MySQL local/remoto usando `MYSQL_*` del `.env`
+   - valida MySQL local/remoto usando `MYSQL_*` del `env.txt`/`.env`
    - registra autostart de la API (tareas programadas + carpeta Inicio)
 
 Desinstalación:
@@ -242,9 +198,7 @@ Opcional (más reglas de estilo): módulo [PSScriptAnalyzer](https://github.com/
 2. El instalador:
    - WireGuard (opcional): levanta `wg0` si existe `wg0.conf` y `wg` está instalado
    - copia `env.txt` si existe
-   - triggers/outbox:
-     - intenta Docker si existe `mysql56-app`
-     - si no, intenta MySQL local/remoto con `mysql` usando `MYSQL_*` del `env.txt`/`.env`
+   - valida MySQL local/remoto con `mysql` usando `MYSQL_*` del `env.txt`/`.env`
    - crea `venv` e instala dependencias
 
 ---
@@ -264,38 +218,6 @@ Opcional (más reglas de estilo): módulo [PSScriptAnalyzer](https://github.com/
 ```bash
 ./venv/bin/python main.py
 ```
-
-### Huey consumer (opcional, recomendado)
-
-Huey corre en un proceso separado a la API.
-
-- Windows:
-
-```powershell
-.\venv\Scripts\python -m huey.bin.huey_consumer huey_tasks.huey
-```
-
-- Linux:
-
-```bash
-./venv/bin/python -m huey.bin.huey_consumer huey_tasks.huey
-```
-
----
-
-## Triggers / Outbox (CDC)
-
-El archivo `scripts/mysql_outbox_triggers.sql`:
-
-- crea la tabla `sync_outbox`
-- instala triggers en tablas monitoreadas (inventario, proveedores y transaccional)
-
-Notas:
-
-- Para MySQL local/remoto, el usuario de MySQL debe poder crear triggers.
-- En Windows el instalador valida conectividad antes de aplicar el SQL.
-
----
 
 ## Notas sobre WireGuard vs red normal
 
@@ -328,29 +250,9 @@ curl http://127.0.0.1:<NODO_PORT>/api/health
 curl http://127.0.0.1:<NODO_PORT>/api/health -H "Authorization: Bearer <NODO_API_TOKEN>"
 ```
 
-### La API se cierra al recibir `POST /api/sync/events` (Windows)
+### La API se cierra al recibir requests no esperados (Windows)
 
-Síntoma: el log llega a `sync.events.categoria.mysql.start` y vuelve el prompt sin traceback.
-
-Causa habitual: driver MySQL nativo inestable en hilos. Este proyecto usa **PyMySQL** (`pip install -r requirements.txt`).
-
-En la tienda:
-
-```powershell
-cd "C:\Program Files\Multishop\nodo"   # o tu ruta
-.\venv\Scripts\pip.exe uninstall -y mysql-connector-python
-.\venv\Scripts\pip.exe install -r requirements.txt
-```
-
-Reinicia la API (`python main.py` o tarea programada).
-
-### Si fallan triggers/outbox
-
-- Verifica `.env`:
-  - `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`
-- Verifica permisos MySQL:
-  - `CREATE TRIGGER`, `DROP TRIGGER`, `CREATE`
-- Si tu MySQL es local/remoto y estás en Linux, asegúrate de tener `mysql` client instalado.
+Este fork expone únicamente las rutas descritas arriba. Si ves referencias a rutas distintas, verifica que estés ejecutando este repositorio y no una variante anterior.
 
 ---
 
