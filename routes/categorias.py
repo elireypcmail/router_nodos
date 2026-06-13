@@ -2,11 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 import anyio
 
-from categories_models import CategoriaUpsertRequest
+from categories_models import CategoriaCreateRequest, CategoriaPatchRequest
 from core.categoria_trace import trace, trace_exc, trace_warn
 from core.config import settings
 from db.mysql import MySqlClient
-from hub.client import HubClient
 from middleware.auth import verify_bearer
 
 router = APIRouter(prefix="/api/categorias", tags=["categorias"])
@@ -16,7 +15,7 @@ def _list_categorias(search: str, limit: int) -> list[dict]:
     trace("mysql.list.start", search=search, limit=limit)
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
 
     q = search.strip()
     like = f"%{q}%"
@@ -45,7 +44,7 @@ def _get_categoria(ccate: str) -> dict | None:
     trace("mysql.get.start", ccate=ccate)
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
 
     conn = mysql.connect()
     try:
@@ -66,9 +65,9 @@ def _get_categoria(ccate: str) -> dict | None:
         conn.close()
 
 
-def _upsert_categoria(body: CategoriaUpsertRequest) -> None:
+def _create_categoria(body: CategoriaCreateRequest) -> None:
     trace(
-        "mysql.upsert.start",
+        "mysql.create.start",
         ccate=body.ccate,
         ncate=body.ncate,
         pganancia=body.pganancia,
@@ -76,7 +75,7 @@ def _upsert_categoria(body: CategoriaUpsertRequest) -> None:
     )
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
 
     conn = mysql.connect()
     try:
@@ -85,10 +84,6 @@ def _upsert_categoria(body: CategoriaUpsertRequest) -> None:
             """
             INSERT INTO catego (ccate, ncate, pganancia, pdescu)
             VALUES (%s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-              ncate = VALUES(ncate),
-              pganancia = VALUES(pganancia),
-              pdescu = VALUES(pdescu)
             """,
             (
                 body.ccate.strip(),
@@ -98,10 +93,52 @@ def _upsert_categoria(body: CategoriaUpsertRequest) -> None:
             ),
         )
         conn.commit()
-        trace("mysql.upsert.done", ccate=body.ccate)
+        trace("mysql.create.done", ccate=body.ccate)
     except Exception as exc:
         conn.rollback()
-        trace_exc("mysql.upsert.failed", exc, ccate=body.ccate)
+        trace_exc("mysql.create.failed", exc, ccate=body.ccate)
+        raise
+    finally:
+        conn.close()
+
+
+def _update_categoria(ccate: str, body: CategoriaPatchRequest) -> int:
+    trace(
+        "mysql.update.start",
+        ccate=ccate,
+        ncate=body.ncate,
+        pganancia=body.pganancia,
+        pdescu=body.pdescu,
+    )
+    mysql = MySqlClient()
+    if not mysql.is_configured():
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
+
+    conn = mysql.connect()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE catego
+            SET ncate = %s,
+                pganancia = %s,
+                pdescu = %s
+            WHERE ccate = %s
+            """,
+            (
+                body.ncate.strip(),
+                body.pganancia,
+                body.pdescu,
+                ccate,
+            ),
+        )
+        conn.commit()
+        updated = int(cur.rowcount or 0)
+        trace("mysql.update.done", ccate=ccate, rowcount=updated)
+        return updated
+    except Exception as exc:
+        conn.rollback()
+        trace_exc("mysql.update.failed", exc, ccate=ccate)
         raise
     finally:
         conn.close()
@@ -111,7 +148,7 @@ def _delete_categoria(ccate: str) -> int:
     trace("mysql.delete.start", ccate=ccate)
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
 
     conn = mysql.connect()
     try:
@@ -158,92 +195,53 @@ async def get_categoria(ccate: str, _: None = Depends(verify_bearer)):
 
 
 @router.post("")
-async def upsert_categoria(
-    body: CategoriaUpsertRequest,
-    confirmar_hub: bool = Query(
-        False,
-        description="Si ccate ya existe en el hub, confirmar guardado en MySQL local y sync al hub",
-    ),
+async def create_categoria(body: CategoriaCreateRequest, _: None = Depends(verify_bearer)):
+    trace("rest.create.start", ccate=body.ccate, ncate=body.ncate)
+    local_item = await anyio.to_thread.run_sync(lambda: _get_categoria(body.ccate))
+    if local_item is not None:
+        trace_warn("rest.create.conflict", ccate=body.ccate)
+        raise HTTPException(status_code=409, detail="Category already exists")
+
+    payload = body.model_copy()
+    if payload.pganancia is None:
+        payload.pganancia = 0
+    if payload.pdescu is None:
+        payload.pdescu = 0
+
+    await anyio.to_thread.run_sync(lambda: _create_categoria(payload))
+    item = await anyio.to_thread.run_sync(lambda: _get_categoria(body.ccate))
+    trace("rest.create.done", ccate=body.ccate)
+    return {"nodo_id": settings.nodo_id, "item": item, "message": "ok"}
+
+
+@router.patch("/{ccate}")
+async def patch_categoria(
+    ccate: str,
+    body: CategoriaPatchRequest,
     _: None = Depends(verify_bearer),
 ):
-    trace("rest.upsert.start", ccate=body.ccate, ncate=body.ncate, confirmar_hub=confirmar_hub)
-    local_item = await anyio.to_thread.run_sync(lambda: _get_categoria(body.ccate))
-    is_new_local = local_item is None
+    trace("rest.patch.start", ccate=ccate)
+    local_item = await anyio.to_thread.run_sync(lambda: _get_categoria(ccate))
+    if local_item is None:
+        trace_warn("rest.patch.not_found", ccate=ccate)
+        raise HTTPException(status_code=404, detail="Category not found")
 
-    hub: HubClient | None = None
-    if settings.hub_base_url:
-        try:
-            hub = HubClient()
-        except Exception as exc:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Could not initialize hub client: {exc}",
-            ) from exc
+    payload = body.model_copy()
+    if payload.pganancia is None:
+        payload.pganancia = float(local_item.get("pganancia") or 0)
+    if payload.pdescu is None:
+        payload.pdescu = float(local_item.get("pdescu") or 0)
 
-    hub_item: dict | None = None
-    if hub is not None:
-        trace(
-            "rest.upsert.hub_check.start",
-            ccate=body.ccate,
-            is_new_local=is_new_local,
-        )
-        try:
-            hub_item = await hub.get_categoria_in_hub(body.ccate)
-        except Exception as exc:
-            trace_exc("rest.upsert.hub_check.failed", exc, ccate=body.ccate)
-            raise HTTPException(
-                status_code=503,
-                detail=f"Could not query hub before save: {exc}",
-            ) from exc
-        if hub_item is not None and is_new_local and not confirmar_hub:
-            trace_warn("rest.upsert.hub_check.blocked", ccate=body.ccate)
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "categoria_existe_en_hub",
-                    "message": (
-                        "Code already exists in hub with no local row. "
-                        "Retry with confirmar_hub=true to create in MySQL and align with hub."
-                    ),
-                    "ccate": body.ccate,
-                    "hub": hub_item,
-                },
-            )
-        trace(
-            "rest.upsert.hub_check.ok",
-            ccate=body.ccate,
-            exists_in_hub=hub_item is not None,
-            is_new_local=is_new_local,
-        )
+    updated = await anyio.to_thread.run_sync(lambda: _update_categoria(ccate, payload))
+    if updated == 0:
+        trace_warn("rest.patch.not_found_after_update", ccate=ccate)
+        raise HTTPException(status_code=404, detail="Category not found")
 
-    await anyio.to_thread.run_sync(lambda: _upsert_categoria(body))
-
-    if hub is not None:
-        try:
-            trace("rest.upsert.hub_push.start", ccate=body.ccate)
-            await hub.create_categoria_in_hub(body.model_dump())
-            trace("rest.upsert.hub_push.done", ccate=body.ccate)
-        except Exception as exc:
-            trace_warn(
-                "rest.upsert.hub_push.failed",
-                ccate=body.ccate,
-                error=str(exc),
-                error_type=exc.__class__.__name__,
-            )
-    else:
-        trace("rest.upsert.hub_push.skipped", reason="HUB_BASE_URL empty")
-
-    item = await anyio.to_thread.run_sync(lambda: _get_categoria(body.ccate))
-    trace("rest.upsert.done", ccate=body.ccate)
+    item = await anyio.to_thread.run_sync(lambda: _get_categoria(ccate))
+    trace("rest.patch.done", ccate=ccate)
     return {"nodo_id": settings.nodo_id, "item": item, "message": "ok"}
 
 
 @router.delete("/{ccate}")
 async def delete_categoria(ccate: str, _: None = Depends(verify_bearer)):
-    trace("rest.delete.start", ccate=ccate)
-    deleted = await anyio.to_thread.run_sync(lambda: _delete_categoria(ccate))
-    if deleted == 0:
-        trace_warn("rest.delete.not_found", ccate=ccate)
-        raise HTTPException(status_code=404, detail="Category not found")
-    trace("rest.delete.done", ccate=ccate)
-    return {"nodo_id": settings.nodo_id, "deleted": True}
+    raise HTTPException(status_code=405, detail="Method Not Allowed")

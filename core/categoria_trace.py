@@ -1,4 +1,4 @@
-"""Unified category flow traces (REST, sync push/pull, hub, worker)."""
+"""Unified category flow traces (REST)."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ def is_categoria_entity(entity: str) -> bool:
 
 
 def is_categoria_http_path(path: str) -> bool:
-    """Category REST/sync paths. Excludes generic /api/sync/events."""
+    """Category REST paths."""
     p = (path or "").lower()
     return "/categorias" in p
 

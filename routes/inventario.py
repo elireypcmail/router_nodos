@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 import anyio
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from core.config import settings
 from db.mysql import MySqlClient
@@ -9,6 +9,43 @@ from db.sinv_store import delete_sinv, upsert_sinv
 from middleware.auth import verify_bearer
 
 router = APIRouter(prefix="/api", tags=["inventario"])
+
+
+class InventarioCreateRequest(BaseModel):
+    codigo: str = Field(min_length=1, max_length=30, pattern=r"^[A-Za-z0-9]+$")
+    descrip: str = Field(min_length=1, max_length=240)
+    ccate: str = Field(min_length=1, max_length=10, pattern=r"^\d+$")
+    cod_prv: str = Field(min_length=1, max_length=30, pattern=r"^\d+$")
+    precio1: float = Field(ge=0)
+    pg1: float = Field(ge=0)
+    barra: str = Field(min_length=0, max_length=30)
+    referencia: str = Field(min_length=0, max_length=15)
+    componente: str = Field(min_length=0, max_length=240)
+    stockmin: float = Field(ge=0)
+    stockmax: float = Field(ge=0)
+    recipe: int = Field(ge=0, le=1)
+    cfrio: int = Field(ge=0, le=1)
+    activo: int = Field(ge=0, le=1)
+    porvg: float | None = Field(default=None, ge=0)
+    existencia: float | None = Field(default=None, ge=0)
+    costo: float | None = Field(default=None, ge=0)
+
+
+class InventarioPatchRequest(BaseModel):
+    descrip: str = Field(min_length=1, max_length=240)
+    ccate: str = Field(min_length=1, max_length=10, pattern=r"^\d+$")
+    cod_prv: str = Field(min_length=1, max_length=30, pattern=r"^\d+$")
+    precio1: float | None = Field(default=None, ge=0)
+    pg1: float = Field(ge=0)
+    barra: str = Field(min_length=0, max_length=30)
+    referencia: str = Field(min_length=0, max_length=15)
+    componente: str = Field(min_length=0, max_length=240)
+    stockmin: float = Field(ge=0)
+    stockmax: float = Field(ge=0)
+    recipe: int = Field(ge=0, le=1)
+    cfrio: int = Field(ge=0, le=1)
+    activo: int = Field(ge=0, le=1)
+    porvg: float | None = Field(default=None, ge=0)
 
 
 class InventarioUpsertRequest(BaseModel):
@@ -26,7 +63,14 @@ class InventarioUpsertRequest(BaseModel):
     recipe: int | None = None
     cfrio: int | None = None
     activo: int | None = None
+    porvg: float | None = None
     existencia: float | None = None
+    costo: float | None = None
+
+
+def _fk_exists(cur, table: str, col: str, value: str) -> bool:
+    cur.execute(f"SELECT 1 FROM {table} WHERE {col} = %s LIMIT 1", (value,))
+    return cur.fetchone() is not None
 
 
 def _catalog_like(term: str) -> str:
@@ -42,7 +86,7 @@ def _fetch_inventario(
 ) -> tuple[list[dict], int]:
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
 
     q = search.strip()
     c = codigo.strip()
@@ -126,7 +170,7 @@ def _fetch_inventario(
 def _get_item(codigo: str) -> dict | None:
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
 
     conn = mysql.connect()
     try:
@@ -182,7 +226,7 @@ def _get_item(codigo: str) -> dict | None:
 def _fetch_lotes(codigo: str) -> list[dict]:
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
 
     conn = mysql.connect()
     try:
@@ -236,7 +280,7 @@ def _get_detalle_tienda(codigo: str) -> dict | None:
 def _upsert_item(body: InventarioUpsertRequest) -> None:
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
 
     codigo = (body.codigo or "").strip()
     if not codigo:
@@ -258,7 +302,7 @@ def _upsert_item(body: InventarioUpsertRequest) -> None:
 def _delete_item(codigo: str) -> int:
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
 
     conn = mysql.connect()
     try:
@@ -325,15 +369,80 @@ async def get_inventario_item(codigo: str, _: None = Depends(verify_bearer)):
 
 
 @router.post("/inventario")
-async def upsert_inventario_item(body: InventarioUpsertRequest, _: None = Depends(verify_bearer)):
-    await anyio.to_thread.run_sync(lambda: _upsert_item(body))
+async def create_inventario_item(body: InventarioCreateRequest, _: None = Depends(verify_bearer)):
+    existing = await anyio.to_thread.run_sync(lambda: _get_item(body.codigo))
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="Item already exists")
+
+    def _create_with_fk_check() -> None:
+        mysql = MySqlClient()
+        if not mysql.is_configured():
+            raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
+        conn = mysql.connect()
+        try:
+            cur = conn.cursor()
+            if not _fk_exists(cur, "catego", "ccate", body.ccate):
+                raise HTTPException(status_code=422, detail="Invalid ccate")
+            if not _fk_exists(cur, "sprv", "cod_prv", body.cod_prv):
+                raise HTTPException(status_code=422, detail="Invalid cod_prv")
+            payload = body.model_dump(exclude_unset=True)
+            if payload.get("existencia") and not payload.get("costo"):
+                raise HTTPException(status_code=422, detail="costo required when existencia > 0")
+            upsert_sinv(cur, payload, patch_keys=set(payload.keys()))
+            conn.commit()
+        except HTTPException:
+            conn.rollback()
+            raise
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    await anyio.to_thread.run_sync(_create_with_fk_check)
     item = await anyio.to_thread.run_sync(lambda: _get_item(body.codigo))
+    return {"nodo_id": settings.nodo_id, "item": item, "message": "ok"}
+
+
+@router.patch("/inventario/{codigo}")
+async def patch_inventario_item(
+    codigo: str,
+    body: InventarioPatchRequest,
+    _: None = Depends(verify_bearer),
+):
+    existing = await anyio.to_thread.run_sync(lambda: _get_item(codigo))
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    def _patch_with_fk_check() -> None:
+        mysql = MySqlClient()
+        if not mysql.is_configured():
+            raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
+        conn = mysql.connect()
+        try:
+            cur = conn.cursor()
+            if not _fk_exists(cur, "catego", "ccate", body.ccate):
+                raise HTTPException(status_code=422, detail="Invalid ccate")
+            if not _fk_exists(cur, "sprv", "cod_prv", body.cod_prv):
+                raise HTTPException(status_code=422, detail="Invalid cod_prv")
+            payload = body.model_dump(exclude_unset=True)
+            payload["codigo"] = codigo
+            upsert_sinv(cur, payload, patch_keys=set(payload.keys()))
+            conn.commit()
+        except HTTPException:
+            conn.rollback()
+            raise
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    await anyio.to_thread.run_sync(_patch_with_fk_check)
+    item = await anyio.to_thread.run_sync(lambda: _get_item(codigo))
     return {"nodo_id": settings.nodo_id, "item": item, "message": "ok"}
 
 
 @router.delete("/inventario/{codigo}")
 async def delete_inventario_item(codigo: str, _: None = Depends(verify_bearer)):
-    deleted = await anyio.to_thread.run_sync(lambda: _delete_item(codigo))
-    if deleted == 0:
-        raise HTTPException(status_code=404, detail="Item not found")
-    return {"nodo_id": settings.nodo_id, "deleted": True}
+    raise HTTPException(status_code=405, detail="Method Not Allowed")

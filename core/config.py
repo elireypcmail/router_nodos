@@ -2,14 +2,22 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Siempre .env en la raíz de Multishop-nodo-API (no depende del cwd al ejecutar scripts).
 _ROOT_DIR = Path(__file__).resolve().parent.parent
-_ENV_FILE = _ROOT_DIR / ".env"
+_ENV_TXT_FILE = _ROOT_DIR / "env.txt"
+_DOTENV_FILE = _ROOT_DIR / ".env"
+
+
+def _pick_env_file() -> Path | None:
+    if _ENV_TXT_FILE.is_file():
+        return _ENV_TXT_FILE
+    if _DOTENV_FILE.is_file():
+        return _DOTENV_FILE
+    return None
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=_ENV_FILE if _ENV_FILE.is_file() else None,
+        env_file=_pick_env_file(),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -28,7 +36,7 @@ class Settings(BaseSettings):
     nodo_allow_insecure: bool = True
 
     sync_db_path: str = "./data/sync.sqlite"
-    sync_worker_enabled: bool = True
+    sync_worker_enabled: bool = False
     sync_worker_poll_interval_seconds: float = 0.5
 
     hub_base_url: str = ""
@@ -71,7 +79,7 @@ class Settings(BaseSettings):
 
     nodo_sync_jobs_dir: str = "./data/sync-jobs"
     catalog_sync_progress_throttle_ms: int = 2000
-    huey_catalog_sync_enabled: bool = True
+    huey_catalog_sync_enabled: bool = False
 
     mysql_host: str = ""
     mysql_port: int = 3306

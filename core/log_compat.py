@@ -8,7 +8,7 @@ import sys
 from typing import Any
 
 # Shared runtime error strings (English, ASCII only).
-MYSQL_NOT_CONFIGURED = "Node MySQL not configured (set MYSQL_* in .env)"
+MYSQL_NOT_CONFIGURED = "Node MySQL not configured (set MYSQL_* in env.txt/.env)"
 SYNC_STORE_NOT_INIT = "sync_store not initialized"
 OUTBOX_REPO_NOT_INIT = "outbox_repo not initialized"
 HUB_BASE_URL_NOT_SET = "HUB_BASE_URL not set"

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 import anyio
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from core.config import settings
 from db.mysql import MySqlClient
@@ -9,6 +9,21 @@ from db.sprv_store import delete_sprv, upsert_sprv
 from middleware.auth import verify_bearer
 
 router = APIRouter(prefix="/api", tags=["proveedores"])
+
+
+class ProveedorCreateRequest(BaseModel):
+    cod_prv: str = Field(min_length=1, max_length=10, pattern=r"^\d+$")
+    nom_prv: str = Field(min_length=1, max_length=240)
+    rif_prv: str = Field(min_length=1, max_length=30, pattern=r"^[A-Za-z]\d+$")
+    dir1_prv: str = Field(min_length=1, max_length=200)
+    dir2_prv: str = Field(min_length=0, max_length=200)
+    dir3_prv: str = Field(min_length=0, max_length=200)
+    tel_prv: str = Field(min_length=1, max_length=80)
+    email1_prv: str = Field(min_length=1, max_length=80)
+    email2_prv: str | None = Field(default=None, max_length=200)
+    rep_prv: str = Field(min_length=1, max_length=50)
+    especial: str = Field(min_length=1, max_length=8)
+    numcuenta: str = Field(min_length=1, max_length=30, pattern=r"^\d+$")
 
 
 class ProveedorUpsertRequest(BaseModel):
@@ -26,6 +41,20 @@ class ProveedorUpsertRequest(BaseModel):
     numcuenta: str | None = None
 
 
+class ProveedorPatchRequest(BaseModel):
+    nom_prv: str = Field(min_length=1, max_length=240)
+    rif_prv: str = Field(min_length=1, max_length=30, pattern=r"^[A-Za-z]\d+$")
+    dir1_prv: str = Field(min_length=1, max_length=200)
+    dir2_prv: str = Field(min_length=0, max_length=200)
+    dir3_prv: str = Field(min_length=0, max_length=200)
+    tel_prv: str = Field(min_length=1, max_length=80)
+    email1_prv: str = Field(min_length=1, max_length=80)
+    email2_prv: str | None = Field(default=None, max_length=200)
+    rep_prv: str = Field(min_length=1, max_length=50)
+    especial: str = Field(min_length=1, max_length=8)
+    numcuenta: str = Field(min_length=1, max_length=30, pattern=r"^\d+$")
+
+
 def _catalog_like(term: str) -> str:
     return f"%{term.strip()}%"
 
@@ -39,7 +68,7 @@ def _fetch_proveedores(
 ) -> tuple[list[dict], int]:
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
 
     q = search.strip()
     c = codigo.strip()
@@ -103,7 +132,7 @@ def _fetch_proveedores(
 def _get_proveedor(cod_prv: str) -> dict | None:
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
 
     conn = mysql.connect()
     try:
@@ -137,7 +166,7 @@ def _get_proveedor(cod_prv: str) -> dict | None:
 def _upsert_proveedor(body: ProveedorUpsertRequest) -> None:
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
 
     cod_prv = (body.cod_prv or "").strip()
     if not cod_prv:
@@ -158,7 +187,7 @@ def _upsert_proveedor(body: ProveedorUpsertRequest) -> None:
 def _delete_proveedor(cod_prv: str) -> int:
     mysql = MySqlClient()
     if not mysql.is_configured():
-        raise RuntimeError("Node MySQL not configured (set MYSQL_* in .env)")
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
 
     conn = mysql.connect()
     try:
@@ -210,15 +239,47 @@ async def get_proveedor(cod_prv: str, _: None = Depends(verify_bearer)):
 
 
 @router.post("/proveedores")
-async def upsert_proveedor(body: ProveedorUpsertRequest, _: None = Depends(verify_bearer)):
-    await anyio.to_thread.run_sync(lambda: _upsert_proveedor(body))
+async def create_proveedor(body: ProveedorCreateRequest, _: None = Depends(verify_bearer)):
+    existing = await anyio.to_thread.run_sync(lambda: _get_proveedor(body.cod_prv))
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="Provider already exists")
+    payload = body.model_dump()
+    esp = (payload.get("especial") or "").strip().lower()
+    if esp not in ("si", "no"):
+        raise HTTPException(status_code=422, detail="Invalid especial")
+    payload["especial"] = esp
+    if payload.get("email2_prv") == "":
+        payload["email2_prv"] = None
+
+    await anyio.to_thread.run_sync(lambda: _upsert_proveedor(ProveedorUpsertRequest(**payload)))
     item = await anyio.to_thread.run_sync(lambda: _get_proveedor(body.cod_prv))
+    return {"nodo_id": settings.nodo_id, "item": item, "message": "ok"}
+
+
+@router.patch("/proveedores/{cod_prv}")
+async def patch_proveedor(
+    cod_prv: str,
+    body: ProveedorPatchRequest,
+    _: None = Depends(verify_bearer),
+):
+    existing = await anyio.to_thread.run_sync(lambda: _get_proveedor(cod_prv))
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    payload = body.model_dump(exclude_unset=True)
+    payload["cod_prv"] = cod_prv
+    esp = (payload.get("especial") or "").strip().lower()
+    if esp not in ("si", "no"):
+        raise HTTPException(status_code=422, detail="Invalid especial")
+    payload["especial"] = esp
+    if payload.get("email2_prv") == "":
+        payload["email2_prv"] = None
+
+    await anyio.to_thread.run_sync(lambda: _upsert_proveedor(ProveedorUpsertRequest(**payload)))
+    item = await anyio.to_thread.run_sync(lambda: _get_proveedor(cod_prv))
     return {"nodo_id": settings.nodo_id, "item": item, "message": "ok"}
 
 
 @router.delete("/proveedores/{cod_prv}")
 async def delete_proveedor(cod_prv: str, _: None = Depends(verify_bearer)):
-    deleted = await anyio.to_thread.run_sync(lambda: _delete_proveedor(cod_prv))
-    if deleted == 0:
-        raise HTTPException(status_code=404, detail="Provider not found")
-    return {"nodo_id": settings.nodo_id, "deleted": True}
+    raise HTTPException(status_code=405, detail="Method Not Allowed")

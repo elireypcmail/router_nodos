@@ -1,6 +1,5 @@
 """Multishop store node API - orchestrated by Nest hub over VPN."""
 
-import asyncio
 from contextlib import asynccontextmanager
 import logging
 import os
@@ -9,54 +8,17 @@ import ssl
 
 from core.log_compat import configure_node_logging, ascii_safe
 
+import pymysql
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from core.config import settings
-from db.mysql import MySqlClient
-from hub.client import HubClient
-from outbox.mysql import OutboxRepository
-from outbox.worker import OutboxWorker
-from routes import categorias, health, inventario, proveedores, sync
-from sync.apply import SyncApplier
-from sync.store import SyncStore
-from sync.worker import SyncWorker
+from routes import categorias, compras, health, inventario, lotes, movimientos, proveedores, ventas
 from core.categoria_trace import is_categoria_http_path, trace, trace_exc
-from sync.http_log import sync_http_log_middleware
 
-sync_store: SyncStore | None = None
-sync_worker: SyncWorker | None = None
-outbox_repo: OutboxRepository | None = None
-outbox_worker: OutboxWorker | None = None
 logger = logging.getLogger("multishop-nodo-api")
-
-
-async def _ensure_outbox_schema_with_retry(
-    outbox_repo: OutboxRepository,
-    *,
-    attempts: int = 8,
-    delay_seconds: float = 2.0,
-) -> None:
-    last_err: Exception | None = None
-    for attempt in range(1, attempts + 1):
-        try:
-            outbox_repo.ensure_schema()
-            return
-        except Exception as exc:
-            last_err = exc
-            logger.warning(
-                "MySQL outbox schema attempt %s/%s: %s",
-                attempt,
-                attempts,
-                exc,
-            )
-            if attempt < attempts:
-                await asyncio.sleep(delay_seconds)
-    raise RuntimeError(
-        f"Could not initialize sync_outbox after {attempts} attempts: {last_err}"
-    ) from last_err
 
 
 def configure_logging() -> None:
@@ -65,65 +27,10 @@ def configure_logging() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global sync_store, sync_worker, outbox_repo, outbox_worker
-
-    sync_store = SyncStore(settings.sync_db_path)
-    await sync_store.init()
-
-    mysql = MySqlClient()
-    applier = SyncApplier(mysql)
-    sync_worker = SyncWorker(
-        sync_store,
-        applier.apply,
-        poll_interval_seconds=settings.sync_worker_poll_interval_seconds,
-    )
-    if settings.sync_worker_enabled:
-        sync_worker.start()
-
-    if settings.hub_push_enabled and not settings.huey_enabled:
-        if not mysql.is_configured():
-            raise RuntimeError("HUB_PUSH_ENABLED requires MYSQL_* configured")
-        outbox_repo = OutboxRepository(mysql)
-        await _ensure_outbox_schema_with_retry(
-            outbox_repo,
-            attempts=settings.nodo_mysql_startup_attempts,
-            delay_seconds=settings.nodo_mysql_startup_delay_seconds,
-        )
-        hub = HubClient()
-        outbox_worker = OutboxWorker(
-            outbox_repo,
-            hub,
-            interval_seconds=settings.hub_push_interval_seconds,
-        )
-        outbox_worker.start()
-
-    if settings.huey_enabled:
-        if not mysql.is_configured():
-            raise RuntimeError("HUEY_ENABLED requires MYSQL_* configured")
-        outbox_repo = OutboxRepository(mysql)
-        await _ensure_outbox_schema_with_retry(
-            outbox_repo,
-            attempts=settings.nodo_mysql_startup_attempts,
-            delay_seconds=settings.nodo_mysql_startup_delay_seconds,
-        )
-        from workers.huey_tasks import bootstrap_outbox_scheduler
-
-        bootstrap_outbox_scheduler()
-
-    try:
-        from sync.jobs.recovery import recover_stale_local_jobs
-
-        await recover_stale_local_jobs()
-    except Exception as exc:
-        logger.warning("sync job recovery skipped: %s", exc)
-
     try:
         yield
     finally:
-        if sync_worker:
-            await sync_worker.stop()
-        if outbox_worker:
-            await outbox_worker.stop()
+        return
 
 
 configure_logging()
@@ -139,12 +46,10 @@ app.include_router(health.router)
 app.include_router(inventario.router)
 app.include_router(proveedores.router)
 app.include_router(categorias.router)
-app.include_router(sync.router)
-
-
-@app.middleware("http")
-async def sync_http_log(request: Request, call_next):
-    return await sync_http_log_middleware(request, call_next)
+app.include_router(lotes.router)
+app.include_router(compras.router)
+app.include_router(ventas.router)
+app.include_router(movimientos.router)
 
 
 @app.middleware("http")
@@ -185,6 +90,27 @@ async def request_validation_exception_handler(_request: Request, exc: RequestVa
     )
 
 
+@app.exception_handler(pymysql.Error)
+async def mysql_exception_handler(request: Request, exc: pymysql.Error):
+    message = _error_message(exc)
+    logger.error(
+        "MySQL error on %s %s: %s",
+        request.method,
+        request.url.path,
+        message,
+        exc_info=True,
+    )
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": "nodo_db_down",
+            "code": "NODO_DB_DOWN",
+            "detail": message,
+            "path": request.url.path,
+        },
+    )
+
+
 @app.exception_handler(RuntimeError)
 async def runtime_exception_handler(request: Request, exc: RuntimeError):
     message = _error_message(exc)
@@ -195,6 +121,17 @@ async def runtime_exception_handler(request: Request, exc: RuntimeError):
         message,
         exc_info=True,
     )
+
+    if "requires MYSQL_* configured" in message or "Node MySQL not configured" in message:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "nodo_db_down",
+                "code": "NODO_DB_NOT_CONFIGURED",
+                "detail": message,
+                "path": request.url.path,
+            },
+        )
     return JSONResponse(
         status_code=500,
         content={
