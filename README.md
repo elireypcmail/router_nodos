@@ -129,22 +129,69 @@ Layout por dominio: ver [docs/arquitectura-python.md](docs/arquitectura-python.m
 
 ## Configuración (.env)
 
-- Copia `.env.example` a `.env` y ajusta valores.
-- Variables relevantes:
-  - Hub:
-    - `HUB_BASE_URL`
-    - `HUB_PUSH_PATH`
-    - `HUB_API_KEY` (si aplica)
-  - MySQL del nodo:
-    - `MYSQL_HOST`
-    - `MYSQL_PORT`
-    - `MYSQL_USER`
-    - `MYSQL_PASSWORD`
-    - `MYSQL_DATABASE`
-  - Flags:
-    - `HUB_PUSH_ENABLED` (usa outbox)
-    - `SYNC_WORKER_ENABLED`
-    - `HUEY_ENABLED` (recomendado para reintentos persistentes)
+Este servicio soporta configuración desde:
+
+- `env.txt` (**preferido** en el bundle de provisioning)
+- `.env` (fallback para compatibilidad)
+
+En local, puedes usar cualquiera. Si quieres ejecutar exportando variables en tu shell, recuerda que **valores con espacios deben ir entre comillas**, por ejemplo:
+
+```env
+NODO_NOMBRE="Tienda Ejemplo"
+```
+
+### `.env` mínimo recomendado (dev / fork-router)
+
+> Nota: en el fork-router el objetivo es superficie mínima; por defecto deja **deshabilitados** workers de sync/hub/outbox/huey.
+
+```env
+# Identidad del nodo
+NODO_ID=tienda-ejemplo-01
+NODO_NOMBRE="Tienda Ejemplo"
+NODO_ROLE=slave
+
+# Token que debe enviar el orquestador Nest (Authorization: Bearer)
+NODO_API_TOKEN=cambiar-token-secreto
+
+# API HTTP(S)
+NODO_HOST=0.0.0.0
+NODO_PORT=8443
+
+# Dev: permitir HTTP sin TLS
+NODO_ALLOW_INSECURE=true
+
+# TLS (opcional)
+NODO_SSL_CERTFILE=
+NODO_SSL_KEYFILE=
+
+# Workers fuera de scope (fork-router)
+SYNC_WORKER_ENABLED=false
+HUB_PULL_ENABLED=false
+HUB_PUSH_ENABLED=false
+HUEY_ENABLED=false
+
+# MySQL del nodo (dev con Docker)
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_PASSWORD=multishop
+MYSQL_DATABASE=mi_base_historica
+```
+
+### Variables más comunes
+
+- MySQL del nodo:
+  - `MYSQL_HOST`
+  - `MYSQL_PORT`
+  - `MYSQL_USER`
+  - `MYSQL_PASSWORD`
+  - `MYSQL_DATABASE`
+- API:
+  - `NODO_HOST`
+  - `NODO_PORT`
+  - `NODO_ALLOW_INSECURE` / `NODO_SSL_CERTFILE` / `NODO_SSL_KEYFILE`
+ - Auth:
+  - `NODO_API_TOKEN`
 
 ---
 
@@ -152,7 +199,7 @@ Layout por dominio: ver [docs/arquitectura-python.md](docs/arquitectura-python.m
 
 La instalación asume que el usuario recibe **todo el proyecto** y opcionalmente un bundle de provisioning con:
 
-- `.env`
+- `env.txt`
 - `wg0.conf` (si aplica WireGuard)
 
 ### Windows (modo pro)
@@ -194,10 +241,10 @@ Opcional (más reglas de estilo): módulo [PSScriptAnalyzer](https://github.com/
 
 2. El instalador:
    - WireGuard (opcional): levanta `wg0` si existe `wg0.conf` y `wg` está instalado
-   - copia `.env` si existe
+   - copia `env.txt` si existe
    - triggers/outbox:
      - intenta Docker si existe `mysql56-app`
-     - si no, intenta MySQL local/remoto con `mysql` usando `MYSQL_*` del `.env`
+     - si no, intenta MySQL local/remoto con `mysql` usando `MYSQL_*` del `env.txt`/`.env`
    - crea `venv` e instala dependencias
 
 ---
@@ -275,7 +322,10 @@ Logs (Windows) normalmente en:
 ### Health
 
 ```bash
-curl http://127.0.0.1:<NODO_PORT>/api/health -H "Authorization: Bearer <TOKEN>"
+curl http://127.0.0.1:<NODO_PORT>/api/health
+
+# Si tu endpoint requiere Bearer (según configuración del nodo/hub):
+curl http://127.0.0.1:<NODO_PORT>/api/health -H "Authorization: Bearer <NODO_API_TOKEN>"
 ```
 
 ### La API se cierra al recibir `POST /api/sync/events` (Windows)
