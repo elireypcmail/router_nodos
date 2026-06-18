@@ -292,7 +292,7 @@ function Invoke-PrepareMultishopStartNow {
         [Parameter(Mandatory = $true)]
         [string]$NodoDirPath
     )
-    Write-Host "Preparando arranque (ONSTART off + stop procesos) ..."
+    Write-Host "Preparando arranque router (solo procesos/tareas de este producto) ..."
     Set-MultishopOnStartTasksEnabled -Enabled $false
     Stop-MultishopNodoProcesses -NodoDir $NodoDirPath
     if (-not (Wait-MultishopNodoProcessesStopped -NodoDir $NodoDirPath)) {
@@ -516,41 +516,96 @@ function Get-ProtectedMultishopCallerProcessIds {
     return @($protected)
 }
 
-function Test-IsMultishopNodoServiceLauncher {
-    param([AllowNull()][string]$CommandLine)
+function Get-MultishopProductLauncherPathPatterns {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDir
+    )
+    $folder = (Split-Path $NodoDir.TrimEnd('\') -Leaf).ToLowerInvariant()
+    switch ($folder) {
+        'router' {
+            return @(
+                'programdata\\multishop\\router\\start-api\.(vbs|ps1)'
+                'programdata\\multishop\\router\\start-huey\.(vbs|ps1)'
+            )
+        }
+        'nodo' {
+            return @(
+                'programdata\\multishop\\start-nodo-api\.(vbs|ps1)'
+                'programdata\\multishop\\start-nodo-huey\.(vbs|ps1)'
+                'programdata\\multishop\\nodo\\start-api\.(vbs|ps1)'
+                'programdata\\multishop\\nodo\\start-huey\.(vbs|ps1)'
+            )
+        }
+        default {
+            $deploy = $null
+            if (Get-Command Get-MultishopDeployRoot -ErrorAction SilentlyContinue) {
+                $deploy = (Get-MultishopDeployRoot).ToLowerInvariant()
+            }
+            if ($deploy -and $NodoDir.TrimEnd('\').ToLowerInvariant() -like "*\multishop\$folder") {
+                $escaped = [regex]::Escape($deploy).Replace('\\', '\\\\')
+                return @(
+                    "$escaped\\start-api\.(vbs|ps1)"
+                    "$escaped\\start-huey\.(vbs|ps1)"
+                    "$escaped\\start-nodo-api\.(vbs|ps1)"
+                    "$escaped\\start-nodo-huey\.(vbs|ps1)"
+                )
+            }
+            $nodoEscaped = [regex]::Escape($NodoDir.TrimEnd('\').ToLowerInvariant())
+            return @("$nodoEscaped")
+        }
+    }
+}
+
+function Test-IsMultishopProductLauncher {
+    param(
+        [AllowNull()][string]$CommandLine,
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDir
+    )
     if ([string]::IsNullOrWhiteSpace($CommandLine)) {
         return $false
     }
     $cmdLower = $CommandLine.ToLowerInvariant()
-
-    if ($cmdLower -match '\bwscript(\.exe)?\b' -and $cmdLower -match 'programdata\\multishop\\(router\\)?start-(api|nodo-api|huey|nodo-huey)\.vbs') {
-        return $true
-    }
-
-    if ($cmdLower -notmatch '\bpowershell(\.exe)?\b') {
+    if ($cmdLower -notmatch '\b(wscript|powershell)(\.exe)?\b') {
         return $false
     }
-
-    if ($cmdLower -match 'start-(api|nodo-api|huey|nodo-huey)\.ps1') {
-        return $true
+    foreach ($pattern in (Get-MultishopProductLauncherPathPatterns -NodoDir $NodoDir)) {
+        if ($cmdLower -match $pattern) {
+            return $true
+        }
     }
-
-    if ($cmdLower -match 'programdata\\multishop\\(router\\)?start-(api|nodo-api|huey|nodo-huey)\.ps1') {
-        return $true
-    }
-
     return $false
+}
+
+function Test-IsMultishopNodoServiceLauncher {
+    param(
+        [AllowNull()][string]$CommandLine,
+        [string]$NodoDir = ""
+    )
+    if ($NodoDir) {
+        return (Test-IsMultishopProductLauncher -CommandLine $CommandLine -NodoDir $NodoDir)
+    }
+    if ([string]::IsNullOrWhiteSpace($CommandLine)) {
+        return $false
+    }
+    $cmdLower = $CommandLine.ToLowerInvariant()
+    if ($cmdLower -notmatch '\b(wscript|powershell)(\.exe)?\b') {
+        return $false
+    }
+    return ($cmdLower -match 'programdata\\multishop\\')
 }
 
 function Stop-MultishopNodoLaunchers {
     param([string]$NodoDir)
+    if (-not $NodoDir) { return }
     $protectedIds = Get-ProtectedMultishopCallerProcessIds
     foreach ($procName in @('wscript.exe', 'powershell.exe')) {
         foreach ($wp in Get-CimInstance Win32_Process -Filter "Name='$procName'" -ErrorAction SilentlyContinue) {
             $procId = [int]$wp.ProcessId
             if ($protectedIds -contains $procId) { continue }
             $cmd = ($wp.CommandLine -as [string])
-            if (-not (Test-IsMultishopNodoServiceLauncher -CommandLine $cmd)) { continue }
+            if (-not (Test-IsMultishopProductLauncher -CommandLine $cmd -NodoDir $NodoDir)) { continue }
             Write-Host "Stopping Multishop launcher PID $procId ($procName) ..."
             Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
         }
@@ -912,12 +967,16 @@ function Get-MultishopNodoApiStartFailureHint {
     foreach ($base in @($env:ProgramData, $env:LOCALAPPDATA)) {
         if (-not $base) { continue }
         $logDirs += Join-Path $base "Multishop"
+        $logDirs += Join-Path $base "Multishop\router"
     }
     foreach ($logDir in ($logDirs | Select-Object -Unique)) {
         foreach ($name in @(
                 "$logBasename-start.log",
                 "$logBasename.err.log",
-                "$logBasename.out.log"
+                "$logBasename.out.log",
+                "nodo-api-start.log",
+                "nodo-api.err.log",
+                "nodo-api.out.log"
             )) {
             $path = Join-Path $logDir $name
             if (-not (Test-Path -LiteralPath $path)) { continue }

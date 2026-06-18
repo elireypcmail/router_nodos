@@ -943,12 +943,12 @@ if (-not $SkipApiAutostart) {
                     } else {
                         Join-Path $env:ProgramData 'Multishop\router'
                     }
-                    Write-Warning @(
+                    Write-Warning (@(
                         "La API no arranco tras -StartNow.",
                         "Revise $deployLog\$logBase-start.log y $logBase.err.log",
                         "La tarea ONSTART quedo registrada; corrija .env/certs y ejecute:",
                         "  wscript.exe //nologo `"$deployLog\start-api.vbs`""
-                    ) -join "`n  "
+                    ) -join "`n  ")
                 }
             }
         }

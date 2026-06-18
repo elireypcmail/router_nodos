@@ -308,10 +308,19 @@ function Install-NodoHueyAutostart {
 }
 
 function Start-NodoApiBackground {
+    Ensure-MultishopDeployDir -Path $DeployDir
+    $logBasename = Get-MultishopApiLogBasename
+    $startLog = Join-Path $DeployDir "$logBasename-start.log"
+    try {
+        $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        Add-Content -LiteralPath $startLog -Value "$stamp instalador: lanzando $DeployedScript" -Encoding ASCII -ErrorAction Stop
+    } catch {
+        Write-Warning "No se pudo escribir $startLog : $($_.Exception.Message)"
+    }
     $psArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$DeployedScript`""
     Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -WindowStyle Hidden
     Write-Host "API iniciada en segundo plano." -ForegroundColor Green
-    Write-Host "Log: $DeployDir\$(Get-MultishopApiLogBasename)-start.log"
+    Write-Host "Log: $DeployDir\$logBasename-start.log"
 }
 
 function Start-NodoHueyBackground {
@@ -405,11 +414,11 @@ function Assert-MultishopSingleInstance {
             if (Get-Command Get-MultishopNodoApiStartFailureHint -ErrorAction SilentlyContinue) {
                 $hint = Get-MultishopNodoApiStartFailureHint -NodoDir $NodoDirPath
             }
-            Write-Warning @(
+            Write-Warning (@(
                 "Multishop router: API no escucha en el puerto configurado ($port)."
                 "Revise $DeployDir\$(Get-MultishopApiLogBasename).err.log"
                 $(if ($hint) { $hint } else { "" })
-            ) -join "`n  "
+            ) -join "`n  ")
             return
         }
         Write-Host "API escuchando en puerto $port." -ForegroundColor Green
