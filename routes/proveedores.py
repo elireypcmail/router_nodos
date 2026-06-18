@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 from core.config import settings
 from db.mysql import MySqlClient
-from db.sprv_store import delete_sprv, upsert_sprv
+from db.sprv_store import upsert_sprv
 from middleware.auth import verify_bearer
 
 router = APIRouter(prefix="/api", tags=["proveedores"])
@@ -184,24 +184,6 @@ def _upsert_proveedor(body: ProveedorUpsertRequest) -> None:
         conn.close()
 
 
-def _delete_proveedor(cod_prv: str) -> int:
-    mysql = MySqlClient()
-    if not mysql.is_configured():
-        raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
-
-    conn = mysql.connect()
-    try:
-        cur = conn.cursor()
-        deleted = delete_sprv(cur, cod_prv)
-        conn.commit()
-        return deleted
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
 @router.get("/proveedores")
 async def proveedores(
     search: str = Query("", description="Match code or name"),
@@ -278,8 +260,3 @@ async def patch_proveedor(
     await anyio.to_thread.run_sync(lambda: _upsert_proveedor(ProveedorUpsertRequest(**payload)))
     item = await anyio.to_thread.run_sync(lambda: _get_proveedor(cod_prv))
     return {"nodo_id": settings.nodo_id, "item": item, "message": "ok"}
-
-
-@router.delete("/proveedores/{cod_prv}")
-async def delete_proveedor(cod_prv: str, _: None = Depends(verify_bearer)):
-    raise HTTPException(status_code=405, detail="Method Not Allowed")

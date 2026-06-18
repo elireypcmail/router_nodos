@@ -144,28 +144,6 @@ def _update_categoria(ccate: str, body: CategoriaPatchRequest) -> int:
         conn.close()
 
 
-def _delete_categoria(ccate: str) -> int:
-    trace("mysql.delete.start", ccate=ccate)
-    mysql = MySqlClient()
-    if not mysql.is_configured():
-        raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
-
-    conn = mysql.connect()
-    try:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM catego WHERE ccate = %s", (ccate,))
-        conn.commit()
-        deleted = int(cur.rowcount or 0)
-        trace("mysql.delete.done", ccate=ccate, rowcount=deleted)
-        return deleted
-    except Exception as exc:
-        conn.rollback()
-        trace_exc("mysql.delete.failed", exc, ccate=ccate)
-        raise
-    finally:
-        conn.close()
-
-
 @router.get("")
 async def list_categorias(
     search: str = Query("", description="Match code or name"),
@@ -240,8 +218,3 @@ async def patch_categoria(
     item = await anyio.to_thread.run_sync(lambda: _get_categoria(ccate))
     trace("rest.patch.done", ccate=ccate)
     return {"nodo_id": settings.nodo_id, "item": item, "message": "ok"}
-
-
-@router.delete("/{ccate}")
-async def delete_categoria(ccate: str, _: None = Depends(verify_bearer)):
-    raise HTTPException(status_code=405, detail="Method Not Allowed")

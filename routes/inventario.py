@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 from core.config import settings
 from db.mysql import MySqlClient
-from db.sinv_store import delete_sinv, upsert_sinv
+from db.sinv_store import upsert_sinv
 from middleware.auth import verify_bearer
 
 router = APIRouter(prefix="/api", tags=["inventario"])
@@ -299,24 +299,6 @@ def _upsert_item(body: InventarioUpsertRequest) -> None:
         conn.close()
 
 
-def _delete_item(codigo: str) -> int:
-    mysql = MySqlClient()
-    if not mysql.is_configured():
-        raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
-
-    conn = mysql.connect()
-    try:
-        cur = conn.cursor()
-        deleted = delete_sinv(cur, codigo)
-        conn.commit()
-        return deleted
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
 @router.get("/inventario")
 async def inventario(
     search: str = Query("", description="Match code or description"),
@@ -441,8 +423,3 @@ async def patch_inventario_item(
     await anyio.to_thread.run_sync(_patch_with_fk_check)
     item = await anyio.to_thread.run_sync(lambda: _get_item(codigo))
     return {"nodo_id": settings.nodo_id, "item": item, "message": "ok"}
-
-
-@router.delete("/inventario/{codigo}")
-async def delete_inventario_item(codigo: str, _: None = Depends(verify_bearer)):
-    raise HTTPException(status_code=405, detail="Method Not Allowed")
