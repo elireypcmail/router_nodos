@@ -1,25 +1,35 @@
-# Estado de la API nodo en background (puerto segun NODO_PORT en .env).
+# Estado de la API nodo router (puerto segun NODO_PORT en .env).
 
 $envHelper = Join-Path $PSScriptRoot "nodo-env.ps1"
 if (Test-Path -LiteralPath $envHelper) {
     . $envHelper
 }
 
-$DeployDir = Join-Path $env:ProgramData "Multishop"
-$logStart = Join-Path $DeployDir "nodo-api-start.log"
-$logStartLocal = Join-Path $env:LOCALAPPDATA "Multishop\nodo-api-start.log"
-$logOut = Join-Path $DeployDir "nodo-api.out.log"
-$logErr = Join-Path $DeployDir "nodo-api.err.log"
+$DeployDir = if (Get-Command Get-MultishopDeployRoot -ErrorAction SilentlyContinue) {
+    Get-MultishopDeployRoot
+} else {
+    Join-Path $env:ProgramData "Multishop\router"
+}
+$logBasename = if (Get-Command Get-MultishopApiLogBasename -ErrorAction SilentlyContinue) {
+    Get-MultishopApiLogBasename
+} else {
+    'router-api'
+}
+$logStart = Join-Path $DeployDir "$logBasename-start.log"
+$logStartLocal = Join-Path $env:LOCALAPPDATA "Multishop\$logBasename-start.log"
+$logOut = Join-Path $DeployDir "$logBasename.out.log"
+$logErr = Join-Path $DeployDir "$logBasename.err.log"
+$launcherVbs = Join-Path $DeployDir "$(if (Get-Command Get-MultishopLauncherBasename -ErrorAction SilentlyContinue) { Get-MultishopLauncherBasename } else { 'start-api' }).vbs"
 
 $nodoDir = Get-MultishopNodoDirFromProgramData
 $apiPort = 8443
 if ($nodoDir) {
     $apiPort = Get-MultishopNodoApiPort -NodoDir $nodoDir
 } else {
-    Write-Warning "No se encontro nodo-dir.txt; usando puerto por defecto $apiPort"
+    Write-Warning "No se encontro $(if (Get-Command Get-MultishopDirFileName -ErrorAction SilentlyContinue) { Get-MultishopDirFileName } else { 'router-dir.txt' }); usando puerto por defecto $apiPort"
 }
 
-Write-Host "=== Multishop nodo API ==="
+Write-Host "=== Multishop router nodo API ==="
 if ($nodoDir) {
     Write-Host "Nodo: $nodoDir"
 }
@@ -44,47 +54,42 @@ if ($portOpen) {
     Write-Host "Puerto $apiPort (NODO_PORT): no activo" -ForegroundColor Yellow
     if ($apiLeaderPid -gt 0) {
         Write-Host "  AVISO: hay main.py (PID $apiLeaderPid) pero el puerto no escucha (proceso colgado)." -ForegroundColor Red
-        Write-Host "  Accion: wscript.exe //nologo $DeployDir\start-nodo-api.vbs (reinicia tras matar el zombie)"
+        Write-Host "  Accion: wscript.exe //nologo $launcherVbs (reinicia tras matar el zombie)"
     }
 }
 
-$procs = Get-Process python, pythonw -ErrorAction SilentlyContinue
-if ($procs) {
-    Write-Host ""
-    Write-Host "Procesos Python:"
-    $procs | Format-Table Id, ProcessName, Path -AutoSize
+if ($apiLeaderPid -gt 0) {
+    Write-Host "Proceso API (main.py): PID $apiLeaderPid" -ForegroundColor Green
 } else {
-    Write-Host ""
-    Write-Host "No hay procesos python/pythonw."
+    Write-Host "Proceso API (main.py): no detectado" -ForegroundColor Yellow
 }
 
+if ($nodoDir -and (Get-Command Get-MultishopNodoProcessCounts -ErrorAction SilentlyContinue)) {
+    $counts = Get-MultishopNodoProcessCounts -NodoDir $nodoDir
+    Write-Host "Procesos en $($nodoDir): API=$($counts.Api) Huey=$($counts.Huey)"
+}
+
+Write-Host ""
 Write-Host "Logs:"
-Write-Host "  $logStart"
-Write-Host "  $logStartLocal"
-Write-Host "  $logOut"
-Write-Host "  $logErr"
-if (Test-Path $logStart) {
-    Write-Host "--- nodo-api-start.log (ProgramData) ---"
-    Get-Content $logStart -Tail 10 -ErrorAction SilentlyContinue
-} elseif (Test-Path $logStartLocal) {
-    Write-Host "--- nodo-api-start.log (LocalAppData) ---"
-    Get-Content $logStartLocal -Tail 10 -ErrorAction SilentlyContinue
-}
-if (Test-Path $logOut) {
-    Write-Host "--- nodo-api.out.log ---"
-    Get-Content $logOut -Tail 10 -ErrorAction SilentlyContinue
-}
-if (Test-Path $logErr) {
-    Write-Host "--- nodo-api.err.log ---"
-    Get-Content $logErr -Tail 15 -ErrorAction SilentlyContinue
+foreach ($p in @($logStart, $logStartLocal, $logOut, $logErr)) {
+    if (Test-Path -LiteralPath $p) {
+        Write-Host "  $p"
+    }
 }
 
-Write-Host ""
-Write-Host "Puerto en netstat (NODO_PORT=$apiPort):"
-Write-Host "  netstat -ano | findstr `":$apiPort`""
-Write-Host ""
-Write-Host "Health:"
-Write-Host "  curl http://127.0.0.1:$apiPort/api/health -H `"Authorization: Bearer <TOKEN>`""
-Write-Host ""
-Write-Host "Arrancar:"
-Write-Host "  wscript.exe //nologo $DeployDir\start-nodo-api.vbs"
+if (Get-Command Get-MultishopScheduledTaskNames -ErrorAction SilentlyContinue) {
+    Write-Host ""
+    Write-Host "Tareas ONSTART:"
+    foreach ($tn in (Get-MultishopScheduledTaskNames)) {
+        $exists = $false
+        foreach ($q in @($tn, "\$tn")) {
+            schtasks.exe /Query /TN $q 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { $exists = $true; break }
+        }
+        if ($exists) {
+            Write-Host "  [OK] $tn" -ForegroundColor Green
+        } else {
+            Write-Host "  [--] $tn"
+        }
+    }
+}

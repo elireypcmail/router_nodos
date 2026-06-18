@@ -5,8 +5,16 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$DeployDir = Join-Path $env:ProgramData "Multishop"
-$DirFile = Join-Path $DeployDir "nodo-dir.txt"
+$DeployDir = if (Get-Command Get-MultishopDeployRoot -ErrorAction SilentlyContinue) {
+    Get-MultishopDeployRoot
+} else {
+    Join-Path $env:ProgramData "Multishop"
+}
+$DirFile = if (Get-Command Get-MultishopDirFilePath -ErrorAction SilentlyContinue) {
+    Get-MultishopDirFilePath
+} else {
+    Join-Path $DeployDir "nodo-dir.txt"
+}
 $StartLog = Join-Path $DeployDir "nodo-huey-start.log"
 $envHelper = Join-Path $PSScriptRoot "nodo-env.ps1"
 if (Test-Path -LiteralPath $envHelper) {

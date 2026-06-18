@@ -1,8 +1,8 @@
-# Tareas ONSTART para API + Huey (tienda en Program Files).
+# Tareas ONSTART para API (fork router en Program Files\Multishop\router).
 # Ejecutar PowerShell COMO ADMINISTRADOR.
 #
-#   .\nodo-api-windows-install.ps1 -NodoDir "C:\Program Files\Multishop\nodo"
-#   .\nodo-api-windows-install.ps1 -NodoDir "C:\Program Files\Multishop\nodo" -StartNow
+#   .\nodo-api-windows-install.ps1 -NodoDir "C:\Program Files\Multishop\router"
+#   .\nodo-api-windows-install.ps1 -NodoDir "C:\Program Files\Multishop\router" -StartNow
 #   .\nodo-api-windows-install.ps1 -Uninstall
 
 param(
@@ -12,14 +12,25 @@ param(
     [switch]$StartNow
 )
 
-$MultishopWindowsInstallVersion = "20260531.3"
+$MultishopWindowsInstallVersion = "20260618.1"
 
 $ErrorActionPreference = "Stop"
 
-$OnStartTaskNames = @(
-    "Multishop-Nodo-API",
-    "Multishop-Nodo-Huey"
-)
+$SourceEnvHelper = Join-Path $PSScriptRoot "nodo-env.ps1"
+if (Test-Path -LiteralPath $SourceEnvHelper) {
+    . $SourceEnvHelper
+}
+
+$OnStartTaskNames = Get-MultishopScheduledTaskNames
+$TaskNameOnStart = Get-MultishopApiScheduledTaskName
+$HueyTaskNameOnStart = Get-MultishopHueyScheduledTaskName
+$DeployDir = Get-MultishopDeployRoot
+$DirFile = Get-MultishopDirFilePath
+$TunnelFile = Join-Path $DeployDir "tunnel-name.txt"
+$SourceScript = Join-Path $PSScriptRoot "start-nodo-api.ps1"
+$DeployedScript = Join-Path $DeployDir "$(Get-MultishopLauncherBasename).ps1"
+$DeployedEnvHelper = Join-Path $DeployDir "nodo-env.ps1"
+$DeployedVbs = Join-Path $DeployDir "$(Get-MultishopLauncherBasename).vbs"
 
 function Test-IsAdmin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -71,8 +82,11 @@ function Test-NodoProjectRoot {
 function Resolve-NodoProjectDir {
     param([string]$InputPath = "")
     if (-not $InputPath) {
-        if (Test-Path (Join-Path $env:ProgramData "Multishop\nodo-dir.txt")) {
-            $InputPath = (Get-Content (Join-Path $env:ProgramData "Multishop\nodo-dir.txt") -Raw).Trim()
+        $dirHint = Get-MultishopDirFilePath
+        if (Test-Path -LiteralPath $dirHint) {
+            $InputPath = (Get-Content -LiteralPath $dirHint -Raw).Trim()
+        } elseif (Test-NodoProjectRoot -Path (Get-MultishopDefaultInstallRoot)) {
+            $InputPath = Get-MultishopDefaultInstallRoot
         } else {
             $InputPath = $PSScriptRoot
         }
@@ -94,16 +108,6 @@ function Resolve-NodoProjectDir {
     throw "No se encontro la raiz del nodo (main.py). Use -NodoDir con la carpeta que contiene main.py"
 }
 
-$TaskNameOnStart = "Multishop-Nodo-API"
-$DeployDir = Join-Path $env:ProgramData "Multishop"
-$DirFile = Join-Path $DeployDir "nodo-dir.txt"
-$TunnelFile = Join-Path $DeployDir "tunnel-name.txt"
-$SourceScript = Join-Path $PSScriptRoot "start-nodo-api.ps1"
-$SourceEnvHelper = Join-Path $PSScriptRoot "nodo-env.ps1"
-$DeployedScript = Join-Path $DeployDir "start-nodo-api.ps1"
-$DeployedEnvHelper = Join-Path $DeployDir "nodo-env.ps1"
-$DeployedVbs = Join-Path $DeployDir "start-nodo-api.vbs"
-
 if (-not $Uninstall) {
     if (-not (Test-Path $SourceScript)) {
         Write-Error "No se encontro $SourceScript"
@@ -117,10 +121,6 @@ $NodoDir = if ($Uninstall -and $NodoDir) {
 }
 $TunnelName = ($TunnelName -replace '\s', '').Trim()
 if (-not $TunnelName) { $TunnelName = "wg0" }
-
-if (Test-Path -LiteralPath $SourceEnvHelper) {
-    . $SourceEnvHelper
-}
 
 function Invoke-SchTasksQuiet {
     param([string[]]$ArgumentList)
@@ -168,9 +168,9 @@ function Remove-AllMultishopAutostartTasks {
 }
 
 function Remove-NodoHueyAutostart {
-    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey" | Out-Null
-    $hueyDeployed = Join-Path $DeployDir "start-nodo-huey.ps1"
-    $hueyVbs = Join-Path $DeployDir "start-nodo-huey.vbs"
+    Remove-NodoApiTaskNamed -Name $HueyTaskNameOnStart | Out-Null
+    $hueyDeployed = Join-Path $DeployDir "$(Get-MultishopHueyLauncherBasename).ps1"
+    $hueyVbs = Join-Path $DeployDir "$(Get-MultishopHueyLauncherBasename).vbs"
     if (Test-Path $hueyDeployed) { Remove-Item $hueyDeployed -Force }
     if (Test-Path $hueyVbs) { Remove-Item $hueyVbs -Force }
 }
@@ -234,8 +234,9 @@ function Deploy-NodoApiLauncher {
         Copy-ItemIfDifferent -Source $SourceEnvHelper -Destination $DeployedEnvHelper | Out-Null
     }
     $hueySource = Join-Path $PSScriptRoot "start-nodo-huey.ps1"
+    $hueyDeployed = Join-Path $DeployDir "$(Get-MultishopHueyLauncherBasename).ps1"
     if (Test-Path -LiteralPath $hueySource) {
-        Copy-ItemIfDifferent -Source $hueySource -Destination (Join-Path $DeployDir "start-nodo-huey.ps1") | Out-Null
+        Copy-ItemIfDifferent -Source $hueySource -Destination $hueyDeployed | Out-Null
     }
     $nodoScriptsDir = Join-Path $NodoDir "scripts"
     if (Test-Path -LiteralPath $nodoScriptsDir) {
@@ -285,23 +286,24 @@ function Install-NodoHueyAutostart {
         Write-Warning "Missing $hueyScript; Huey ONSTART no se registrara."
         return
     }
-    Copy-Item $hueyScript (Join-Path $DeployDir "start-nodo-huey.ps1") -Force
-    $hueyVbs = Join-Path $DeployDir "start-nodo-huey.vbs"
+    $hueyLauncher = Join-Path $DeployDir "$(Get-MultishopHueyLauncherBasename).ps1"
+    Copy-Item $hueyScript $hueyLauncher -Force
+    $hueyVbs = Join-Path $DeployDir "$(Get-MultishopHueyLauncherBasename).vbs"
     $vbsHuey = @(
         'Set sh = CreateObject("Wscript.Shell")'
-        "sh.Run ""powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """"$($DeployDir)\start-nodo-huey.ps1"""""", 0, False"
+        "sh.Run ""powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """"$hueyLauncher"""""", 0, False"
     )
     Set-Content -Path $hueyVbs -Value ($vbsHuey -join "`r`n") -Encoding ASCII -Force
     $hueyTr = 'wscript.exe //nologo "' + $hueyVbs + '"'
-    Remove-NodoApiTaskNamed -Name "Multishop-Nodo-Huey" | Out-Null
+    Remove-NodoApiTaskNamed -Name $HueyTaskNameOnStart | Out-Null
     $output = & schtasks.exe @(
-        "/Create", "/TN", "Multishop-Nodo-Huey", "/SC", "ONSTART",
+        "/Create", "/TN", $HueyTaskNameOnStart, "/SC", "ONSTART",
         "/TR", $hueyTr, "/RU", "SYSTEM", "/RL", "HIGHEST", "/DELAY", "0002:00", "/F"
     ) 2>&1
     if ($LASTEXITCODE -ne 0) {
-        Write-Warning "schtasks Multishop-Nodo-Huey ONSTART failed: $output"
+        Write-Warning "schtasks $HueyTaskNameOnStart ONSTART failed: $output"
     } else {
-        Write-Host "Tarea Multishop-Nodo-Huey registrada (ONSTART, delay 2:00)."
+        Write-Host "Tarea $HueyTaskNameOnStart registrada (ONSTART, delay 2:00)."
     }
 }
 
@@ -313,7 +315,7 @@ function Start-NodoApiBackground {
 }
 
 function Start-NodoHueyBackground {
-    $hueyScript = Join-Path $DeployDir "start-nodo-huey.ps1"
+    $hueyScript = Join-Path $DeployDir "$(Get-MultishopHueyLauncherBasename).ps1"
     if (-not (Test-Path -LiteralPath $hueyScript)) {
         $hueyScript = Join-Path $PSScriptRoot "start-nodo-huey.ps1"
     }
@@ -455,6 +457,6 @@ if ($enableHuey) {
 Show-MultishopScheduledTasks
 
 Write-Host ""
-Write-Host "Autostart ONSTART: Multishop-Nodo-API + Multishop-Nodo-Huey (si HUEY_ENABLED=true)."
+Write-Host "Autostart ONSTART: $(Get-MultishopApiScheduledTaskName) (+ $(Get-MultishopHueyScheduledTaskName) si HUEY_ENABLED=true)."
 Write-Host "Version: $MultishopWindowsInstallVersion"
 exit 0

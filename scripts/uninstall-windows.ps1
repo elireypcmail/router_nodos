@@ -4,7 +4,7 @@
 # Ejecutar PowerShell COMO ADMINISTRADOR (o uninstall-windows.cmd).
 #
 #   .\uninstall-windows.ps1
-#   .\uninstall-windows.ps1 -NodoDir "C:\Program Files\Multishop\nodo"
+#   .\uninstall-windows.ps1 -NodoDir "C:\Program Files\Multishop\router"
 #   .\uninstall-windows.ps1 -Force
 #   .\uninstall-windows.ps1 -KeepVpn -KeepLogs
 #   .\uninstall-windows.ps1 -KeepProgramFiles   # solo quitar tareas/servicios, conservar carpeta
@@ -33,19 +33,32 @@ if (Test-Path -LiteralPath $envHelper) {
 }
 
 $WireGuardExe = Join-Path ${env:ProgramFiles} "WireGuard\wireguard.exe"
-$DefaultInstallRoot = Join-Path ${env:ProgramFiles} "Multishop\nodo"
-$ProgramDataDir = Join-Path $env:ProgramData "Multishop"
+$DefaultInstallRoot = if (Get-Command Get-MultishopDefaultInstallRoot -ErrorAction SilentlyContinue) {
+    Get-MultishopDefaultInstallRoot
+} else {
+    Join-Path ${env:ProgramFiles} "Multishop\router"
+}
+$ProgramDataDir = if (Get-Command Get-MultishopDeployRoot -ErrorAction SilentlyContinue) {
+    Get-MultishopDeployRoot
+} else {
+    Join-Path $env:ProgramData "Multishop"
+}
 $LocalAppDataDir = Join-Path $env:LOCALAPPDATA "Multishop"
 
-$ApiTaskNames = @(
-    "Multishop-Nodo-API",
-    "Multishop-Nodo-Huey"
-)
+$ApiTaskNames = if (Get-Command Get-MultishopScheduledTaskNames -ErrorAction SilentlyContinue) {
+    Get-MultishopScheduledTaskNames
+} else {
+    @("Multishop-Router-API", "Multishop-Router-Huey")
+}
 $WgResumeTaskNames = @(
     "Multishop-WG-Resume",
     "Multishop-WG-Resume-Hibernate"
 )
-$StartupVbsName = "Multishop-Nodo-API.vbs"
+$StartupVbsName = if (Get-Command Get-MultishopLauncherBasename -ErrorAction SilentlyContinue) {
+    "$(Get-MultishopLauncherBasename).vbs"
+} else {
+    "start-api.vbs"
+}
 
 if (-not $ScriptsDir) {
     $ScriptsDir = $PSScriptRoot
@@ -79,7 +92,11 @@ function Resolve-NodoInstallDir {
     if ($InputPath) {
         $candidates += $InputPath
     }
-    $dirFile = Join-Path $ProgramDataDir "nodo-dir.txt"
+    $dirFile = if (Get-Command Get-MultishopDirFilePath -ErrorAction SilentlyContinue) {
+        Get-MultishopDirFilePath
+    } else {
+        Join-Path $ProgramDataDir "router-dir.txt"
+    }
     if (Test-Path -LiteralPath $dirFile) {
         $candidates += (Get-Content -LiteralPath $dirFile -Raw).Trim()
     }
@@ -255,13 +272,22 @@ function Remove-NodoApiAutostart {
         $ErrorActionPreference = $prev
     } else {
         Write-Warning "No se encontro nodo-api-windows-install.ps1; omitiendo limpieza ProgramData via script."
+        $launcherBase = if (Get-Command Get-MultishopLauncherBasename -ErrorAction SilentlyContinue) {
+            Get-MultishopLauncherBasename
+        } else { 'start-api' }
+        $hueyBase = if (Get-Command Get-MultishopHueyLauncherBasename -ErrorAction SilentlyContinue) {
+            Get-MultishopHueyLauncherBasename
+        } else { 'start-huey' }
+        $dirName = if (Get-Command Get-MultishopDirFileName -ErrorAction SilentlyContinue) {
+            Get-MultishopDirFileName
+        } else { 'router-dir.txt' }
         $toRemove = @(
-            (Join-Path $ProgramDataDir "start-nodo-api.ps1"),
-            (Join-Path $ProgramDataDir "start-nodo-api.vbs"),
-            (Join-Path $ProgramDataDir "start-nodo-huey.ps1"),
-            (Join-Path $ProgramDataDir "start-nodo-huey.vbs"),
+            (Join-Path $ProgramDataDir "$launcherBase.ps1"),
+            (Join-Path $ProgramDataDir "$launcherBase.vbs"),
+            (Join-Path $ProgramDataDir "$hueyBase.ps1"),
+            (Join-Path $ProgramDataDir "$hueyBase.vbs"),
             (Join-Path $ProgramDataDir "nodo-env.ps1"),
-            (Join-Path $ProgramDataDir "nodo-dir.txt"),
+            (Join-Path $ProgramDataDir $dirName),
             (Join-Path $ProgramDataDir "tunnel-name.txt")
         )
         foreach ($f in $toRemove) {
@@ -442,13 +468,19 @@ function Remove-WireGuardVpn {
 function Remove-MultishopDataDirs {
     if ($KeepLogs) {
         Write-Host "Conservando logs (-KeepLogs)."
+        $launcherBase = if (Get-Command Get-MultishopLauncherBasename -ErrorAction SilentlyContinue) {
+            Get-MultishopLauncherBasename
+        } else { 'start-api' }
+        $dirName = if (Get-Command Get-MultishopDirFileName -ErrorAction SilentlyContinue) {
+            Get-MultishopDirFileName
+        } else { 'router-dir.txt' }
         $toRemove = @(
-            (Join-Path $ProgramDataDir "start-nodo-api.ps1"),
+            (Join-Path $ProgramDataDir "$launcherBase.ps1"),
             (Join-Path $ProgramDataDir "nodo-env.ps1"),
-            (Join-Path $ProgramDataDir "start-nodo-api.vbs"),
+            (Join-Path $ProgramDataDir "$launcherBase.vbs"),
             (Join-Path $ProgramDataDir "wg-resume.ps1"),
             (Join-Path $ProgramDataDir "wg-resume.cmd"),
-            (Join-Path $ProgramDataDir "nodo-dir.txt"),
+            (Join-Path $ProgramDataDir $dirName),
             (Join-Path $ProgramDataDir "tunnel-name.txt")
         )
         foreach ($f in $toRemove) {
@@ -496,7 +528,7 @@ function Show-UninstallPlan {
     Write-Host ""
     Write-Host "Se realizaran estas acciones:"
     Write-Host "  1. Detener API Python (puerto NODO_PORT en .env y venv del nodo)"
-    Write-Host "  2. Quitar tareas ONSTART: Multishop-Nodo-API, Multishop-Nodo-Huey"
+    Write-Host "  2. Quitar tareas ONSTART: $($ApiTaskNames -join ', ')"
     Write-Host "  3. Quitar tareas: $($WgResumeTaskNames -join ', ')"
     Write-Host "  4. Quitar acceso directo en carpeta Inicio ($StartupVbsName)"
     if (-not $KeepVpn) {
@@ -579,7 +611,7 @@ foreach ($name in ($ApiTaskNames + $WgResumeTaskNames)) {
 }
 if ($leftTasks.Count -gt 0) {
     Write-Warning "Tareas residuales (elimine manualmente como admin): $($leftTasks -join ', ')"
-    Write-Host "  schtasks /Delete /TN `"Multishop-Nodo-API`" /F" -ForegroundColor Yellow
+    Write-Host "  schtasks /Delete /TN `"$(Get-MultishopApiScheduledTaskName)`" /F" -ForegroundColor Yellow
 } else {
     Write-Host "Sin tareas Multishop residuales." -ForegroundColor Green
 }

@@ -14,7 +14,7 @@
 #   .\install-windows.ps1 -KeepVenv   # no borrar venv existente
 #   .\install-windows.ps1 -NoStart      # no arrancar API ahora (si hay tarea, igual se registra)
 #
-#   .\install-windows.ps1 -InstallRoot "D:\Multishop\nodo"   # otra ruta fija
+#   .\install-windows.ps1 -InstallRoot "D:\Multishop\router"   # otra ruta fija
 #   .\install-windows.ps1 -SkipProgramFilesCopy                # quedarse en carpeta actual
 
 param(
@@ -69,6 +69,10 @@ function Resolve-NodoProjectDir {
 $SourceNodoDir = Resolve-NodoProjectDir -InputPath $PSScriptRoot
 $NodoDir = $SourceNodoDir
 $ScriptsDir = Join-Path $SourceNodoDir "scripts"
+$envHelperBootstrap = Join-Path $ScriptsDir 'nodo-env.ps1'
+if (Test-Path -LiteralPath $envHelperBootstrap) {
+    . $envHelperBootstrap
+}
 $script:BundleDirResolved = ""
 $WireGuardExe = Join-Path ${env:ProgramFiles} "WireGuard\\wireguard.exe"
 $WireGuardUrl = "https://www.wireguard.com/install/"
@@ -438,7 +442,10 @@ function Test-IsAdmin {
 }
 
 function Get-DefaultInstallRoot {
-    return Join-Path ${env:ProgramFiles} "Multishop\\nodo"
+    if (Get-Command Get-MultishopDefaultInstallRoot -ErrorAction SilentlyContinue) {
+        return Get-MultishopDefaultInstallRoot
+    }
+    return Join-Path ${env:ProgramFiles} "Multishop\\router"
 }
 
 function Invoke-SchTasksQuiet {
@@ -472,7 +479,12 @@ function Remove-AllMultishopScheduledTasks {
             return
         }
     }
-    foreach ($taskName in @("Multishop-Nodo-API", "Multishop-Nodo-Huey")) {
+    $taskNames = if (Get-Command Get-MultishopScheduledTaskNames -ErrorAction SilentlyContinue) {
+        Get-MultishopScheduledTaskNames
+    } else {
+        @('Multishop-Router-API', 'Multishop-Router-Huey')
+    }
+    foreach ($taskName in $taskNames) {
         Remove-MultishopScheduledTaskIfExists -Name $taskName
     }
 }
@@ -931,9 +943,8 @@ if (-not $SkipApiAutostart) {
     }
 }
 
+Write-Host "Nodo Windows listo en $(Get-MultishopDefaultInstallRoot)."
+Write-Host "Arranque API: $(Join-Path $venvDir 'Scripts\\python') $(Join-Path $NodoDir 'main.py')"
 Write-Host ""
-Write-Host "Nodo Windows listo. Arranque API: $(Join-Path $venvDir 'Scripts\\python') $(Join-Path $NodoDir 'main.py')"
-Write-Host ""
-Write-Host "Huey (outbox + sync catálogo): incluido en env.txt del provisioning (HUEY_ENABLED=true)."
-Write-Host "- Tarea ONSTART: Multishop-Nodo-Huey (si nodo-api-windows-install.ps1 corrio tras copiar .env)"
-Write-Host "- Manual: $(Join-Path $venvDir 'Scripts\\python') -m huey.bin.huey_consumer huey_tasks.huey"
+Write-Host "Conexion directa (fork router): HUEY_ENABLED=false en .env; solo API + tarea $(Get-MultishopApiScheduledTaskName)."
+Write-Host "Convive con Multishop\\nodo en la misma PC (carpetas y tareas distintas)."

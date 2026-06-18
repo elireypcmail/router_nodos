@@ -1,4 +1,74 @@
 # Lectura de .env del nodo (NODO_PORT, etc.) — dot-source desde otros scripts en scripts\
+#
+# Fork "router": convive con Multishop\nodo en la misma PC (rutas y tareas distintas).
+
+$script:MultishopProductId = 'router'
+$script:MultishopInstallFolderName = 'router'
+
+function Get-MultishopProductId {
+    if ($script:MultishopProductId) { return $script:MultishopProductId }
+    return 'router'
+}
+
+function Get-MultishopInstallFolderName {
+    if ($script:MultishopInstallFolderName) { return $script:MultishopInstallFolderName }
+    return 'router'
+}
+
+function Get-MultishopDefaultInstallRoot {
+    return Join-Path ${env:ProgramFiles} (Join-Path 'Multishop' (Get-MultishopInstallFolderName))
+}
+
+function Get-MultishopProgramDataRoot {
+    return Join-Path $env:ProgramData 'Multishop'
+}
+
+function Get-MultishopDeployRoot {
+    return Join-Path (Get-MultishopProgramDataRoot) (Get-MultishopProductId)
+}
+
+function Get-MultishopDirFileName {
+    return "$(Get-MultishopProductId)-dir.txt"
+}
+
+function Get-MultishopDirFilePath {
+    return Join-Path (Get-MultishopDeployRoot) (Get-MultishopDirFileName)
+}
+
+function Get-MultishopScheduledTaskNames {
+    $id = Get-MultishopProductId
+    $label = (Get-Culture).TextInfo.ToTitleCase($id)
+    return @(
+        "Multishop-$label-API",
+        "Multishop-$label-Huey"
+    )
+}
+
+function Get-MultishopApiScheduledTaskName {
+    return (Get-MultishopScheduledTaskNames)[0]
+}
+
+function Get-MultishopHueyScheduledTaskName {
+    return (Get-MultishopScheduledTaskNames)[1]
+}
+
+function Get-MultishopApiLogBasename {
+    return "$(Get-MultishopProductId)-api"
+}
+
+function Get-MultishopLauncherBasename {
+    return 'start-api'
+}
+
+function Get-MultishopHueyLauncherBasename {
+    return 'start-huey'
+}
+
+function Get-MultishopStartMutexPrefix {
+    $id = Get-MultishopProductId
+    $label = (Get-Culture).TextInfo.ToTitleCase($id)
+    return "Global\Multishop-$label"
+}
 
 function Read-MultishopEnvFile {
     param([string]$Path)
@@ -27,7 +97,7 @@ function Read-MultishopEnvFile {
 }
 
 function Get-MultishopNodoDirFromProgramData {
-    $dirFile = Join-Path $env:ProgramData "Multishop\nodo-dir.txt"
+    $dirFile = Get-MultishopDirFilePath
     if (-not (Test-Path -LiteralPath $dirFile)) {
         return $null
     }
@@ -204,7 +274,7 @@ function Wait-MultishopNodoProcessesStopped {
 
 function Set-MultishopOnStartTasksEnabled {
     param([bool]$Enabled)
-    foreach ($name in @('Multishop-Nodo-API', 'Multishop-Nodo-Huey')) {
+    foreach ($name in (Get-MultishopScheduledTaskNames)) {
         if (-not (Test-MultishopScheduledTaskExists -Name $name)) { continue }
         if ($Enabled) {
             if (Get-Command Enable-ScheduledTask -ErrorAction SilentlyContinue) {
@@ -387,7 +457,7 @@ function Remove-MultishopNodoScheduledTasks {
     param(
         [switch]$Quiet
     )
-    $names = @('Multishop-Nodo-API', 'Multishop-Nodo-Huey')
+    $names = Get-MultishopScheduledTaskNames
     $count = 0
     foreach ($n in $names) {
         if (Remove-MultishopScheduledTaskNamed -Name $n) {
@@ -410,7 +480,7 @@ function Invoke-MultishopStartMutex {
 
         [int]$TimeoutMs = 120000
     )
-    $mutexName = "Global\Multishop-Nodo-$Name"
+    $mutexName = "$(Get-MultishopStartMutexPrefix)-$Name"
     $mutex = New-Object System.Threading.Mutex($false, $mutexName)
     $acquired = $false
     try {
@@ -453,7 +523,7 @@ function Test-IsMultishopNodoServiceLauncher {
     }
     $cmdLower = $CommandLine.ToLowerInvariant()
 
-    if ($cmdLower -match '\bwscript(\.exe)?\b' -and $cmdLower -match 'programdata\\multishop\\start-nodo-(api|huey)\.vbs') {
+    if ($cmdLower -match '\bwscript(\.exe)?\b' -and $cmdLower -match 'programdata\\multishop\\(router\\)?start-(api|nodo-api|huey|nodo-huey)\.vbs') {
         return $true
     }
 
@@ -461,11 +531,11 @@ function Test-IsMultishopNodoServiceLauncher {
         return $false
     }
 
-    if ($cmdLower -match 'start-nodo-(api|huey)\.ps1') {
+    if ($cmdLower -match 'start-(api|nodo-api|huey|nodo-huey)\.ps1') {
         return $true
     }
 
-    if ($cmdLower -match 'programdata\\multishop\\start-nodo-(api|huey)\.ps1') {
+    if ($cmdLower -match 'programdata\\multishop\\(router\\)?start-(api|nodo-api|huey|nodo-huey)\.ps1') {
         return $true
     }
 

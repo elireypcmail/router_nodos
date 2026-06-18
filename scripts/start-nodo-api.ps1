@@ -21,7 +21,7 @@ function Test-MultishopLogDirWritable {
         if (-not (Test-Path $Dir)) {
             New-Item -ItemType Directory -Path $Dir -Force | Out-Null
         }
-        $testFile = Join-Path $Dir "nodo-api-start.log"
+        $testFile = Join-Path $Dir "$(Get-MultishopApiLogBasename)-start.log"
         Add-Content -LiteralPath $testFile -Value "" -Encoding ASCII -ErrorAction Stop
         return $true
     } catch {
@@ -30,6 +30,13 @@ function Test-MultishopLogDirWritable {
 }
 
 function Get-MultishopConfigDir {
+  if (Get-Command Get-MultishopDeployRoot -ErrorAction SilentlyContinue) {
+    $deploy = Get-MultishopDeployRoot
+    if (-not (Test-Path -LiteralPath $deploy)) {
+      New-Item -ItemType Directory -Path $deploy -Force | Out-Null
+    }
+    return $deploy
+  }
   $programData = Join-Path $env:ProgramData "Multishop"
   if (Test-Path $programData) {
     return $programData
@@ -42,9 +49,10 @@ function Get-MultishopLogDir {
         return $script:MultishopLogDir
     }
     $candidates = @(
+        (if (Get-Command Get-MultishopDeployRoot -ErrorAction SilentlyContinue) { Get-MultishopDeployRoot } else { $null }),
         (Join-Path $env:ProgramData "Multishop"),
         (Join-Path $env:LOCALAPPDATA "Multishop")
-    )
+    ) | Where-Object { $_ }
     foreach ($dir in $candidates) {
         if (Test-MultishopLogDirWritable -Dir $dir) {
             $script:MultishopLogDir = $dir
@@ -56,7 +64,7 @@ function Get-MultishopLogDir {
 
 function Write-NodoApiLog {
     param([string]$Message)
-    $logFile = Join-Path (Get-MultishopLogDir) "nodo-api-start.log"
+    $logFile = Join-Path (Get-MultishopLogDir) "$(Get-MultishopApiLogBasename)-start.log"
     $line = "{0} {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message
     try {
         Add-Content -LiteralPath $logFile -Value $line -Encoding ASCII -ErrorAction Stop
@@ -67,7 +75,7 @@ function Write-NodoApiLog {
             New-Item -ItemType Directory -Path $fallback -Force | Out-Null
         }
         $script:MultishopLogDir = $fallback
-        $logFile = Join-Path $fallback "nodo-api-start.log"
+        $logFile = Join-Path $fallback "$(Get-MultishopApiLogBasename)-start.log"
         Add-Content -LiteralPath $logFile -Value $line -Encoding ASCII
     }
 }
@@ -79,12 +87,16 @@ function Get-MultishopNodoDir {
     }
     $configDir = Get-MultishopConfigDir
     if ($configDir) {
-        $dirFile = Join-Path $configDir "nodo-dir.txt"
+        $dirFile = if (Get-Command Get-MultishopDirFilePath -ErrorAction SilentlyContinue) {
+            Get-MultishopDirFilePath
+        } else {
+            Join-Path $configDir "nodo-dir.txt"
+        }
         if (Test-Path $dirFile) {
             return (Get-Content -LiteralPath $dirFile -Raw).Trim()
         }
     }
-    throw "Falta nodo-dir.txt en ProgramData\Multishop. Ejecute el instalador Windows como administrador."
+    throw "Falta $(if (Get-Command Get-MultishopDirFileName -ErrorAction SilentlyContinue) { Get-MultishopDirFileName } else { 'nodo-dir.txt' }) en ProgramData\Multishop. Ejecute el instalador Windows como administrador."
 }
 
 function Test-NodoApiPortOpen {
@@ -110,8 +122,13 @@ function Start-MultishopNodoApi {
         param($NodoDirOverride)
 
         $MultishopDir = Get-MultishopLogDir
-        $logOut = Join-Path $MultishopDir "nodo-api.out.log"
-        $logErr = Join-Path $MultishopDir "nodo-api.err.log"
+        $logBasename = if (Get-Command Get-MultishopApiLogBasename -ErrorAction SilentlyContinue) {
+            Get-MultishopApiLogBasename
+        } else {
+            'nodo-api'
+        }
+        $logOut = Join-Path $MultishopDir "$logBasename.out.log"
+        $logErr = Join-Path $MultishopDir "$logBasename.err.log"
 
         Write-NodoApiLog "=== arranque === user=$env:USERNAME session=$env:SESSIONNAME logdir=$MultishopDir"
 
