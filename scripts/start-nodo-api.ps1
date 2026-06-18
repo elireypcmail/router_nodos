@@ -1,11 +1,62 @@
 # Arranca la API del nodo en segundo plano (sin ventana).
-# Logs: C:\ProgramData\Multishop\ (preferido) o %LOCALAPPDATA%\Multishop\ si no hay permiso de escritura.
+# Logs: C:\ProgramData\Multishop\router\ (fork router) o Multishop\ (nodo padre).
 # Puerto de escucha: NODO_PORT en .env (default 8443).
+
+function Get-MultishopApiLogBasenameSafe {
+    if (Get-Command Get-MultishopApiLogBasename -ErrorAction SilentlyContinue) {
+        return (Get-MultishopApiLogBasename)
+    }
+    $root = ($PSScriptRoot -as [string])
+    if ($root -and $root.ToLowerInvariant() -match '\\multishop\\router$') {
+        return 'router-api'
+    }
+    return 'nodo-api'
+}
+
+function Get-MultishopBootstrapLogDir {
+    $candidates = @(
+        $PSScriptRoot,
+        (if (Get-Command Get-MultishopDeployRoot -ErrorAction SilentlyContinue) { Get-MultishopDeployRoot } else { $null }),
+        (Join-Path $env:ProgramData 'Multishop\router'),
+        (Join-Path $env:ProgramData 'Multishop')
+    ) | Where-Object { $_ }
+    foreach ($dir in $candidates) {
+        try {
+            if (-not (Test-Path -LiteralPath $dir)) {
+                New-Item -ItemType Directory -Path $dir -Force | Out-Null
+            }
+            return $dir
+        } catch {
+            continue
+        }
+    }
+    return $env:TEMP
+}
+
+function Write-MultishopBootstrapLog {
+    param([string]$Message)
+    try {
+        $logFile = Join-Path (Get-MultishopBootstrapLogDir) "$(Get-MultishopApiLogBasenameSafe)-start.log"
+        $line = "{0} {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message
+        Add-Content -LiteralPath $logFile -Value $line -Encoding ASCII -ErrorAction Stop
+    } catch {
+        # ultimo recurso: no bloquear arranque por logging
+    }
+}
 
 $envHelper = Join-Path $PSScriptRoot "nodo-env.ps1"
 if (Test-Path -LiteralPath $envHelper) {
+  try {
     . $envHelper
+  } catch {
+    Write-MultishopBootstrapLog "WARN: nodo-env.ps1 no cargo: $($_.Exception.Message)"
+  }
+} else {
+  Write-MultishopBootstrapLog "WARN: falta nodo-env.ps1 en $PSScriptRoot (usando fallbacks router/nodo)"
 }
+
+Write-MultishopBootstrapLog "start-api.ps1 pid=$PID root=$PSScriptRoot"
+
 if (-not (Get-Command Get-MultishopNodoApiPort -ErrorAction SilentlyContinue)) {
     function Get-MultishopNodoApiPort {
         param([string]$NodoDir, [int]$DefaultPort = 8443)
@@ -21,7 +72,7 @@ function Test-MultishopLogDirWritable {
         if (-not (Test-Path $Dir)) {
             New-Item -ItemType Directory -Path $Dir -Force | Out-Null
         }
-        $testFile = Join-Path $Dir "$(Get-MultishopApiLogBasename)-start.log"
+        $testFile = Join-Path $Dir "$(Get-MultishopApiLogBasenameSafe)-start.log"
         Add-Content -LiteralPath $testFile -Value "" -Encoding ASCII -ErrorAction Stop
         return $true
     } catch {
@@ -49,7 +100,9 @@ function Get-MultishopLogDir {
         return $script:MultishopLogDir
     }
     $candidates = @(
+        $PSScriptRoot,
         (if (Get-Command Get-MultishopDeployRoot -ErrorAction SilentlyContinue) { Get-MultishopDeployRoot } else { $null }),
+        (Join-Path $env:ProgramData "Multishop\router"),
         (Join-Path $env:ProgramData "Multishop"),
         (Join-Path $env:LOCALAPPDATA "Multishop")
     ) | Where-Object { $_ }
@@ -64,7 +117,7 @@ function Get-MultishopLogDir {
 
 function Write-NodoApiLog {
     param([string]$Message)
-    $logFile = Join-Path (Get-MultishopLogDir) "$(Get-MultishopApiLogBasename)-start.log"
+    $logFile = Join-Path (Get-MultishopLogDir) "$(Get-MultishopApiLogBasenameSafe)-start.log"
     $line = "{0} {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message
     try {
         Add-Content -LiteralPath $logFile -Value $line -Encoding ASCII -ErrorAction Stop
@@ -75,7 +128,7 @@ function Write-NodoApiLog {
             New-Item -ItemType Directory -Path $fallback -Force | Out-Null
         }
         $script:MultishopLogDir = $fallback
-        $logFile = Join-Path $fallback "$(Get-MultishopApiLogBasename)-start.log"
+        $logFile = Join-Path $fallback "$(Get-MultishopApiLogBasenameSafe)-start.log"
         Add-Content -LiteralPath $logFile -Value $line -Encoding ASCII
     }
 }
@@ -84,6 +137,13 @@ function Get-MultishopNodoDir {
     param([string]$NodoDirOverride = "")
     if ($NodoDirOverride) {
         return $NodoDirOverride
+    }
+    foreach ($name in @('router-dir.txt', 'nodo-dir.txt')) {
+        $localDirFile = Join-Path $PSScriptRoot $name
+        if (Test-Path -LiteralPath $localDirFile) {
+            $dir = (Get-Content -LiteralPath $localDirFile -Raw).Trim()
+            if ($dir) { return $dir }
+        }
     }
     $configDir = Get-MultishopConfigDir
     if ($configDir) {
@@ -122,11 +182,7 @@ function Start-MultishopNodoApi {
         param($NodoDirOverride)
 
         $MultishopDir = Get-MultishopLogDir
-        $logBasename = if (Get-Command Get-MultishopApiLogBasename -ErrorAction SilentlyContinue) {
-            Get-MultishopApiLogBasename
-        } else {
-            'nodo-api'
-        }
+        $logBasename = Get-MultishopApiLogBasenameSafe
         $logOut = Join-Path $MultishopDir "$logBasename.out.log"
         $logErr = Join-Path $MultishopDir "$logBasename.err.log"
 
@@ -235,5 +291,10 @@ function Start-MultishopNodoApi {
 
 if ($MyInvocation.InvocationName -ne '.') {
     $ErrorActionPreference = "Stop"
-    Start-MultishopNodoApi
+    try {
+        Start-MultishopNodoApi
+    } catch {
+        Write-MultishopBootstrapLog "ERROR: $($_.Exception.Message)"
+        throw
+    }
 }

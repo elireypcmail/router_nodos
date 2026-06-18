@@ -12,7 +12,7 @@ param(
     [switch]$StartNow
 )
 
-$MultishopWindowsInstallVersion = "20260618.1"
+$MultishopWindowsInstallVersion = "20260618.2"
 
 $ErrorActionPreference = "Stop"
 
@@ -231,7 +231,12 @@ function Deploy-NodoApiLauncher {
     Set-Content -LiteralPath $TunnelFile -Value $TunnelName -Encoding ASCII -NoNewline -Force
     Copy-ItemIfDifferent -Source $SourceScript -Destination $DeployedScript | Out-Null
     if (Test-Path -LiteralPath $SourceEnvHelper) {
-        Copy-ItemIfDifferent -Source $SourceEnvHelper -Destination $DeployedEnvHelper | Out-Null
+        Copy-Item -LiteralPath $SourceEnvHelper -Destination $DeployedEnvHelper -Force
+        if (-not (Test-Path -LiteralPath $DeployedEnvHelper)) {
+            throw "No se pudo copiar nodo-env.ps1 a $DeployedEnvHelper"
+        }
+    } else {
+        Write-Warning "Falta $SourceEnvHelper; el launcher en ProgramData puede fallar en silencio."
     }
     $hueySource = Join-Path $PSScriptRoot "start-nodo-huey.ps1"
     $hueyDeployed = Join-Path $DeployDir "$(Get-MultishopHueyLauncherBasename).ps1"
