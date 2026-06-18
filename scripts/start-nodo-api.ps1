@@ -13,13 +13,22 @@ function Get-MultishopApiLogBasenameSafe {
     return 'nodo-api'
 }
 
+function Get-MultishopDeployRootOptional {
+    if (Get-Command Get-MultishopDeployRoot -ErrorAction SilentlyContinue) {
+        return (Get-MultishopDeployRoot)
+    }
+    return $null
+}
+
 function Get-MultishopBootstrapLogDir {
-    $candidates = @(
-        $PSScriptRoot,
-        (if (Get-Command Get-MultishopDeployRoot -ErrorAction SilentlyContinue) { Get-MultishopDeployRoot } else { $null }),
+    $candidates = @($PSScriptRoot)
+    $deployRoot = Get-MultishopDeployRootOptional
+    if ($deployRoot) { $candidates += $deployRoot }
+    $candidates += @(
         (Join-Path $env:ProgramData 'Multishop\router'),
         (Join-Path $env:ProgramData 'Multishop')
-    ) | Where-Object { $_ }
+    )
+    $candidates = $candidates | Where-Object { $_ }
     foreach ($dir in $candidates) {
         try {
             if (-not (Test-Path -LiteralPath $dir)) {
@@ -99,13 +108,15 @@ function Get-MultishopLogDir {
     if ($script:MultishopLogDir) {
         return $script:MultishopLogDir
     }
-    $candidates = @(
-        $PSScriptRoot,
-        (if (Get-Command Get-MultishopDeployRoot -ErrorAction SilentlyContinue) { Get-MultishopDeployRoot } else { $null }),
+    $candidates = @($PSScriptRoot)
+    $deployRoot = Get-MultishopDeployRootOptional
+    if ($deployRoot) { $candidates += $deployRoot }
+    $candidates += @(
         (Join-Path $env:ProgramData "Multishop\router"),
         (Join-Path $env:ProgramData "Multishop"),
         (Join-Path $env:LOCALAPPDATA "Multishop")
-    ) | Where-Object { $_ }
+    )
+    $candidates = $candidates | Where-Object { $_ }
     foreach ($dir in $candidates) {
         if (Test-MultishopLogDirWritable -Dir $dir) {
             $script:MultishopLogDir = $dir
@@ -156,7 +167,11 @@ function Get-MultishopNodoDir {
             return (Get-Content -LiteralPath $dirFile -Raw).Trim()
         }
     }
-    throw "Falta $(if (Get-Command Get-MultishopDirFileName -ErrorAction SilentlyContinue) { Get-MultishopDirFileName } else { 'nodo-dir.txt' }) en ProgramData\Multishop. Ejecute el instalador Windows como administrador."
+    $dirFileLabel = 'nodo-dir.txt'
+    if (Get-Command Get-MultishopDirFileName -ErrorAction SilentlyContinue) {
+        $dirFileLabel = Get-MultishopDirFileName
+    }
+    throw "Falta $dirFileLabel en ProgramData\Multishop. Ejecute el instalador Windows como administrador."
 }
 
 function Test-NodoApiPortOpen {

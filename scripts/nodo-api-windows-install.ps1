@@ -12,7 +12,7 @@ param(
     [switch]$StartNow
 )
 
-$MultishopWindowsInstallVersion = "20260618.2"
+$MultishopWindowsInstallVersion = "20260618.3"
 
 $ErrorActionPreference = "Stop"
 
@@ -229,7 +229,7 @@ function Deploy-NodoApiLauncher {
     Ensure-MultishopDeployDir -Path $DeployDir
     Set-Content -LiteralPath $DirFile -Value $NodoDir -Encoding ASCII -NoNewline -Force
     Set-Content -LiteralPath $TunnelFile -Value $TunnelName -Encoding ASCII -NoNewline -Force
-    Copy-ItemIfDifferent -Source $SourceScript -Destination $DeployedScript | Out-Null
+    Copy-Item -LiteralPath $SourceScript -Destination $DeployedScript -Force
     if (Test-Path -LiteralPath $SourceEnvHelper) {
         Copy-Item -LiteralPath $SourceEnvHelper -Destination $DeployedEnvHelper -Force
         if (-not (Test-Path -LiteralPath $DeployedEnvHelper)) {
@@ -322,8 +322,9 @@ function Start-NodoApiBackground {
     } catch {
         Write-Warning "No se pudo escribir $startLog : $($_.Exception.Message)"
     }
-    $psArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$DeployedScript`""
-    Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -WindowStyle Hidden
+    Start-Process -FilePath "powershell.exe" -ArgumentList @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $DeployedScript
+    ) -WindowStyle Hidden
     Write-Host "API iniciada en segundo plano." -ForegroundColor Green
     Write-Host "Log: $DeployDir\$logBasename-start.log"
 }
@@ -333,8 +334,10 @@ function Start-NodoHueyBackground {
     if (-not (Test-Path -LiteralPath $hueyScript)) {
         $hueyScript = Join-Path $PSScriptRoot "start-nodo-huey.ps1"
     }
-    $psArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$hueyScript`" -NodoDir `"$NodoDir`" -SkipMutex"
-    Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -WindowStyle Hidden
+    Start-Process -FilePath "powershell.exe" -ArgumentList @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+        '-File', $hueyScript, '-NodoDir', $NodoDir, '-SkipMutex'
+    ) -WindowStyle Hidden
     Write-Host "Huey consumer en segundo plano (ver $DeployDir\nodo-huey-start.log)." -ForegroundColor Green
 }
 

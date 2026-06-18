@@ -19,14 +19,22 @@ $logStart = Join-Path $DeployDir "$logBasename-start.log"
 $logStartLocal = Join-Path $env:LOCALAPPDATA "Multishop\$logBasename-start.log"
 $logOut = Join-Path $DeployDir "$logBasename.out.log"
 $logErr = Join-Path $DeployDir "$logBasename.err.log"
-$launcherVbs = Join-Path $DeployDir "$(if (Get-Command Get-MultishopLauncherBasename -ErrorAction SilentlyContinue) { Get-MultishopLauncherBasename } else { 'start-api' }).vbs"
+$launcherBase = 'start-api'
+if (Get-Command Get-MultishopLauncherBasename -ErrorAction SilentlyContinue) {
+    $launcherBase = Get-MultishopLauncherBasename
+}
+$launcherVbs = Join-Path $DeployDir "$launcherBase.vbs"
 
 $nodoDir = Get-MultishopNodoDirFromProgramData
 $apiPort = 8443
 if ($nodoDir) {
     $apiPort = Get-MultishopNodoApiPort -NodoDir $nodoDir
 } else {
-    Write-Warning "No se encontro $(if (Get-Command Get-MultishopDirFileName -ErrorAction SilentlyContinue) { Get-MultishopDirFileName } else { 'router-dir.txt' }); usando puerto por defecto $apiPort"
+    $dirFileLabel = 'router-dir.txt'
+    if (Get-Command Get-MultishopDirFileName -ErrorAction SilentlyContinue) {
+        $dirFileLabel = Get-MultishopDirFileName
+    }
+    Write-Warning "No se encontro $dirFileLabel; usando puerto por defecto $apiPort"
 }
 
 Write-Host "=== Multishop router nodo API ==="
