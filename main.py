@@ -27,10 +27,7 @@ def configure_logging() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    try:
-        yield
-    finally:
-        return
+    yield
 
 
 configure_logging()
@@ -220,6 +217,9 @@ def run():
             ],
             "reload_delay": 0.75,
         }
+
+    print(settings.nodo_host)
+    print(settings.nodo_port)
 
     uvicorn.run(
         "main:app",

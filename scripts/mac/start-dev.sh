@@ -10,6 +10,7 @@
 #   --no-wg            No intenta levantar WireGuard
 #   --skip-triggers    No aplica outbox (triggers/funciones ms_json_*)
 #   --skip-docker      Asume MySQL ya corriendo (usa MYSQL_* del .env)
+#   --skip-venv        No crea venv ni ejecuta pip install (usa venv existente)
 #   --recreate-venv    Borra venv y lo recrea
 set -euo pipefail
 
@@ -28,6 +29,7 @@ BUNDLE_DIR=""
 NO_WG=0
 SKIP_TRIGGERS=0
 SKIP_DOCKER=0
+SKIP_VENV=0
 RECREATE_VENV=0
 WG_STARTED=0
 WG_INTERFACE=""
@@ -52,6 +54,7 @@ while [[ $# -gt 0 ]]; do
     --no-wg) NO_WG=1; shift ;;
     --skip-triggers) SKIP_TRIGGERS=1; shift ;;
     --skip-docker) SKIP_DOCKER=1; shift ;;
+    --skip-venv) SKIP_VENV=1; shift ;;
     --recreate-venv) RECREATE_VENV=1; shift ;;
     *) die "Opción desconocida: $1 (usa --help)" ;;
   esac
@@ -129,6 +132,11 @@ ensure_venv() {
   log "Instalando dependencias (pip)..."
   "${PIP_BIN}" install -q --upgrade pip
   "${PIP_BIN}" install -q -r "${NODO_DIR}/requirements.txt"
+}
+
+require_existing_venv() {
+  [[ -x "${PYTHON_BIN}" ]] || die "No existe ${PYTHON_BIN}. Ejecuta ./start-dev.sh una vez (sin --skip-venv) o usa --recreate-venv."
+  log "Usando venv existente: ${VENV_DIR}"
 }
 
 apply_bundle() {
@@ -309,7 +317,11 @@ if [[ -z "${MYSQL_USER}" || -z "${MYSQL_PASSWORD}" || -z "${MYSQL_DATABASE}" ]];
 fi
 
 py="$(ensure_python)"
-ensure_venv "${py}"
+if [[ "${SKIP_VENV}" -eq 1 ]]; then
+  require_existing_venv
+else
+  ensure_venv "${py}"
+fi
 
 ensure_docker_mysql
 ensure_triggers
