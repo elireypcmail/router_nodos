@@ -311,7 +311,7 @@ function Start-NodoApiBackground {
     $psArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$DeployedScript`""
     Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -WindowStyle Hidden
     Write-Host "API iniciada en segundo plano." -ForegroundColor Green
-    Write-Host "Log: $DeployDir\nodo-api-start.log"
+    Write-Host "Log: $DeployDir\$(Get-MultishopApiLogBasename)-start.log"
 }
 
 function Start-NodoHueyBackground {
@@ -359,6 +359,17 @@ function Assert-MultishopSingleInstance {
             Start-Sleep -Seconds 8
             $counts = Get-MultishopNodoProcessCounts -NodoDir $NodoDirPath
         }
+    } elseif ($StartNow -and $expectedApi -eq 1 -and $counts.Api -lt 1) {
+        Write-Host "Esperando proceso API (hasta 45 s) ..."
+        if (Get-Command Wait-MultishopNodoApiProcessRunning -ErrorAction SilentlyContinue) {
+            $apiPid = Wait-MultishopNodoApiProcessRunning -NodoDir $NodoDirPath -TimeoutSec 45
+            if ($apiPid -gt 0) {
+                Write-Host "API activa PID $apiPid." -ForegroundColor Green
+            }
+        } else {
+            Start-Sleep -Seconds 8
+        }
+        $counts = Get-MultishopNodoProcessCounts -NodoDir $NodoDirPath
     } elseif ($StartNow) {
         Start-Sleep -Seconds 2
         $counts = Get-MultishopNodoProcessCounts -NodoDir $NodoDirPath
@@ -369,10 +380,15 @@ function Assert-MultishopSingleInstance {
         if ($ExpectHuey -and $counts.Huey -lt 1 -and (Get-Command Get-MultishopHueyStartFailureHint -ErrorAction SilentlyContinue)) {
             $hint = Get-MultishopHueyStartFailureHint -NodoDir $NodoDirPath
         }
-        throw @(
-            "Multishop nodo: procesos incorrectos (API=$($counts.Api) Huey=$($counts.Huey))"
-            $(if ($hint) { $hint } else { "" })
-        ) -join "`n  "
+        if (-not $StartNow) {
+            $logBasename = Get-MultishopApiLogBasename
+            throw @(
+                "Multishop nodo: procesos incorrectos (API=$($counts.Api) Huey=$($counts.Huey))"
+                "Revise $DeployDir\$logBasename-start.log y $logBasename.err.log"
+                $(if ($hint) { $hint } else { "" })
+            ) -join "`n  "
+        }
+        Write-Warning "Procesos aun no visibles; comprobando puerto de la API..."
     }
     if ($StartNow) {
         $port = Get-MultishopNodoApiPort -NodoDir $NodoDirPath
@@ -389,11 +405,12 @@ function Assert-MultishopSingleInstance {
             if (Get-Command Get-MultishopNodoApiStartFailureHint -ErrorAction SilentlyContinue) {
                 $hint = Get-MultishopNodoApiStartFailureHint -NodoDir $NodoDirPath
             }
-            throw @(
-                "Multishop nodo: API no escucha en el puerto configurado ($port)."
-                "Revise ProgramData\Multishop\nodo-api.err.log y nodo-api-start.log."
+            Write-Warning @(
+                "Multishop router: API no escucha en el puerto configurado ($port)."
+                "Revise $DeployDir\$(Get-MultishopApiLogBasename).err.log"
                 $(if ($hint) { $hint } else { "" })
             ) -join "`n  "
+            return
         }
         Write-Host "API escuchando en puerto $port." -ForegroundColor Green
     }

@@ -935,7 +935,20 @@ if (-not $SkipApiAutostart) {
                     Write-Warning "Procesos duplicados (API=$($counts.Api) Huey=$($counts.Huey)). Re-ejecute nodo-api-windows-install.ps1 -StartNow para consolidar."
                 }
                 if ($counts.Api -lt 1) {
-                    throw "La API no arranco tras -StartNow. Revise C:\ProgramData\Multishop\nodo-api-start.log y nodo-api.err.log"
+                    $logBase = if (Get-Command Get-MultishopApiLogBasename -ErrorAction SilentlyContinue) {
+                        Get-MultishopApiLogBasename
+                    } else { 'router-api' }
+                    $deployLog = if (Get-Command Get-MultishopDeployRoot -ErrorAction SilentlyContinue) {
+                        Get-MultishopDeployRoot
+                    } else {
+                        Join-Path $env:ProgramData 'Multishop\router'
+                    }
+                    Write-Warning @(
+                        "La API no arranco tras -StartNow.",
+                        "Revise $deployLog\$logBase-start.log y $logBase.err.log",
+                        "La tarea ONSTART quedo registrada; corrija .env/certs y ejecute:",
+                        "  wscript.exe //nologo `"$deployLog\start-api.vbs`""
+                    ) -join "`n  "
                 }
             }
         }

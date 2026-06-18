@@ -667,6 +667,24 @@ function Test-MultishopNodoApiHealthy {
     return ((Test-MultishopNodoApiProcessRunning -NodoDir $NodoDir) -gt 0)
 }
 
+function Wait-MultishopNodoApiProcessRunning {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDir,
+        [int]$TimeoutSec = 45,
+        [int]$IntervalSec = 2
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        $runningPid = Test-MultishopNodoApiProcessRunning -NodoDir $NodoDir
+        if ($runningPid -gt 0) {
+            return $runningPid
+        }
+        Start-Sleep -Seconds $IntervalSec
+    }
+    return 0
+}
+
 function Wait-MultishopNodoApiPortListening {
     param(
         [Parameter(Mandatory = $true)]
@@ -882,10 +900,25 @@ function Get-MultishopNodoApiStartFailureHint {
     )
     $port = Get-MultishopNodoApiPort -NodoDir $NodoDir
     $lines = @("Puerto esperado: $port (NODO_PORT en .env)")
+    $logBasename = if (Get-Command Get-MultishopApiLogBasename -ErrorAction SilentlyContinue) {
+        Get-MultishopApiLogBasename
+    } else {
+        'router-api'
+    }
+    $logDirs = @()
+    if (Get-Command Get-MultishopDeployRoot -ErrorAction SilentlyContinue) {
+        $logDirs += Get-MultishopDeployRoot
+    }
     foreach ($base in @($env:ProgramData, $env:LOCALAPPDATA)) {
         if (-not $base) { continue }
-        $logDir = Join-Path $base "Multishop"
-        foreach ($name in @("nodo-api.err.log", "nodo-api-start.log", "nodo-api.out.log")) {
+        $logDirs += Join-Path $base "Multishop"
+    }
+    foreach ($logDir in ($logDirs | Select-Object -Unique)) {
+        foreach ($name in @(
+                "$logBasename-start.log",
+                "$logBasename.err.log",
+                "$logBasename.out.log"
+            )) {
             $path = Join-Path $logDir $name
             if (-not (Test-Path -LiteralPath $path)) { continue }
             $tail = (Get-Content -LiteralPath $path -Tail 10 -ErrorAction SilentlyContinue) -join " | "
