@@ -11,7 +11,12 @@ from db.calternos_store import (
     insert_codigos_alternos,
     normalize_codigos_alternos,
 )
-from db.detallepr_store import apply_inventario_create_pricing, apply_inventario_pg1_pricing
+from db.detallepr_store import (
+    apply_inventario_create_pricing,
+    apply_inventario_pg1_pricing,
+    attach_detallepr_divisa_pricing_to_item,
+    attach_detallepr_divisa_pricing_to_items,
+)
 from db.mysql import MySqlClient
 from db.product_porvg import validate_porvg
 from db.sinv_store import default_fcrea_today, upsert_sinv
@@ -180,11 +185,6 @@ def _fetch_inventario(
               pg3,
               pg4,
               pg5,
-              precio1div,
-              precio1ediv,
-              pg1div,
-              pg1ediv,
-              pvjusto,
               barra,
               referencia,
               componente,
@@ -207,6 +207,7 @@ def _fetch_inventario(
         rows = cur.fetchall() or []
         attach_codigos_alternos_to_items(cur, rows)
         attach_imagen_flags_to_items(cur, rows)
+        attach_detallepr_divisa_pricing_to_items(cur, rows)
         return list(rows), total
     finally:
         conn.close()
@@ -238,11 +239,6 @@ def _get_item(codigo: str) -> dict | None:
               pg3,
               pg4,
               pg5,
-              precio1div,
-              precio1ediv,
-              pg1div,
-              pg1ediv,
-              pvjusto,
               barra,
               referencia,
               componente,
@@ -267,6 +263,7 @@ def _get_item(codigo: str) -> dict | None:
         if row:
             row["codigos_alternos"] = fetch_codigos_alternos(cur, codigo)
             attach_imagen_metadata(cur, row, include_payload=True)
+            attach_detallepr_divisa_pricing_to_item(cur, row)
         return row
     finally:
         conn.close()
