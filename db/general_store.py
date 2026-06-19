@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from db.cursor_row import cursor_row_as_dict
+
+GENERAL_LAB_COLUMNS = ("cgeneral", "ngeneral")
+
 
 def fetch_laboratorio_by_code(cur, cgeneral: str) -> dict | None:
     code = (cgeneral or "").strip()
@@ -16,7 +20,7 @@ def fetch_laboratorio_by_code(cur, cgeneral: str) -> dict | None:
         """,
         (code,),
     )
-    return cur.fetchone()
+    return cursor_row_as_dict(cur.fetchone(), GENERAL_LAB_COLUMNS)
 
 
 def fetch_laboratorio_by_name(cur, ngeneral: str) -> dict | None:
@@ -32,7 +36,7 @@ def fetch_laboratorio_by_name(cur, ngeneral: str) -> dict | None:
         """,
         (name,),
     )
-    return cur.fetchone()
+    return cursor_row_as_dict(cur.fetchone(), GENERAL_LAB_COLUMNS)
 
 
 def resolve_laboratorio_codigo_to_sinv(cur, laboratorio_codigo: str) -> str:
@@ -61,7 +65,10 @@ def attach_laboratory_to_items(cur, rows: list[dict]) -> None:
             """,
             tuple(names),
         )
-        for row in cur.fetchall() or []:
+        for raw in cur.fetchall() or []:
+            row = cursor_row_as_dict(raw, GENERAL_LAB_COLUMNS)
+            if not row:
+                continue
             by_name[str(row["ngeneral"]).strip()] = row
 
     for row in rows:

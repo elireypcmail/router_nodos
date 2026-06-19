@@ -15,6 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from core.config import settings
+from core.json_util import json_safe
 from routes import categorias, compras, health, inventario, laboratorios, lotes, movimientos, proveedores, ventas
 from core.categoria_trace import is_categoria_http_path, trace, trace_exc
 
@@ -83,7 +84,7 @@ async def request_validation_exception_handler(_request: Request, exc: RequestVa
         content={
             "error": "validation_error",
             "detail": "Invalid payload",
-            "errors": exc.errors(),
+            "errors": json_safe(exc.errors()),
         },
     )
 
