@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from db.cursor_row import cursor_row_as_dict
 from db.outbox_suppress import hub_origin_write
 from db.product_price_formula import (
     price_from_costopro_pg_and_tax,
@@ -50,7 +51,7 @@ def fetch_detallepr_cost_row(cur, codigo: str) -> dict | None:
         """,
         (key,),
     )
-    return cur.fetchone()
+    return cursor_row_as_dict(cur.fetchone(), DETALLEPR_COST_FETCH)
 
 
 def _to_float(value: object) -> float:

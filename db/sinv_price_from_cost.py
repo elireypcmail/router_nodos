@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from db.cursor_row import cursor_row_as_dict
 from db.outbox_suppress import hub_origin_write
 from db.product_price_formula import (
     price_from_costopro_pg_and_tax,
@@ -102,8 +103,7 @@ def fetch_sinv_cost_price_row(cur, codigo: str) -> dict[str, Any] | None:
         f"SELECT {cols} FROM sinv WHERE TRIM(codigo) = %s LIMIT 1",
         (key,),
     )
-    row = cur.fetchone()
-    return row if isinstance(row, dict) else None
+    return cursor_row_as_dict(cur.fetchone(), SINV_COST_PRICE_FETCH)
 
 
 def recalc_programmed_prices_from_row(
