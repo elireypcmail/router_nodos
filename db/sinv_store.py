@@ -38,6 +38,7 @@ SINV_PULL_FETCH_FIELDS = SINV_HUB_FIELDS + SINV_LOCAL_FIELDS + SINV_COST_PULL_FI
 
 SINV_DESCONTINUADOR_FROM_HUB = "N/A"
 SINV_CORIGEN_MAX_LEN = 15
+SINV_DEFAULT_UXB = 1.0
 
 # Metadatos de sync push/pull que no son columnas sinv (maestro pull).
 SINV_SYNC_META_KEYS = frozenset({"action", "lotes", "existencia"})
@@ -66,6 +67,11 @@ def _parse_hub_fcrea(raw_row: dict) -> str | None:
             return text[:10]
         return text
     return None
+
+
+def default_fcrea_today() -> str:
+    """Fecha de alta local sinv.fcrea (YYYY-MM-DD)."""
+    return date.today().isoformat()
 
 
 def _effective_barra(row: dict[str, Any]) -> str:
@@ -194,6 +200,10 @@ def prepare_sinv_upsert(row: dict) -> dict[str, Any]:
     normalized = normalize_sinv_snapshot(clean)
     if not has_activo:
         normalized["activo"] = 1
+    from db.sinv_compare import _norm_num
+
+    uxb = _norm_num(clean.get("uxb"))
+    normalized["uxb"] = uxb if uxb > 0 else SINV_DEFAULT_UXB
     return enrich_sinv_from_hub(normalized, clean)
 
 
@@ -263,6 +273,11 @@ def _value_for_column(normalized: dict[str, Any], key: str, raw_row: dict) -> An
         return raw
     if key in {"precio1", "pg1", "stockmin", "stockmax", "porvg"}:
         return normalized.get(key, 0)
+    if key == "uxb":
+        from db.sinv_compare import _norm_num
+
+        val = _norm_num(normalized.get(key))
+        return val if val > 0 else SINV_DEFAULT_UXB
     if key in SINV_COST_PULL_FIELDS:
         from db.sinv_compare import _norm_num
 
@@ -305,6 +320,8 @@ def upsert_sinv(
     for key in SINV_COST_PULL_FIELDS:
         if key in normalized and key not in insert_fields:
             insert_fields.append(key)
+    if "uxb" not in insert_fields:
+        insert_fields.append("uxb")
 
     if patch_keys is not None:
         allowed = {k for k in patch_keys if k in insert_fields}

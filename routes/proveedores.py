@@ -10,11 +10,12 @@ from middleware.auth import verify_bearer
 
 router = APIRouter(prefix="/api", tags=["proveedores"])
 
+RIF_PATTERN = r"^[A-Za-z]\d+$"
+
 
 class ProveedorCreateRequest(BaseModel):
-    cod_prv: str = Field(min_length=1, max_length=10, pattern=r"^\d+$")
     nom_prv: str = Field(min_length=1, max_length=240)
-    rif_prv: str = Field(min_length=1, max_length=30, pattern=r"^[A-Za-z]\d+$")
+    rif_prv: str = Field(min_length=1, max_length=30, pattern=RIF_PATTERN)
     dir1_prv: str = Field(min_length=1, max_length=200)
     dir2_prv: str = Field(min_length=0, max_length=200)
     dir3_prv: str = Field(min_length=0, max_length=200)
@@ -43,7 +44,6 @@ class ProveedorUpsertRequest(BaseModel):
 
 class ProveedorPatchRequest(BaseModel):
     nom_prv: str = Field(min_length=1, max_length=240)
-    rif_prv: str = Field(min_length=1, max_length=30, pattern=r"^[A-Za-z]\d+$")
     dir1_prv: str = Field(min_length=1, max_length=200)
     dir2_prv: str = Field(min_length=0, max_length=200)
     dir3_prv: str = Field(min_length=0, max_length=200)
@@ -53,6 +53,10 @@ class ProveedorPatchRequest(BaseModel):
     rep_prv: str = Field(min_length=1, max_length=50)
     especial: str = Field(min_length=1, max_length=8)
     numcuenta: str = Field(min_length=1, max_length=30, pattern=r"^\d+$")
+
+
+def _normalize_rif(rif: str) -> str:
+    return rif.strip()
 
 
 def _catalog_like(term: str) -> str:
@@ -222,10 +226,14 @@ async def get_proveedor(cod_prv: str, _: None = Depends(verify_bearer)):
 
 @router.post("/proveedores")
 async def create_proveedor(body: ProveedorCreateRequest, _: None = Depends(verify_bearer)):
-    existing = await anyio.to_thread.run_sync(lambda: _get_proveedor(body.cod_prv))
+    rif = _normalize_rif(body.rif_prv)
+    cod_prv = rif
+    existing = await anyio.to_thread.run_sync(lambda: _get_proveedor(cod_prv))
     if existing is not None:
         raise HTTPException(status_code=409, detail="Provider already exists")
     payload = body.model_dump()
+    payload["cod_prv"] = cod_prv
+    payload["rif_prv"] = rif
     esp = (payload.get("especial") or "").strip().lower()
     if esp not in ("si", "no"):
         raise HTTPException(status_code=422, detail="Invalid especial")
@@ -234,7 +242,7 @@ async def create_proveedor(body: ProveedorCreateRequest, _: None = Depends(verif
         payload["email2_prv"] = None
 
     await anyio.to_thread.run_sync(lambda: _upsert_proveedor(ProveedorUpsertRequest(**payload)))
-    item = await anyio.to_thread.run_sync(lambda: _get_proveedor(body.cod_prv))
+    item = await anyio.to_thread.run_sync(lambda: _get_proveedor(cod_prv))
     return {"nodo_id": settings.nodo_id, "item": item, "message": "ok"}
 
 
@@ -250,6 +258,7 @@ async def patch_proveedor(
 
     payload = body.model_dump(exclude_unset=True)
     payload["cod_prv"] = cod_prv
+    payload["rif_prv"] = existing["rif_prv"]
     esp = (payload.get("especial") or "").strip().lower()
     if esp not in ("si", "no"):
         raise HTTPException(status_code=422, detail="Invalid especial")

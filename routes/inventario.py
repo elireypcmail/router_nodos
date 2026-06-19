@@ -1,11 +1,28 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 
 import anyio
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from core.config import settings
+from db.calternos_store import (
+    attach_codigos_alternos_to_items,
+    fetch_codigos_alternos,
+    insert_codigos_alternos,
+    normalize_codigos_alternos,
+)
+from db.detallepr_store import apply_inventario_create_pricing, apply_inventario_pg1_pricing
 from db.mysql import MySqlClient
-from db.sinv_store import upsert_sinv
+from db.product_porvg import validate_porvg
+from db.sinv_store import default_fcrea_today, upsert_sinv
+from db.sinvimg_store import (
+    attach_imagen_flags_to_items,
+    attach_imagen_metadata,
+    decode_imagen_base64,
+    detect_content_type,
+    fetch_imagen_bytes,
+    upsert_sinvimg,
+)
 from middleware.auth import verify_bearer
 
 router = APIRouter(prefix="/api", tags=["inventario"])
@@ -15,9 +32,8 @@ class InventarioCreateRequest(BaseModel):
     codigo: str = Field(min_length=1, max_length=30, pattern=r"^[A-Za-z0-9]+$")
     descrip: str = Field(min_length=1, max_length=240)
     ccate: str = Field(min_length=1, max_length=10, pattern=r"^\d+$")
-    cod_prv: str = Field(min_length=1, max_length=30, pattern=r"^\d+$")
-    precio1: float = Field(ge=0)
-    pg1: float = Field(ge=0)
+    cod_prv: str = Field(min_length=1, max_length=30, pattern=r"^[A-Za-z0-9]+$")
+    pg1: float = Field(ge=0, description="% ganancia lista 1 (Bs y divisa); precio1 se deja en 0")
     barra: str = Field(min_length=0, max_length=30)
     referencia: str = Field(min_length=0, max_length=15)
     componente: str = Field(min_length=0, max_length=240)
@@ -26,17 +42,40 @@ class InventarioCreateRequest(BaseModel):
     recipe: int = Field(ge=0, le=1)
     cfrio: int = Field(ge=0, le=1)
     activo: int = Field(ge=0, le=1)
-    porvg: float | None = Field(default=None, ge=0)
+    porvg: float | None = Field(
+        default=None,
+        description="Alícuota IVA: solo 0, 8, 16 o 31",
+    )
     existencia: float | None = Field(default=None, ge=0)
     costo: float | None = Field(default=None, ge=0)
+    codigos_alternos: list[str] = Field(
+        default_factory=list,
+        description="Códigos alternos (barra/EAN); se guardan en calternos con cpadre=codigo",
+    )
+    imagen_base64: str | None = Field(
+        default=None,
+        description="Imagen JPEG/PNG/GIF/WebP en base64 (opcional; acepta data URL)",
+    )
+
+    @field_validator("porvg")
+    @classmethod
+    def _validate_porvg(cls, value: float | None) -> float | None:
+        return validate_porvg(value)
+
+    @field_validator("codigos_alternos")
+    @classmethod
+    def _validate_codigos_alternos(cls, value: list[str]) -> list[str]:
+        try:
+            return normalize_codigos_alternos(value)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
 
 
 class InventarioPatchRequest(BaseModel):
     descrip: str = Field(min_length=1, max_length=240)
     ccate: str = Field(min_length=1, max_length=10, pattern=r"^\d+$")
-    cod_prv: str = Field(min_length=1, max_length=30, pattern=r"^\d+$")
-    precio1: float | None = Field(default=None, ge=0)
-    pg1: float = Field(ge=0)
+    cod_prv: str = Field(min_length=1, max_length=30, pattern=r"^[A-Za-z0-9]+$")
+    pg1: float = Field(ge=0, description="% ganancia lista 1; recalcula precio1..4 en sinv y detallepr")
     barra: str = Field(min_length=0, max_length=30)
     referencia: str = Field(min_length=0, max_length=15)
     componente: str = Field(min_length=0, max_length=240)
@@ -46,6 +85,10 @@ class InventarioPatchRequest(BaseModel):
     cfrio: int = Field(ge=0, le=1)
     activo: int = Field(ge=0, le=1)
     porvg: float | None = Field(default=None, ge=0)
+    imagen_base64: str | None = Field(
+        default=None,
+        description="Imagen JPEG/PNG/GIF/WebP en base64 (opcional; reemplaza la existente)",
+    )
 
 
 class InventarioUpsertRequest(BaseModel):
@@ -162,6 +205,8 @@ def _fetch_inventario(
             (*params, int(limit), int(offset)),
         )
         rows = cur.fetchall() or []
+        attach_codigos_alternos_to_items(cur, rows)
+        attach_imagen_flags_to_items(cur, rows)
         return list(rows), total
     finally:
         conn.close()
@@ -218,7 +263,11 @@ def _get_item(codigo: str) -> dict | None:
             """,
             (codigo,),
         )
-        return cur.fetchone()
+        row = cur.fetchone()
+        if row:
+            row["codigos_alternos"] = fetch_codigos_alternos(cur, codigo)
+            attach_imagen_metadata(cur, row, include_payload=True)
+        return row
     finally:
         conn.close()
 
@@ -259,6 +308,39 @@ def _fetch_lotes(codigo: str) -> list[dict]:
         return list(cur.fetchall() or [])
     finally:
         conn.close()
+
+
+def _fetch_imagen_binary(codigo: str) -> tuple[bytes, str] | None:
+    mysql = MySqlClient()
+    if not mysql.is_configured():
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
+
+    conn = mysql.connect()
+    try:
+        cur = conn.cursor()
+        data = fetch_imagen_bytes(cur, codigo)
+        if not data:
+            return None
+        return data, detect_content_type(data)
+    finally:
+        conn.close()
+
+
+def _save_imagen_from_base64(
+    cur,
+    codigo: str,
+    imagen_base64: str | None,
+    *,
+    descrip: str,
+    ccate: str,
+) -> None:
+    if not imagen_base64:
+        return
+    try:
+        imagen = decode_imagen_base64(imagen_base64)
+        upsert_sinvimg(cur, codigo, imagen, descrip=descrip, ccate=ccate)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def _get_detalle_tienda(codigo: str) -> dict | None:
@@ -342,6 +424,15 @@ async def get_inventario_detalle_tienda(
     }
 
 
+@router.get("/inventario/{codigo}/imagen")
+async def get_inventario_imagen(codigo: str, _: None = Depends(verify_bearer)):
+    payload = await anyio.to_thread.run_sync(lambda: _fetch_imagen_binary(codigo))
+    if not payload:
+        raise HTTPException(status_code=404, detail="Image not found")
+    data, content_type = payload
+    return Response(content=data, media_type=content_type)
+
+
 @router.get("/inventario/{codigo}")
 async def get_inventario_item(codigo: str, _: None = Depends(verify_bearer)):
     item = await anyio.to_thread.run_sync(lambda: _get_item(codigo))
@@ -368,9 +459,26 @@ async def create_inventario_item(body: InventarioCreateRequest, _: None = Depend
             if not _fk_exists(cur, "sprv", "cod_prv", body.cod_prv):
                 raise HTTPException(status_code=422, detail="Invalid cod_prv")
             payload = body.model_dump(exclude_unset=True)
+            codigos_alternos = payload.pop("codigos_alternos", []) or []
+            imagen_base64 = payload.pop("imagen_base64", None)
+            payload["precio1"] = 0
+            payload["fcrea"] = default_fcrea_today()
             if payload.get("existencia") and not payload.get("costo"):
                 raise HTTPException(status_code=422, detail="costo required when existencia > 0")
             upsert_sinv(cur, payload, patch_keys=set(payload.keys()))
+            apply_inventario_create_pricing(cur, body.codigo, body.pg1)
+            if codigos_alternos:
+                try:
+                    insert_codigos_alternos(cur, body.codigo, codigos_alternos)
+                except ValueError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+            _save_imagen_from_base64(
+                cur,
+                body.codigo,
+                imagen_base64,
+                descrip=body.descrip,
+                ccate=body.ccate,
+            )
             conn.commit()
         except HTTPException:
             conn.rollback()
@@ -408,8 +516,18 @@ async def patch_inventario_item(
             if not _fk_exists(cur, "sprv", "cod_prv", body.cod_prv):
                 raise HTTPException(status_code=422, detail="Invalid cod_prv")
             payload = body.model_dump(exclude_unset=True)
+            payload.pop("precio1", None)
+            imagen_base64 = payload.pop("imagen_base64", None)
             payload["codigo"] = codigo
             upsert_sinv(cur, payload, patch_keys=set(payload.keys()))
+            apply_inventario_pg1_pricing(cur, codigo, body.pg1)
+            _save_imagen_from_base64(
+                cur,
+                codigo,
+                imagen_base64,
+                descrip=body.descrip,
+                ccate=body.ccate,
+            )
             conn.commit()
         except HTTPException:
             conn.rollback()

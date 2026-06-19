@@ -114,7 +114,6 @@ def upsert_sprv(cur, payload: dict) -> None:
         )
         ON DUPLICATE KEY UPDATE
           nom_prv = VALUES(nom_prv),
-          rif_prv = VALUES(rif_prv),
           nit_prv = VALUES(nit_prv),
           dir1_prv = VALUES(dir1_prv),
           dir2_prv = VALUES(dir2_prv),
