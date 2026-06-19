@@ -21,6 +21,7 @@ from db.general_store import (
     attach_laboratory_to_items,
     validate_laboratorio_codigo,
 )
+from db.inventario_catalog_attach import attach_category_provider_to_items
 from db.mysql import MySqlClient
 from db.product_porvg import validate_porvg
 from db.sinv_store import default_fcrea_today, upsert_sinv
@@ -248,6 +249,7 @@ def _fetch_inventario(
         attach_codigos_alternos_to_items(cur, rows)
         attach_imagen_flags_to_items(cur, rows)
         attach_detallepr_divisa_pricing_to_items(cur, rows)
+        attach_category_provider_to_items(cur, rows)
         attach_laboratory_to_items(cur, rows)
         return list(rows), total
     finally:
@@ -306,6 +308,7 @@ def _get_item(codigo: str) -> dict | None:
             row["codigos_alternos"] = fetch_codigos_alternos(cur, codigo)
             attach_imagen_metadata(cur, row, include_payload=True)
             attach_detallepr_divisa_pricing_to_item(cur, row)
+            attach_category_provider_to_items(cur, [row])
             attach_laboratory_to_items(cur, [row])
         return row
     finally:
