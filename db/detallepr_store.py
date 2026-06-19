@@ -9,6 +9,7 @@ from db.detallepr_price_from_cost import (
     fetch_detallepr_cost_row,
     recalc_detallepr_prices_from_node_cpp,
 )
+from db.historialp_store import log_precio_referencial_changes
 from db.outbox_suppress import hub_origin_write
 from db.sinv_price_from_cost import fetch_sinv_cost_price_row, recalc_prices_from_node_cpp
 
@@ -172,6 +173,15 @@ def apply_inventario_pg1_pricing(cur, codigo_db: str, pg1: float) -> None:
         raise ValueError("inventario pricing requires codigo")
     pg1_val = _to_float(pg1)
 
+    sinv_row_before = fetch_sinv_cost_price_row(cur, key)
+    old_precio1_bs = (
+        _to_float(sinv_row_before.get("precio1")) if sinv_row_before else 0.0
+    )
+    det_row_before = fetch_detallepr_cost_row(cur, key)
+    old_precio1_usd = (
+        _to_float(det_row_before.get("precio1")) if det_row_before else 0.0
+    )
+
     ensure_detallepr_for_create(cur, key, pg1_val)
 
     with hub_origin_write(cur):
@@ -198,8 +208,27 @@ def apply_inventario_pg1_pricing(cur, codigo_db: str, pg1: float) -> None:
         )
 
     sinv_row = fetch_sinv_cost_price_row(cur, key)
-    recalc_prices_from_node_cpp(cur, key)
-    recalc_detallepr_prices_from_node_cpp(cur, key, sinv_row=sinv_row)
+    bs_updates = recalc_prices_from_node_cpp(cur, key)
+    usd_updates = recalc_detallepr_prices_from_node_cpp(cur, key, sinv_row=sinv_row)
+
+    new_precio1_bs = (
+        _to_float(bs_updates["precio1"])
+        if "precio1" in bs_updates
+        else old_precio1_bs
+    )
+    new_precio1_usd = (
+        _to_float(usd_updates["precio1"])
+        if "precio1" in usd_updates
+        else old_precio1_usd
+    )
+    log_precio_referencial_changes(
+        cur,
+        key,
+        old_precio1_bs=old_precio1_bs,
+        new_precio1_bs=new_precio1_bs,
+        old_precio1_usd=old_precio1_usd,
+        new_precio1_usd=new_precio1_usd,
+    )
 
 
 def apply_inventario_create_pricing(cur, codigo_db: str, pg1: float) -> None:

@@ -16,6 +16,11 @@ from fastapi.responses import JSONResponse
 
 from core.config import settings
 from core.json_util import json_safe
+from core.partner_request_context import (
+    PartnerRequestContext,
+    bind_partner_request_context,
+    reset_partner_request_context,
+)
 from routes import categorias, compras, health, inventario, laboratorios, lotes, movimientos, proveedores, ventas
 from core.categoria_trace import is_categoria_http_path, trace, trace_exc
 
@@ -49,6 +54,30 @@ app.include_router(lotes.router)
 app.include_router(compras.router)
 app.include_router(ventas.router)
 app.include_router(movimientos.router)
+
+
+@app.middleware("http")
+async def partner_request_context_middleware(request: Request, call_next):
+    key_id = (
+        request.headers.get("x-multishop-partner-key-id")
+        or request.headers.get("X-Multishop-Partner-Key-Id")
+        or ""
+    ).strip()
+    key_label = (
+        request.headers.get("x-multishop-partner-key-label")
+        or request.headers.get("X-Multishop-Partner-Key-Label")
+        or ""
+    ).strip()
+    ctx_token = bind_partner_request_context(
+        PartnerRequestContext(
+            key_id=key_id or None,
+            key_label=key_label or None,
+        )
+    )
+    try:
+        return await call_next(request)
+    finally:
+        reset_partner_request_context(ctx_token)
 
 
 @app.middleware("http")
