@@ -49,7 +49,7 @@ def validate_laboratorio_codigo(cur, laboratorio_codigo: str) -> str:
 
 
 def attach_laboratory_to_items(cur, rows: list[dict]) -> None:
-    """Enriquece filas sinv con laboratorio_cgeneral y laboratorio_ngeneral."""
+    """Enriquece filas sinv con laboratorio (objeto o null)."""
     codes = {
         str(row.get("cgeneral") or "").strip()
         for row in rows
@@ -70,17 +70,13 @@ def attach_laboratory_to_items(cur, rows: list[dict]) -> None:
             row = cursor_row_as_dict(raw, GENERAL_LAB_COLUMNS)
             if not row:
                 continue
-            by_code[str(row["cgeneral"]).strip()] = row
+            by_code[str(row["cgeneral"]).strip()] = dict(row)
 
     for row in rows:
         stored = str(row.get("cgeneral") or "").strip()
-        if stored and stored in by_code:
-            lab = by_code[stored]
-            row["laboratorio_cgeneral"] = str(lab["cgeneral"]).strip()
-            row["laboratorio_ngeneral"] = str(lab["ngeneral"]).strip()
-        elif stored:
-            row["laboratorio_cgeneral"] = stored
-            row["laboratorio_ngeneral"] = None
+        if not stored:
+            row["laboratorio"] = None
+        elif stored in by_code:
+            row["laboratorio"] = by_code[stored]
         else:
-            row["laboratorio_cgeneral"] = None
-            row["laboratorio_ngeneral"] = None
+            row["laboratorio"] = {"cgeneral": stored}

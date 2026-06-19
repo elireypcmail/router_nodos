@@ -4,8 +4,21 @@ from __future__ import annotations
 
 from db.cursor_row import cursor_row_as_dict
 
-CATEGO_LOOKUP_COLUMNS = ("ccate", "ncate")
-SPRV_LOOKUP_COLUMNS = ("cod_prv", "nom_prv")
+CATEGO_LOOKUP_COLUMNS = ("ccate", "ncate", "pganancia", "pdescu")
+SPRV_LOOKUP_COLUMNS = (
+    "cod_prv",
+    "nom_prv",
+    "rif_prv",
+    "dir1_prv",
+    "dir2_prv",
+    "dir3_prv",
+    "tel_prv",
+    "email1_prv",
+    "email2_prv",
+    "rep_prv",
+    "especial",
+    "numcuenta",
+)
 
 
 def _batch_lookup(
@@ -32,12 +45,12 @@ def _batch_lookup(
         row = cursor_row_as_dict(raw, value_cols)
         if not row:
             continue
-        by_key[str(row[key_col]).strip()] = row
+        by_key[str(row[key_col]).strip()] = dict(row)
     return by_key
 
 
 def attach_category_provider_to_items(cur, rows: list[dict]) -> None:
-    """Añade categoria_* y proveedor_* resueltos desde catego/sprv."""
+    """Añade categoria y proveedor como objetos completos desde catego/sprv."""
     category_codes = {
         str(row.get("ccate") or "").strip()
         for row in rows
@@ -59,24 +72,16 @@ def attach_category_provider_to_items(cur, rows: list[dict]) -> None:
     for row in rows:
         ccate = str(row.get("ccate") or "").strip()
         if ccate and ccate in by_category:
-            cat = by_category[ccate]
-            row["categoria_ccate"] = str(cat["ccate"]).strip()
-            row["categoria_ncate"] = str(cat["ncate"]).strip()
+            row["categoria"] = by_category[ccate]
         elif ccate:
-            row["categoria_ccate"] = ccate
-            row["categoria_ncate"] = None
+            row["categoria"] = {"ccate": ccate}
         else:
-            row["categoria_ccate"] = None
-            row["categoria_ncate"] = None
+            row["categoria"] = None
 
         cod_prv = str(row.get("cod_prv") or "").strip()
         if cod_prv and cod_prv in by_provider:
-            prv = by_provider[cod_prv]
-            row["proveedor_cod_prv"] = str(prv["cod_prv"]).strip()
-            row["proveedor_nom_prv"] = str(prv["nom_prv"]).strip()
+            row["proveedor"] = by_provider[cod_prv]
         elif cod_prv:
-            row["proveedor_cod_prv"] = cod_prv
-            row["proveedor_nom_prv"] = None
+            row["proveedor"] = {"cod_prv": cod_prv}
         else:
-            row["proveedor_cod_prv"] = None
-            row["proveedor_nom_prv"] = None
+            row["proveedor"] = None
