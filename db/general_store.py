@@ -39,47 +39,48 @@ def fetch_laboratorio_by_name(cur, ngeneral: str) -> dict | None:
     return cursor_row_as_dict(cur.fetchone(), GENERAL_LAB_COLUMNS)
 
 
-def resolve_laboratorio_codigo_to_sinv(cur, laboratorio_codigo: str) -> str:
-    """Devuelve ngeneral para guardar en sinv.cgeneral."""
-    row = fetch_laboratorio_by_code(cur, laboratorio_codigo)
+def validate_laboratorio_codigo(cur, laboratorio_codigo: str) -> str:
+    """Valida que el código exista en general y devuelve cgeneral para sinv.cgeneral."""
+    code = (laboratorio_codigo or "").strip()
+    row = fetch_laboratorio_by_code(cur, code)
     if row is None:
         raise ValueError("Invalid laboratorio_codigo")
-    return str(row["ngeneral"]).strip()
+    return str(row["cgeneral"]).strip()
 
 
 def attach_laboratory_to_items(cur, rows: list[dict]) -> None:
     """Enriquece filas sinv con laboratorio_cgeneral y laboratorio_ngeneral."""
-    names = {
+    codes = {
         str(row.get("cgeneral") or "").strip()
         for row in rows
         if str(row.get("cgeneral") or "").strip()
     }
-    by_name: dict[str, dict] = {}
-    if names:
-        placeholders = ", ".join(["%s"] * len(names))
+    by_code: dict[str, dict] = {}
+    if codes:
+        placeholders = ", ".join(["%s"] * len(codes))
         cur.execute(
             f"""
             SELECT cgeneral, ngeneral
             FROM general
-            WHERE ngeneral IN ({placeholders})
+            WHERE cgeneral IN ({placeholders})
             """,
-            tuple(names),
+            tuple(codes),
         )
         for raw in cur.fetchall() or []:
             row = cursor_row_as_dict(raw, GENERAL_LAB_COLUMNS)
             if not row:
                 continue
-            by_name[str(row["ngeneral"]).strip()] = row
+            by_code[str(row["cgeneral"]).strip()] = row
 
     for row in rows:
         stored = str(row.get("cgeneral") or "").strip()
-        if stored and stored in by_name:
-            lab = by_name[stored]
+        if stored and stored in by_code:
+            lab = by_code[stored]
             row["laboratorio_cgeneral"] = str(lab["cgeneral"]).strip()
             row["laboratorio_ngeneral"] = str(lab["ngeneral"]).strip()
         elif stored:
-            row["laboratorio_cgeneral"] = None
-            row["laboratorio_ngeneral"] = stored
+            row["laboratorio_cgeneral"] = stored
+            row["laboratorio_ngeneral"] = None
         else:
             row["laboratorio_cgeneral"] = None
             row["laboratorio_ngeneral"] = None

@@ -80,14 +80,11 @@ def _patch_laboratorio(cgeneral: str, patch: dict) -> int:
 
     sets: list[str] = []
     vals: list[object] = []
-    rename_from: str | None = None
-    rename_to: str | None = None
 
     if "ngeneral" in patch and patch["ngeneral"] is not None:
         new_name = str(patch["ngeneral"]).strip()
         sets.append("ngeneral = %s")
         vals.append(new_name)
-        rename_to = new_name
 
     if not sets:
         return 1
@@ -98,10 +95,11 @@ def _patch_laboratorio(cgeneral: str, patch: dict) -> int:
         existing = fetch_laboratorio_by_code(cur, cgeneral)
         if existing is None:
             return 0
-        if rename_to is not None:
-            rename_from = str(existing.get("ngeneral") or "").strip()
-            if rename_from != rename_to:
-                conflict = fetch_laboratorio_by_name(cur, rename_to)
+        if "ngeneral" in patch and patch["ngeneral"] is not None:
+            new_name = str(patch["ngeneral"]).strip()
+            old_name = str(existing.get("ngeneral") or "").strip()
+            if old_name != new_name:
+                conflict = fetch_laboratorio_by_name(cur, new_name)
                 if conflict is not None and str(conflict.get("cgeneral")).strip() != cgeneral:
                     raise HTTPException(
                         status_code=409,
@@ -117,15 +115,6 @@ def _patch_laboratorio(cgeneral: str, patch: dict) -> int:
             (*vals, cgeneral),
         )
         updated = int(cur.rowcount or 0)
-        if updated and rename_from and rename_to and rename_from != rename_to:
-            cur.execute(
-                """
-                UPDATE sinv
-                SET cgeneral = %s
-                WHERE cgeneral = %s
-                """,
-                (rename_to, rename_from),
-            )
         conn.commit()
         return updated
     except HTTPException:

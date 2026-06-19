@@ -19,7 +19,7 @@ from db.detallepr_store import (
 )
 from db.general_store import (
     attach_laboratory_to_items,
-    resolve_laboratorio_codigo_to_sinv,
+    validate_laboratorio_codigo,
 )
 from db.mysql import MySqlClient
 from db.product_porvg import validate_porvg
@@ -70,7 +70,7 @@ class InventarioCreateRequest(BaseModel):
         min_length=1,
         max_length=10,
         pattern=r"^\d+$",
-        description="Código cgeneral en tabla general; se guarda ngeneral en sinv.cgeneral",
+        description="Código cgeneral en tabla general; se guarda en sinv.cgeneral",
     )
 
     @field_validator("porvg")
@@ -148,15 +148,15 @@ def _set_sinv_laboratorio(cur, codigo: str, laboratorio_codigo: str | None) -> N
         return
     code = str(laboratorio_codigo).strip()
     if not code:
-        ngeneral = ""
+        stored = ""
     else:
         try:
-            ngeneral = resolve_laboratorio_codigo_to_sinv(cur, code)
+            stored = validate_laboratorio_codigo(cur, code)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="Invalid laboratorio_codigo") from exc
     cur.execute(
         "UPDATE sinv SET cgeneral = %s WHERE codigo = %s",
-        (ngeneral, codigo),
+        (stored, codigo),
     )
 
 
