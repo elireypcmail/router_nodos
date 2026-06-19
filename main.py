@@ -15,7 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from core.config import settings
-from routes import categorias, compras, health, inventario, lotes, movimientos, proveedores, ventas
+from routes import categorias, compras, health, inventario, laboratorios, lotes, movimientos, proveedores, ventas
 from core.categoria_trace import is_categoria_http_path, trace, trace_exc
 
 logger = logging.getLogger("multishop-nodo-api")
@@ -43,6 +43,7 @@ app.include_router(health.router)
 app.include_router(inventario.router)
 app.include_router(proveedores.router)
 app.include_router(categorias.router)
+app.include_router(laboratorios.router)
 app.include_router(lotes.router)
 app.include_router(compras.router)
 app.include_router(ventas.router)

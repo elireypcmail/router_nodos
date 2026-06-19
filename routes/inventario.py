@@ -17,6 +17,10 @@ from db.detallepr_store import (
     attach_detallepr_divisa_pricing_to_item,
     attach_detallepr_divisa_pricing_to_items,
 )
+from db.general_store import (
+    attach_laboratory_to_items,
+    resolve_laboratorio_codigo_to_sinv,
+)
 from db.mysql import MySqlClient
 from db.product_porvg import validate_porvg
 from db.sinv_store import default_fcrea_today, upsert_sinv
@@ -61,6 +65,13 @@ class InventarioCreateRequest(BaseModel):
         default=None,
         description="Imagen JPEG/PNG/GIF/WebP en base64 (opcional; acepta data URL)",
     )
+    laboratorio_codigo: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=10,
+        pattern=r"^\d+$",
+        description="Código cgeneral en tabla general; se guarda ngeneral en sinv.cgeneral",
+    )
 
     @field_validator("porvg")
     @classmethod
@@ -100,6 +111,11 @@ class InventarioPatchRequest(BaseModel):
         default=None,
         description="Imagen JPEG/PNG/GIF/WebP en base64 (opcional; reemplaza la existente)",
     )
+    laboratorio_codigo: str | None = Field(
+        default=None,
+        max_length=10,
+        description="Código cgeneral; vacío para quitar laboratorio",
+    )
 
 
 class InventarioUpsertRequest(BaseModel):
@@ -125,6 +141,23 @@ class InventarioUpsertRequest(BaseModel):
 def _fk_exists(cur, table: str, col: str, value: str) -> bool:
     cur.execute(f"SELECT 1 FROM {table} WHERE {col} = %s LIMIT 1", (value,))
     return cur.fetchone() is not None
+
+
+def _set_sinv_laboratorio(cur, codigo: str, laboratorio_codigo: str | None) -> None:
+    if laboratorio_codigo is None:
+        return
+    code = str(laboratorio_codigo).strip()
+    if not code:
+        ngeneral = ""
+    else:
+        try:
+            ngeneral = resolve_laboratorio_codigo_to_sinv(cur, code)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Invalid laboratorio_codigo") from exc
+    cur.execute(
+        "UPDATE sinv SET cgeneral = %s WHERE codigo = %s",
+        (ngeneral, codigo),
+    )
 
 
 def _catalog_like(term: str) -> str:
@@ -180,6 +213,7 @@ def _fetch_inventario(
               descrip,
               ccate,
               cod_prv,
+              cgeneral,
               precio1,
               pg1,
               porvg,
@@ -214,6 +248,7 @@ def _fetch_inventario(
         attach_codigos_alternos_to_items(cur, rows)
         attach_imagen_flags_to_items(cur, rows)
         attach_detallepr_divisa_pricing_to_items(cur, rows)
+        attach_laboratory_to_items(cur, rows)
         return list(rows), total
     finally:
         conn.close()
@@ -234,6 +269,7 @@ def _get_item(codigo: str) -> dict | None:
               descrip,
               ccate,
               cod_prv,
+              cgeneral,
               precio1,
               pg1,
               porvg,
@@ -270,6 +306,7 @@ def _get_item(codigo: str) -> dict | None:
             row["codigos_alternos"] = fetch_codigos_alternos(cur, codigo)
             attach_imagen_metadata(cur, row, include_payload=True)
             attach_detallepr_divisa_pricing_to_item(cur, row)
+            attach_laboratory_to_items(cur, [row])
         return row
     finally:
         conn.close()
@@ -462,8 +499,10 @@ async def create_inventario_item(body: InventarioCreateRequest, _: None = Depend
             if not _fk_exists(cur, "sprv", "cod_prv", body.cod_prv):
                 raise HTTPException(status_code=422, detail="Invalid cod_prv")
             payload = body.model_dump(exclude_unset=True)
+            had_laboratorio = "laboratorio_codigo" in payload
             codigos_alternos = payload.pop("codigos_alternos", []) or []
             imagen_base64 = payload.pop("imagen_base64", None)
+            laboratorio_codigo = payload.pop("laboratorio_codigo", None)
             payload["precio1"] = 0
             payload["fcrea"] = default_fcrea_today()
             if payload.get("existencia") and not payload.get("costo"):
@@ -482,6 +521,8 @@ async def create_inventario_item(body: InventarioCreateRequest, _: None = Depend
                 descrip=body.descrip,
                 ccate=body.ccate,
             )
+            if had_laboratorio:
+                _set_sinv_laboratorio(cur, body.codigo, laboratorio_codigo)
             conn.commit()
         except HTTPException:
             conn.rollback()
@@ -518,6 +559,9 @@ async def patch_inventario_item(
             if not payload:
                 return
 
+            had_laboratorio = "laboratorio_codigo" in payload
+            laboratorio_codigo = payload.pop("laboratorio_codigo", None)
+
             ccate = payload.get("ccate")
             if ccate is not None and not _fk_exists(cur, "catego", "ccate", ccate):
                 raise HTTPException(status_code=422, detail="Invalid ccate")
@@ -544,6 +588,8 @@ async def patch_inventario_item(
                     descrip=str(payload.get("descrip") or existing.get("descrip") or ""),
                     ccate=str(payload.get("ccate") or existing.get("ccate") or ""),
                 )
+            if had_laboratorio:
+                _set_sinv_laboratorio(cur, codigo, laboratorio_codigo)
             conn.commit()
         except HTTPException:
             conn.rollback()
