@@ -10,7 +10,9 @@ from db.calternos_store import (
     fetch_codigos_alternos,
     insert_codigos_alternos,
     normalize_codigos_alternos,
+    replace_codigos_alternos,
 )
+from db.inventario_identifier_conflict import assert_product_identifiers_available
 from db.detallepr_store import (
     apply_inventario_create_pricing,
     apply_inventario_pg1_pricing,
@@ -112,11 +114,25 @@ class InventarioPatchRequest(BaseModel):
         default=None,
         description="Imagen JPEG/PNG/GIF/WebP en base64 (opcional; reemplaza la existente)",
     )
+    codigos_alternos: list[str] | None = Field(
+        default=None,
+        description="Códigos alternos; reemplaza la lista completa si se envía",
+    )
     laboratorio_codigo: str | None = Field(
         default=None,
         max_length=10,
         description="Código cgeneral; vacío para quitar laboratorio",
     )
+
+    @field_validator("codigos_alternos")
+    @classmethod
+    def _validate_patch_codigos_alternos(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        try:
+            return normalize_codigos_alternos(value)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
 
 
 class InventarioUpsertRequest(BaseModel):
@@ -510,6 +526,16 @@ async def create_inventario_item(body: InventarioCreateRequest, _: None = Depend
             payload["fcrea"] = default_fcrea_today()
             if payload.get("existencia") and not payload.get("costo"):
                 raise HTTPException(status_code=422, detail="costo required when existencia > 0")
+            try:
+                assert_product_identifiers_available(
+                    cur,
+                    body.codigo,
+                    body.barra,
+                    codigos_alternos,
+                    exclude_codigo=body.codigo,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             upsert_sinv(cur, payload, patch_keys=set(payload.keys()))
             apply_inventario_create_pricing(cur, body.codigo, body.pg1)
             if codigos_alternos:
@@ -564,6 +590,8 @@ async def patch_inventario_item(
 
             had_laboratorio = "laboratorio_codigo" in payload
             laboratorio_codigo = payload.pop("laboratorio_codigo", None)
+            had_alternos = "codigos_alternos" in payload
+            codigos_alternos = payload.pop("codigos_alternos", None)
 
             ccate = payload.get("ccate")
             if ccate is not None and not _fk_exists(cur, "catego", "ccate", ccate):
@@ -571,6 +599,26 @@ async def patch_inventario_item(
             cod_prv = payload.get("cod_prv")
             if cod_prv is not None and not _fk_exists(cur, "sprv", "cod_prv", cod_prv):
                 raise HTTPException(status_code=422, detail="Invalid cod_prv")
+
+            if "barra" in payload or had_alternos:
+                barra_for_check = (
+                    payload["barra"] if "barra" in payload else existing.get("barra")
+                )
+                alternos_for_check = (
+                    codigos_alternos
+                    if had_alternos
+                    else fetch_codigos_alternos(cur, codigo)
+                )
+                try:
+                    assert_product_identifiers_available(
+                        cur,
+                        codigo,
+                        barra_for_check,
+                        alternos_for_check,
+                        exclude_codigo=codigo,
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
 
             had_imagen = "imagen_base64" in payload
             imagen_base64 = None
@@ -593,6 +641,11 @@ async def patch_inventario_item(
                 )
             if had_laboratorio:
                 _set_sinv_laboratorio(cur, codigo, laboratorio_codigo)
+            if had_alternos:
+                try:
+                    replace_codigos_alternos(cur, codigo, codigos_alternos or [])
+                except ValueError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
             conn.commit()
         except HTTPException:
             conn.rollback()

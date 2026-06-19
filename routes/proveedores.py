@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 import anyio
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from core.config import settings
 from db.mysql import MySqlClient
@@ -55,6 +55,16 @@ class ProveedorPatchRequest(BaseModel):
     numcuenta: str | None = Field(
         default=None, min_length=1, max_length=30, pattern=r"^\d+$"
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_immutable_fields(cls, data: object) -> object:
+        if isinstance(data, dict):
+            if "rif_prv" in data:
+                raise ValueError("rif_prv cannot be modified")
+            if "cod_prv" in data:
+                raise ValueError("cod_prv cannot be modified")
+        return data
 
 
 def _normalize_rif(rif: str) -> str:
@@ -190,6 +200,73 @@ def _upsert_proveedor(body: ProveedorUpsertRequest) -> None:
         conn.close()
 
 
+def _patch_proveedor(cod_prv: str, patch: dict) -> int:
+    """UPDATE parcial; nunca modifica rif_prv ni cod_prv."""
+    mysql = MySqlClient()
+    if not mysql.is_configured():
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
+
+    patch = dict(patch)
+    patch.pop("rif_prv", None)
+    patch.pop("cod_prv", None)
+
+    sets: list[str] = []
+    vals: list[object] = []
+
+    text_fields = (
+        "nom_prv",
+        "dir1_prv",
+        "dir2_prv",
+        "dir3_prv",
+        "tel_prv",
+        "email1_prv",
+        "rep_prv",
+        "numcuenta",
+    )
+    for key in text_fields:
+        if key in patch and patch[key] is not None:
+            sets.append(f"{key} = %s")
+            vals.append(str(patch[key]).strip())
+
+    if "email2_prv" in patch:
+        email2 = patch["email2_prv"]
+        sets.append("email2_prv = %s")
+        vals.append(None if email2 is None or str(email2).strip() == "" else str(email2).strip())
+
+    if "especial" in patch and patch["especial"] is not None:
+        esp = str(patch["especial"]).strip().lower()
+        if esp not in ("si", "no"):
+            raise HTTPException(status_code=422, detail="Invalid especial")
+        sets.append("especial = %s")
+        vals.append(esp)
+
+    if not sets:
+        return 1
+
+    conn = mysql.connect()
+    try:
+        cur = conn.cursor()
+        vals.append(cod_prv)
+        cur.execute(
+            f"""
+            UPDATE sprv
+            SET {", ".join(sets)}
+            WHERE cod_prv = %s
+            """,
+            tuple(vals),
+        )
+        conn.commit()
+        return int(cur.rowcount or 0)
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 @router.get("/proveedores")
 async def proveedores(
     search: str = Query("", description="Match code or name"),
@@ -262,18 +339,9 @@ async def patch_proveedor(
     if not payload:
         return {"nodo_id": settings.nodo_id, "item": existing, "message": "ok"}
 
-    merged = dict(existing)
-    merged.update(payload)
-    merged["cod_prv"] = cod_prv
-    merged["rif_prv"] = existing["rif_prv"]
-    if "especial" in payload:
-        esp = (payload.get("especial") or "").strip().lower()
-        if esp not in ("si", "no"):
-            raise HTTPException(status_code=422, detail="Invalid especial")
-        merged["especial"] = esp
-    if merged.get("email2_prv") == "":
-        merged["email2_prv"] = None
+    updated = await anyio.to_thread.run_sync(lambda: _patch_proveedor(cod_prv, payload))
+    if updated == 0:
+        raise HTTPException(status_code=404, detail="Provider not found")
 
-    await anyio.to_thread.run_sync(lambda: _upsert_proveedor(ProveedorUpsertRequest(**merged)))
     item = await anyio.to_thread.run_sync(lambda: _get_proveedor(cod_prv))
     return {"nodo_id": settings.nodo_id, "item": item, "message": "ok"}

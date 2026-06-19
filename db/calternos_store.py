@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from db.inventario_identifier_conflict import find_identifier_conflicts
+
 CHIJO_MAX_LEN = 30
 
 
@@ -68,19 +70,6 @@ def fetch_codigos_alternos_by_padres(cur, cpadres: list[str]) -> dict[str, list[
     return out
 
 
-def _chijo_owner(cur, chijo: str) -> str | None:
-    cur.execute(
-        "SELECT cpadre FROM calternos WHERE chijo = %s LIMIT 1",
-        (chijo,),
-    )
-    row = cur.fetchone()
-    if not row:
-        return None
-    if isinstance(row, dict):
-        return str(row.get("cpadre") or "") or None
-    return str(row[0] or "") or None
-
-
 def insert_codigos_alternos(cur, cpadre: str, chijos: list[str]) -> list[str]:
     """Inserta códigos alternos; devuelve la lista insertada. Omite duplicados ya ligados al mismo padre."""
     parent = cpadre.strip()
@@ -95,9 +84,9 @@ def insert_codigos_alternos(cur, cpadre: str, chijos: list[str]) -> list[str]:
     for chijo in normalized:
         if chijo == parent:
             raise ValueError(f"codigo alterno cannot equal product code: {chijo}")
-        owner = _chijo_owner(cur, chijo)
-        if owner is not None and owner != parent:
-            raise ValueError(f"codigo alterno already assigned to another product: {chijo}")
+        conflicts = find_identifier_conflicts(cur, [chijo], exclude_codigo=parent)
+        if conflicts:
+            raise ValueError(conflicts[0].message())
         if chijo in existing:
             continue
         cur.execute(
@@ -107,6 +96,15 @@ def insert_codigos_alternos(cur, cpadre: str, chijos: list[str]) -> list[str]:
         existing.add(chijo)
         inserted.append(chijo)
     return inserted
+
+
+def replace_codigos_alternos(cur, cpadre: str, chijos: list[str]) -> list[str]:
+    """Reemplaza todos los alternos del producto."""
+    parent = cpadre.strip()
+    if not parent:
+        raise ValueError("cpadre is required")
+    cur.execute("DELETE FROM calternos WHERE cpadre = %s", (parent,))
+    return insert_codigos_alternos(cur, parent, chijos)
 
 
 def attach_codigos_alternos_to_items(cur, items: list[dict[str, Any]]) -> None:
