@@ -77,18 +77,24 @@ class InventarioCreateRequest(BaseModel):
 
 
 class InventarioPatchRequest(BaseModel):
-    descrip: str = Field(min_length=1, max_length=240)
-    ccate: str = Field(min_length=1, max_length=10, pattern=r"^\d+$")
-    cod_prv: str = Field(min_length=1, max_length=30, pattern=r"^[A-Za-z0-9]+$")
-    pg1: float = Field(ge=0, description="% ganancia lista 1; recalcula precio1..4 en sinv y detallepr")
-    barra: str = Field(min_length=0, max_length=30)
-    referencia: str = Field(min_length=0, max_length=15)
-    componente: str = Field(min_length=0, max_length=240)
-    stockmin: float = Field(ge=0)
-    stockmax: float = Field(ge=0)
-    recipe: int = Field(ge=0, le=1)
-    cfrio: int = Field(ge=0, le=1)
-    activo: int = Field(ge=0, le=1)
+    descrip: str | None = Field(default=None, min_length=1, max_length=240)
+    ccate: str | None = Field(
+        default=None, min_length=1, max_length=10, pattern=r"^\d+$"
+    )
+    cod_prv: str | None = Field(
+        default=None, min_length=1, max_length=30, pattern=r"^[A-Za-z0-9]+$"
+    )
+    pg1: float | None = Field(
+        default=None, ge=0, description="% ganancia lista 1; recalcula precio1..4"
+    )
+    barra: str | None = Field(default=None, min_length=0, max_length=30)
+    referencia: str | None = Field(default=None, min_length=0, max_length=15)
+    componente: str | None = Field(default=None, min_length=0, max_length=240)
+    stockmin: float | None = Field(default=None, ge=0)
+    stockmax: float | None = Field(default=None, ge=0)
+    recipe: int | None = Field(default=None, ge=0, le=1)
+    cfrio: int | None = Field(default=None, ge=0, le=1)
+    activo: int | None = Field(default=None, ge=0, le=1)
     porvg: float | None = Field(default=None, ge=0)
     imagen_base64: str | None = Field(
         default=None,
@@ -508,23 +514,36 @@ async def patch_inventario_item(
         conn = mysql.connect()
         try:
             cur = conn.cursor()
-            if not _fk_exists(cur, "catego", "ccate", body.ccate):
-                raise HTTPException(status_code=422, detail="Invalid ccate")
-            if not _fk_exists(cur, "sprv", "cod_prv", body.cod_prv):
-                raise HTTPException(status_code=422, detail="Invalid cod_prv")
             payload = body.model_dump(exclude_unset=True)
+            if not payload:
+                return
+
+            ccate = payload.get("ccate")
+            if ccate is not None and not _fk_exists(cur, "catego", "ccate", ccate):
+                raise HTTPException(status_code=422, detail="Invalid ccate")
+            cod_prv = payload.get("cod_prv")
+            if cod_prv is not None and not _fk_exists(cur, "sprv", "cod_prv", cod_prv):
+                raise HTTPException(status_code=422, detail="Invalid cod_prv")
+
+            had_imagen = "imagen_base64" in payload
+            imagen_base64 = None
+            pg1 = payload.pop("pg1", None)
             payload.pop("precio1", None)
-            imagen_base64 = payload.pop("imagen_base64", None)
+            if had_imagen:
+                imagen_base64 = payload.pop("imagen_base64", None)
             payload["codigo"] = codigo
-            upsert_sinv(cur, payload, patch_keys=set(payload.keys()))
-            apply_inventario_pg1_pricing(cur, codigo, body.pg1)
-            _save_imagen_from_base64(
-                cur,
-                codigo,
-                imagen_base64,
-                descrip=body.descrip,
-                ccate=body.ccate,
-            )
+            if payload.keys() - {"codigo"}:
+                upsert_sinv(cur, payload, patch_keys=set(payload.keys()))
+            if pg1 is not None:
+                apply_inventario_pg1_pricing(cur, codigo, pg1)
+            if had_imagen:
+                _save_imagen_from_base64(
+                    cur,
+                    codigo,
+                    imagen_base64,
+                    descrip=str(payload.get("descrip") or existing.get("descrip") or ""),
+                    ccate=str(payload.get("ccate") or existing.get("ccate") or ""),
+                )
             conn.commit()
         except HTTPException:
             conn.rollback()

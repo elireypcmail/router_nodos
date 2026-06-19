@@ -24,7 +24,7 @@ class CategoriaCreateRequest(BaseModel):
 
 
 class CategoriaPatchRequest(BaseModel):
-    ncate: str = Field(min_length=1, max_length=240)
+    ncate: str | None = Field(default=None, min_length=1, max_length=240)
     pganancia: float | None = None
     pdescu: float | None = None
 

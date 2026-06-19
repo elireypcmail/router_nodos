@@ -102,6 +102,54 @@ def _create_categoria(body: CategoriaCreateRequest) -> None:
         conn.close()
 
 
+def _patch_categoria(ccate: str, patch: dict) -> int:
+    trace(
+        "mysql.patch.start",
+        ccate=ccate,
+        keys=sorted(patch.keys()),
+    )
+    mysql = MySqlClient()
+    if not mysql.is_configured():
+        raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
+
+    sets: list[str] = []
+    vals: list[object] = []
+    if "ncate" in patch and patch["ncate"] is not None:
+        sets.append("ncate = %s")
+        vals.append(str(patch["ncate"]).strip())
+    if "pganancia" in patch:
+        sets.append("pganancia = %s")
+        vals.append(patch["pganancia"])
+    if "pdescu" in patch:
+        sets.append("pdescu = %s")
+        vals.append(patch["pdescu"])
+    if not sets:
+        return 1
+
+    conn = mysql.connect()
+    try:
+        cur = conn.cursor()
+        vals.append(ccate)
+        cur.execute(
+            f"""
+            UPDATE catego
+            SET {", ".join(sets)}
+            WHERE ccate = %s
+            """,
+            tuple(vals),
+        )
+        conn.commit()
+        updated = int(cur.rowcount or 0)
+        trace("mysql.patch.done", ccate=ccate, rowcount=updated)
+        return updated
+    except Exception as exc:
+        conn.rollback()
+        trace_exc("mysql.patch.failed", exc, ccate=ccate)
+        raise
+    finally:
+        conn.close()
+
+
 def _update_categoria(ccate: str, body: CategoriaPatchRequest) -> int:
     trace(
         "mysql.update.start",
@@ -204,13 +252,12 @@ async def patch_categoria(
         trace_warn("rest.patch.not_found", ccate=ccate)
         raise HTTPException(status_code=404, detail="Category not found")
 
-    payload = body.model_copy()
-    if payload.pganancia is None:
-        payload.pganancia = float(local_item.get("pganancia") or 0)
-    if payload.pdescu is None:
-        payload.pdescu = float(local_item.get("pdescu") or 0)
+    payload = body.model_dump(exclude_unset=True)
+    if not payload:
+        trace("rest.patch.noop", ccate=ccate)
+        return {"nodo_id": settings.nodo_id, "item": local_item, "message": "ok"}
 
-    updated = await anyio.to_thread.run_sync(lambda: _update_categoria(ccate, payload))
+    updated = await anyio.to_thread.run_sync(lambda: _patch_categoria(ccate, payload))
     if updated == 0:
         trace_warn("rest.patch.not_found_after_update", ccate=ccate)
         raise HTTPException(status_code=404, detail="Category not found")

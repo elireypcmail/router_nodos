@@ -43,16 +43,18 @@ class ProveedorUpsertRequest(BaseModel):
 
 
 class ProveedorPatchRequest(BaseModel):
-    nom_prv: str = Field(min_length=1, max_length=240)
-    dir1_prv: str = Field(min_length=1, max_length=200)
-    dir2_prv: str = Field(min_length=0, max_length=200)
-    dir3_prv: str = Field(min_length=0, max_length=200)
-    tel_prv: str = Field(min_length=1, max_length=80)
-    email1_prv: str = Field(min_length=1, max_length=80)
+    nom_prv: str | None = Field(default=None, min_length=1, max_length=240)
+    dir1_prv: str | None = Field(default=None, min_length=1, max_length=200)
+    dir2_prv: str | None = Field(default=None, min_length=0, max_length=200)
+    dir3_prv: str | None = Field(default=None, min_length=0, max_length=200)
+    tel_prv: str | None = Field(default=None, min_length=1, max_length=80)
+    email1_prv: str | None = Field(default=None, min_length=1, max_length=80)
     email2_prv: str | None = Field(default=None, max_length=200)
-    rep_prv: str = Field(min_length=1, max_length=50)
-    especial: str = Field(min_length=1, max_length=8)
-    numcuenta: str = Field(min_length=1, max_length=30, pattern=r"^\d+$")
+    rep_prv: str | None = Field(default=None, min_length=1, max_length=50)
+    especial: str | None = Field(default=None, min_length=1, max_length=8)
+    numcuenta: str | None = Field(
+        default=None, min_length=1, max_length=30, pattern=r"^\d+$"
+    )
 
 
 def _normalize_rif(rif: str) -> str:
@@ -257,15 +259,21 @@ async def patch_proveedor(
         raise HTTPException(status_code=404, detail="Provider not found")
 
     payload = body.model_dump(exclude_unset=True)
-    payload["cod_prv"] = cod_prv
-    payload["rif_prv"] = existing["rif_prv"]
-    esp = (payload.get("especial") or "").strip().lower()
-    if esp not in ("si", "no"):
-        raise HTTPException(status_code=422, detail="Invalid especial")
-    payload["especial"] = esp
-    if payload.get("email2_prv") == "":
-        payload["email2_prv"] = None
+    if not payload:
+        return {"nodo_id": settings.nodo_id, "item": existing, "message": "ok"}
 
-    await anyio.to_thread.run_sync(lambda: _upsert_proveedor(ProveedorUpsertRequest(**payload)))
+    merged = dict(existing)
+    merged.update(payload)
+    merged["cod_prv"] = cod_prv
+    merged["rif_prv"] = existing["rif_prv"]
+    if "especial" in payload:
+        esp = (payload.get("especial") or "").strip().lower()
+        if esp not in ("si", "no"):
+            raise HTTPException(status_code=422, detail="Invalid especial")
+        merged["especial"] = esp
+    if merged.get("email2_prv") == "":
+        merged["email2_prv"] = None
+
+    await anyio.to_thread.run_sync(lambda: _upsert_proveedor(ProveedorUpsertRequest(**merged)))
     item = await anyio.to_thread.run_sync(lambda: _get_proveedor(cod_prv))
     return {"nodo_id": settings.nodo_id, "item": item, "message": "ok"}
