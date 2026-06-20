@@ -8,6 +8,90 @@ from middleware.auth import verify_bearer
 
 router = APIRouter(prefix="/api", tags=["movimientos"])
 
+# Movimientos de inventario en Multishop ERP (tabla `kardex`).
+_KARDEX_SELECT = """
+  codigo,
+  fecha,
+  existenciai,
+  entradas,
+  salidas,
+  existenciaf AS existencia,
+  compras,
+  ventas,
+  devoc,
+  devov,
+  ajustesn,
+  ajustesp,
+  costo,
+  costopro,
+  numero AS documento,
+  contador,
+  indice,
+  cajero,
+  cod_cli,
+  hora,
+  kobs,
+  CASE
+    WHEN compras > 0 THEN 'compra'
+    WHEN ventas > 0 THEN 'venta'
+    WHEN devoc > 0 THEN 'devolucion_compra'
+    WHEN devov > 0 THEN 'devolucion_venta'
+    WHEN ajustesp <> 0 OR ajustesn <> 0 THEN 'ajuste'
+    ELSE 'otro'
+  END AS tipo,
+  CASE
+    WHEN ventas > 0 THEN -ventas
+    WHEN compras > 0 THEN compras
+    WHEN devov > 0 THEN devov
+    WHEN devoc > 0 THEN -devoc
+    WHEN ajustesp > 0 THEN ajustesp
+    WHEN ajustesn > 0 THEN -ajustesn
+    ELSE (entradas - salidas)
+  END AS cantidad
+"""
+
+_TIPO_FILTERS: dict[str, str] = {
+    "compra": "AND compras > 0",
+    "venta": "AND ventas > 0",
+    "ajuste": (
+        "AND compras = 0 AND ventas = 0 AND devoc = 0 AND devov = 0 "
+        "AND (ajustesp <> 0 OR ajustesn <> 0)"
+    ),
+    "devolucion_compra": "AND devoc > 0",
+    "devolucion_venta": "AND devov > 0",
+}
+
+
+def _build_kardex_filters(
+    codigo: str,
+    desde: str,
+    hasta: str,
+    tipo: str,
+) -> tuple[str, list]:
+    where = "WHERE 1=1"
+    params: list = []
+
+    c = (codigo or "").strip()
+    d = (desde or "").strip()
+    h = (hasta or "").strip()
+    t = (tipo or "").strip().lower()
+
+    if c:
+        where += " AND codigo = %s"
+        params.append(c)
+    if d:
+        where += " AND fecha >= %s"
+        params.append(d)
+    if h:
+        where += " AND fecha <= %s"
+        params.append(h)
+
+    tipo_filter = _TIPO_FILTERS.get(t)
+    if tipo_filter:
+        where += f" {tipo_filter}"
+
+    return where, params
+
 
 def _fetch_movimientos(
     codigo: str,
@@ -21,53 +105,18 @@ def _fetch_movimientos(
     if not mysql.is_configured():
         raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
 
-    c = (codigo or "").strip()
-    d = (desde or "").strip()
-    h = (hasta or "").strip()
-    t = (tipo or "").strip().lower()
-
-    # Best-effort mapping; keeps endpoint functional even if the DB doesn't have all fields.
-    tipo_where = ""
-    if t in ("compra", "compras"):
-        tipo_where = "AND (k.tipo = 'COMPRA' OR k.mov = 'C')"
-    elif t in ("venta", "ventas"):
-        tipo_where = "AND (k.tipo = 'VENTA' OR k.mov = 'V')"
-    elif t:
-        tipo_where = "AND (k.tipo = %s OR k.mov = %s)"
-
+    where, params = _build_kardex_filters(codigo, desde, hasta, tipo)
     offset = max(0, (page - 1) * limit)
 
     conn = mysql.connect()
     try:
         cur = conn.cursor(dictionary=True)
 
-        base_where = "WHERE 1=1"
-        params: list = []
-
-        if c:
-            base_where += " AND k.codigo = %s"
-            params.append(c)
-
-        if d:
-            base_where += " AND k.fecha >= %s"
-            params.append(d)
-
-        if h:
-            base_where += " AND k.fecha <= %s"
-            params.append(h)
-
-        if t and tipo_where:
-            if "%s" in tipo_where:
-                base_where += f" {tipo_where}"
-                params.extend([t.upper(), t.upper()])
-            else:
-                base_where += f" {tipo_where}"
-
         cur.execute(
             f"""
             SELECT COUNT(*) AS cnt
-            FROM kardex k
-            {base_where}
+            FROM kardex
+            {where}
             """,
             tuple(params),
         )
@@ -77,18 +126,10 @@ def _fetch_movimientos(
         cur.execute(
             f"""
             SELECT
-              k.codigo,
-              k.fecha,
-              k.mov,
-              k.tipo,
-              k.documento,
-              k.entrada,
-              k.salida,
-              k.existencia,
-              k.costo
-            FROM kardex k
-            {base_where}
-            ORDER BY k.fecha DESC
+              {_KARDEX_SELECT}
+            FROM kardex
+            {where}
+            ORDER BY fecha DESC, indice DESC
             LIMIT %s OFFSET %s
             """,
             (*params, int(limit), int(offset)),
@@ -106,7 +147,10 @@ async def list_movimientos(
     fecha_hasta: str = Query("", description="End date (YYYY-MM-DD)"),
     desde: str = Query("", description="Deprecated (use fecha_desde)"),
     hasta: str = Query("", description="Deprecated (use fecha_hasta)"),
-    tipo: str = Query("", description="compra|venta|..."),
+    tipo: str = Query(
+        "",
+        description="compra|venta|ajuste|devolucion_compra|devolucion_venta",
+    ),
     page: int = Query(1, ge=1, description="Page"),
     limit: int = Query(200, ge=1, le=2000, description="Rows per page"),
     _: None = Depends(verify_bearer),
