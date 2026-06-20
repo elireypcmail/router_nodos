@@ -8,6 +8,62 @@ from middleware.auth import verify_bearer
 
 router = APIRouter(prefix="/api", tags=["compras"])
 
+# En Multishop ERP, `scom` guarda una fila por línea de compra (no hay cabecera separada).
+# El documento se identifica por `numero`; varias filas comparten numero/fecha/cod_prv.
+
+_SCOM_LINE_SELECT = """
+  numero AS numcom,
+  codigo,
+  descrip,
+  cantidad,
+  costo,
+  subtotal2 AS subtotal,
+  descuento1,
+  porvg,
+  indice
+"""
+
+_SCOM_PURCHASE_SUMMARY_SELECT = """
+  numero AS numcom,
+  MAX(cod_prv) AS cod_prv,
+  MAX(fecha) AS fecha,
+  SUM(subtotal2) AS tfact,
+  SUM(exento) AS exento,
+  SUM(iva1) AS iva1,
+  COUNT(*) AS lineas
+"""
+
+
+def _build_scom_filters(
+    search: str,
+    fecha_desde: str,
+    fecha_hasta: str,
+) -> tuple[str, list]:
+    q = (search or "").strip()
+    d = (fecha_desde or "").strip()
+    h = (fecha_hasta or "").strip()
+    like = f"%{q}%"
+
+    where = """
+    WHERE (
+      %s = ''
+      OR numero LIKE %s
+      OR cod_prv LIKE %s
+      OR codigo LIKE %s
+      OR descrip LIKE %s
+    )
+    """
+    params: list = [q, like, like, like, like]
+
+    if d:
+        where += " AND fecha >= %s"
+        params.append(d)
+    if h:
+        where += " AND fecha <= %s"
+        params.append(h)
+
+    return where, params
+
 
 def _fetch_compras(
     search: str,
@@ -20,30 +76,22 @@ def _fetch_compras(
     if not mysql.is_configured():
         raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
 
-    q = (search or "").strip()
-    d = (fecha_desde or "").strip()
-    h = (fecha_hasta or "").strip()
-    like = f"%{q}%"
+    where, params = _build_scom_filters(search, fecha_desde, fecha_hasta)
     offset = max(0, (page - 1) * limit)
 
     conn = mysql.connect()
     try:
         cur = conn.cursor(dictionary=True)
-        where = "WHERE (%s = '' OR numcom LIKE %s OR doc_prv LIKE %s)"
-        params: list = [q, like, like]
-
-        if d:
-            where += " AND fecta >= %s"
-            params.append(d)
-        if h:
-            where += " AND fecta <= %s"
-            params.append(h)
 
         cur.execute(
             f"""
             SELECT COUNT(*) AS cnt
-            FROM scom
-            {where}
+            FROM (
+              SELECT numero
+              FROM scom
+              {where}
+              GROUP BY numero
+            ) compras
             """,
             tuple(params),
         )
@@ -53,17 +101,11 @@ def _fetch_compras(
         cur.execute(
             f"""
             SELECT
-              numcom,
-              doc_prv,
-              fecta,
-              tgrav,
-              texent,
-              timpu,
-              tdesc,
-              tfact
+              {_SCOM_PURCHASE_SUMMARY_SELECT}
             FROM scom
             {where}
-            ORDER BY fecta DESC, numcom DESC
+            GROUP BY numero
+            ORDER BY fecha DESC, numero DESC
             LIMIT %s OFFSET %s
             """,
             (*params, int(limit), int(offset)),
@@ -74,7 +116,7 @@ def _fetch_compras(
         conn.close()
 
 
-def _get_compra(numcom: str) -> dict | None:
+def _get_compra(numero: str) -> dict | None:
     mysql = MySqlClient()
     if not mysql.is_configured():
         raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
@@ -83,28 +125,22 @@ def _get_compra(numcom: str) -> dict | None:
     try:
         cur = conn.cursor(dictionary=True)
         cur.execute(
-            """
+            f"""
             SELECT
-              numcom,
-              doc_prv,
-              fecta,
-              tgrav,
-              texent,
-              timpu,
-              tdesc,
-              tfact
+              {_SCOM_PURCHASE_SUMMARY_SELECT}
             FROM scom
-            WHERE numcom = %s
+            WHERE numero = %s
+            GROUP BY numero
             LIMIT 1
             """,
-            (numcom,),
+            (numero,),
         )
         return cur.fetchone()
     finally:
         conn.close()
 
 
-def _get_compra_detalle(numcom: str) -> list[dict]:
+def _get_compra_detalle(numero: str) -> list[dict]:
     mysql = MySqlClient()
     if not mysql.is_configured():
         raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
@@ -113,21 +149,14 @@ def _get_compra_detalle(numcom: str) -> list[dict]:
     try:
         cur = conn.cursor(dictionary=True)
         cur.execute(
-            """
+            f"""
             SELECT
-              numcom,
-              codigo,
-              descrip,
-              cantidad,
-              costo,
-              pdescu,
-              timpu,
-              subtotal
-            FROM scomd
-            WHERE numcom = %s
-            ORDER BY numcom ASC
+              {_SCOM_LINE_SELECT}
+            FROM scom
+            WHERE numero = %s
+            ORDER BY indice ASC, codigo ASC
             """,
-            (numcom,),
+            (numero,),
         )
         return list(cur.fetchall() or [])
     finally:
@@ -136,7 +165,10 @@ def _get_compra_detalle(numcom: str) -> list[dict]:
 
 @router.get("/compras")
 async def list_compras(
-    search: str = Query("", description="Match numcom or supplier doc"),
+    search: str = Query(
+        "",
+        description="Match purchase number, supplier code, SKU or description",
+    ),
     fecha_desde: str = Query("", description="Start date (YYYY-MM-DD)"),
     fecha_hasta: str = Query("", description="End date (YYYY-MM-DD)"),
     page: int = Query(1, ge=1, description="Page"),
@@ -162,13 +194,13 @@ async def list_compras(
     }
 
 
-@router.get("/compras/{numcom}")
-async def get_compra(numcom: str, _: None = Depends(verify_bearer)):
-    compra = await anyio.to_thread.run_sync(lambda: _get_compra(numcom))
+@router.get("/compras/{numero}")
+async def get_compra(numero: str, _: None = Depends(verify_bearer)):
+    compra = await anyio.to_thread.run_sync(lambda: _get_compra(numero))
     if compra is None:
         raise HTTPException(status_code=404, detail="Compra not found")
 
-    detalle = await anyio.to_thread.run_sync(lambda: _get_compra_detalle(numcom))
+    detalle = await anyio.to_thread.run_sync(lambda: _get_compra_detalle(numero))
     return {
         "nodo_id": settings.nodo_id,
         "nombre": settings.nodo_nombre,
