@@ -139,26 +139,45 @@ function Test-IsPyLauncherExe {
 }
 
 function Get-Python311CandidatePaths {
-    $paths = @(
-        (Join-Path $env:LocalAppData "Programs\Python\Python311\python.exe"),
+    # Program Files primero: el autostart ONSTART corre como SYSTEM y no puede usar
+    # Python instalado solo en el perfil del usuario (AppData\Local\...).
+    $machinePaths = @(
         (Join-Path ${env:ProgramFiles} "Python311\python.exe"),
         (Join-Path ${env:ProgramFiles(x86)} "Python311-32\python.exe")
     )
+    $userPaths = @(
+        (Join-Path $env:LocalAppData "Programs\Python\Python311\python.exe")
+    )
     $pythonCoreRoot = Join-Path $env:LocalAppData "Python"
     if (Test-Path -LiteralPath $pythonCoreRoot) {
-        $paths += Get-ChildItem -LiteralPath $pythonCoreRoot -Directory -Filter "pythoncore-3.11*" -ErrorAction SilentlyContinue |
+        $userPaths += Get-ChildItem -LiteralPath $pythonCoreRoot -Directory -Filter "pythoncore-3.11*" -ErrorAction SilentlyContinue |
             ForEach-Object { Join-Path $_.FullName "python.exe" }
     }
-    return $paths | Select-Object -Unique
+    return ($machinePaths + $userPaths) | Select-Object -Unique
+}
+
+function Select-PreferredPython311Info {
+    param([array]$Candidates)
+    if (-not $Candidates -or $Candidates.Count -eq 0) { return $null }
+    foreach ($item in $Candidates) {
+        $isMachine = if (Get-Command Test-PythonPathIsMachineWide -ErrorAction SilentlyContinue) {
+            Test-PythonPathIsMachineWide -Path $item.Exe
+        } else {
+            ($item.Exe -notmatch '(?i)[\\/](Users|AppData)[\\/]')
+        }
+        if ($isMachine) { return $item }
+    }
+    return $Candidates[0]
 }
 
 function Find-Python311Info {
+    $found = @()
     foreach ($candidate in Get-Python311CandidatePaths) {
         if (-not (Test-Path -LiteralPath $candidate)) { continue }
         $info = Try-GetPythonInfo -Exe $candidate -ArgsPrefix @()
         if ($info -and $info.Version.Minor -eq $PreferredPythonMinor) {
             $info.UsePyLauncher = $false
-            return $info
+            $found += $info
         }
     }
 
@@ -180,7 +199,7 @@ function Find-Python311Info {
                     $info = Try-GetPythonInfo -Exe $resolved -ArgsPrefix @()
                     if ($info -and $info.Version.Minor -eq $PreferredPythonMinor) {
                         $info.UsePyLauncher = $false
-                        return $info
+                        $found += $info
                     }
                 }
             }
@@ -191,11 +210,19 @@ function Find-Python311Info {
         $info = Try-GetPythonInfo -Exe $pyExe -ArgsPrefix @("-3.11")
         if ($info -and $info.Version.Minor -eq $PreferredPythonMinor) {
             $info.UsePyLauncher = $true
-            return $info
+            $found += $info
         }
     }
 
-    return $null
+    $unique = @()
+    $seen = @{}
+    foreach ($item in $found) {
+        $key = $item.Exe.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        $unique += $item
+    }
+    return (Select-PreferredPython311Info -Candidates $unique)
 }
 
 function Invoke-Python311 {
@@ -257,8 +284,14 @@ function Install-Python311WithWinget {
         ) -join "`n"
     }
 
-    & $winget.Source install --id $WingetPython311Id -e --source winget `
-        --accept-package-agreements --accept-source-agreements
+    $wingetArgs = @(
+        'install', '--id', $WingetPython311Id, '-e', '--source', 'winget',
+        '--accept-package-agreements', '--accept-source-agreements'
+    )
+    if ((Get-Command Test-IsAdmin -ErrorAction SilentlyContinue) -and (Test-IsAdmin)) {
+        $wingetArgs += '--scope', 'machine'
+    }
+    & $winget.Source @wingetArgs
     Update-SessionPathFromRegistry
     Start-Sleep -Seconds 3
 
@@ -295,6 +328,12 @@ function Test-VenvNeedsRecreate {
     if (-not (Test-Path -LiteralPath $VenvPythonExe)) {
         return $true
     }
+    $venvDir = Split-Path (Split-Path $VenvPythonExe -Parent) -Parent
+    if (Get-Command Test-VenvIsHealthyForSystemAutostart -ErrorAction SilentlyContinue) {
+        if (-not (Test-VenvIsHealthyForSystemAutostart -VenvDir $venvDir -VenvPythonExe $VenvPythonExe)) {
+            return $true
+        }
+    }
     if (-not $KeepVenv) {
         return $true
     }
@@ -313,32 +352,46 @@ function Test-VenvNeedsRecreate {
 
 function Ensure-Python311ForNodo {
     $info = Find-Python311Info
-    if ($info) {
+    if ($info -and (Get-Command Test-PythonPathIsMachineWide -ErrorAction SilentlyContinue) -and (Test-PythonPathIsMachineWide -Path $info.Exe)) {
         $via = if ($info.UsePyLauncher) { "launcher py -3.11" } else { "directo" }
-        Write-Host "Python 3.11 OK: $($info.VersionText) ($via -> $($info.Exe))" -ForegroundColor Green
+        Write-Host "Python 3.11 OK (todos los usuarios): $($info.VersionText) ($via -> $($info.Exe))" -ForegroundColor Green
         return $info
     }
 
-    $other = Get-PythonCommand
-    if ($other) {
-        Write-Host "Python detectado: $($other.VersionText) (no es 3.11; se instalara 3.11 para el nodo)." -ForegroundColor Yellow
+    if ($info) {
+        Write-Host "Python 3.11 detectado solo en perfil de usuario: $($info.Exe)" -ForegroundColor Yellow
+        Write-Host "  El autostart ONSTART (SYSTEM) requiere Python en Program Files; se instalara o buscara una copia para todos los usuarios." -ForegroundColor Yellow
     } else {
-        Write-Host "Python 3.10-3.13 no encontrado; se instalara Python 3.11 ..." -ForegroundColor Yellow
+        $other = Get-PythonCommand
+        if ($other) {
+            Write-Host "Python detectado: $($other.VersionText) (no es 3.11; se instalara 3.11 para el nodo)." -ForegroundColor Yellow
+        } else {
+            Write-Host "Python 3.10-3.13 no encontrado; se instalara Python 3.11 ..." -ForegroundColor Yellow
+        }
     }
 
     Install-Python311WithWinget
 
     $info2 = Find-Python311Info
-    if ($info2) {
+    if ($info2 -and (Get-Command Test-PythonPathIsMachineWide -ErrorAction SilentlyContinue) -and (Test-PythonPathIsMachineWide -Path $info2.Exe)) {
         $via = if ($info2.UsePyLauncher) { "launcher py -3.11" } else { "directo" }
-        Write-Host "Python 3.11 instalado: $($info2.VersionText) ($via -> $($info2.Exe))" -ForegroundColor Green
+        Write-Host "Python 3.11 instalado (todos los usuarios): $($info2.VersionText) ($via -> $($info2.Exe))" -ForegroundColor Green
         return $info2
+    }
+
+    if ($info2) {
+        throw @(
+            "Python 3.11 sigue en el perfil del usuario ($($info2.Exe))."
+            "Instale manualmente para todos los usuarios:"
+            "  winget install $WingetPython311Id -e --scope machine"
+            "  o desde python.org marque Install for all users (C:\Program Files\Python311\)"
+        ) -join "`n"
     }
 
     throw @(
         "Python 3.11 sigue sin estar disponible tras la instalacion."
         "Cierre y reabra PowerShell como Administrador y vuelva a ejecutar install-windows.cmd"
-        "O manualmente: winget install $WingetPython311Id -e"
+        "O manualmente: winget install $WingetPython311Id -e --scope machine"
     ) -join "`n"
 }
 
@@ -814,7 +867,12 @@ $venvPython = Join-Path $venvDir 'Scripts\python.exe'
 if (Test-VenvNeedsRecreate -VenvPythonExe $venvPython -KeepVenv:$KeepVenv) {
     if (Test-Path -LiteralPath $venvDir) {
         $venvVer = Get-VenvPythonVersion -VenvPythonExe $venvPython
-        if ($venvVer) {
+        $venvHome = if (Get-Command Get-VenvPyvenvHome -ErrorAction SilentlyContinue) {
+            Get-VenvPyvenvHome -VenvDir $venvDir
+        } else { $null }
+        if ($venvHome -and (Get-Command Test-PythonPathIsMachineWide -ErrorAction SilentlyContinue) -and -not (Test-PythonPathIsMachineWide -Path $venvHome)) {
+            Write-Host "Recreando venv (pyvenv.cfg apunta a perfil de usuario: $venvHome) ..." -ForegroundColor Yellow
+        } elseif ($venvVer) {
             Write-Host "Recreando venv (tenia Python $($venvVer.Major).$($venvVer.Minor); se usa 3.11) ..." -ForegroundColor Yellow
         } else {
             Write-Host "Recreando venv ..." -ForegroundColor Yellow
@@ -835,10 +893,28 @@ if (-not (Test-Path -LiteralPath $venvPython)) {
     throw "No se creo $venvPython. Revise que Python 3.11 tenga el modulo venv (instalacion completa, no embeddable)."
 }
 
+if (-not (Test-VenvPythonHasPip -VenvPythonExe $venvPython)) {
+    Write-Host "pip no disponible en venv; ejecutando ensurepip ..." -ForegroundColor Yellow
+    & $venvPython -m ensurepip --upgrade
+    if ($LASTEXITCODE -ne 0) {
+        throw "ensurepip fallo (codigo $LASTEXITCODE). Recree el venv con Python de Program Files."
+    }
+}
+
 Write-Host "Instalando dependencias (pip) ..." -ForegroundColor Cyan
 & $venvPython -m pip install -r (Join-Path $NodoDir 'requirements.txt')
 if ($LASTEXITCODE -ne 0) {
     throw "pip install fallo (codigo $LASTEXITCODE)"
+}
+
+& $venvPython -c "import pymysql" 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    throw "El venv no puede importar pymysql tras pip install. Revise $venvDir y requirements.txt."
+}
+
+if (Get-Command Ensure-NodoVenvSystemAccess -ErrorAction SilentlyContinue) {
+    Ensure-NodoVenvSystemAccess -VenvDir $venvDir
+    Write-Host "  Permisos SYSTEM en venv OK." -ForegroundColor Green
 }
 
 $envHelperEarly = Join-Path $ScriptsDir 'nodo-env.ps1'

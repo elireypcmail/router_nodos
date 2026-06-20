@@ -813,6 +813,64 @@ function Ensure-NodoWritableDataDir {
     & icacls.exe $dataDir /grant "*S-1-5-32-545:(OI)(CI)M" /T /C 2>$null | Out-Null
 }
 
+function Test-PythonPathIsMachineWide {
+    param([string]$Path)
+    if (-not $Path) { return $false }
+    $norm = $Path.TrimEnd('\')
+    if ($norm -match '(?i)[\\/](Users|AppData)[\\/]') { return $false }
+    return $true
+}
+
+function Get-VenvPyvenvHome {
+    param([string]$VenvDir)
+    $cfg = Join-Path $VenvDir "pyvenv.cfg"
+    if (-not (Test-Path -LiteralPath $cfg)) { return $null }
+    foreach ($line in Get-Content -LiteralPath $cfg -ErrorAction SilentlyContinue) {
+        if ($line -match '^\s*home\s*=\s*(.+)$') {
+            return $Matches[1].Trim()
+        }
+    }
+    return $null
+}
+
+function Test-VenvPythonHasPip {
+    param([string]$VenvPythonExe)
+    if (-not (Test-Path -LiteralPath $VenvPythonExe)) { return $false }
+    try {
+        & $VenvPythonExe -m pip --version 2>&1 | Out-Null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
+}
+
+function Test-VenvIsHealthyForSystemAutostart {
+    param(
+        [string]$VenvDir,
+        [string]$VenvPythonExe
+    )
+    if (-not (Test-Path -LiteralPath $VenvPythonExe)) { return $false }
+    $home = Get-VenvPyvenvHome -VenvDir $VenvDir
+    if ($home -and -not (Test-PythonPathIsMachineWide -Path $home)) {
+        return $false
+    }
+    if (-not (Test-VenvPythonHasPip -VenvPythonExe $VenvPythonExe)) {
+        return $false
+    }
+    return $true
+}
+
+function Ensure-NodoVenvSystemAccess {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$VenvDir
+    )
+    if (-not (Test-Path -LiteralPath $VenvDir)) { return }
+    & icacls.exe $VenvDir /grant "*S-1-5-18:(OI)(CI)RX" /T /C 2>$null | Out-Null
+    & icacls.exe $VenvDir /grant "*S-1-5-32-544:(OI)(CI)F" /T /C 2>$null | Out-Null
+    & icacls.exe $VenvDir /grant "*S-1-5-32-545:(OI)(CI)RX" /T /C 2>$null | Out-Null
+}
+
 function Wait-MultishopHueyProcessRunning {
     param(
         [Parameter(Mandatory = $true)]
