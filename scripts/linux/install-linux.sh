@@ -28,6 +28,8 @@ MYSQL_PORT=""
 MYSQL_USER=""
 MYSQL_PASSWORD=""
 MYSQL_DATABASE=""
+HUEY_ENABLED=""
+HUB_PUSH_ENABLED=""
 
 if [[ -f "${NODO_DIR}/.env" ]]; then
   while IFS='=' read -r k v; do
@@ -45,9 +47,14 @@ if [[ -f "${NODO_DIR}/.env" ]]; then
       MYSQL_USER) MYSQL_USER="${v}" ;;
       MYSQL_PASSWORD) MYSQL_PASSWORD="${v}" ;;
       MYSQL_DATABASE) MYSQL_DATABASE="${v}" ;;
+      HUEY_ENABLED) HUEY_ENABLED="${v}" ;;
+      HUB_PUSH_ENABLED) HUB_PUSH_ENABLED="${v}" ;;
     esac
   done < "${NODO_DIR}/.env"
 fi
+
+HUEY_ENABLED="${HUEY_ENABLED:-}"
+HUB_PUSH_ENABLED="${HUB_PUSH_ENABLED:-}"
 
 if [[ -z "${MYSQL_PORT}" ]]; then
   MYSQL_PORT="3306"
@@ -72,20 +79,10 @@ apply_outbox_triggers() {
   "${NODO_DIR}/venv/bin/python" "${NODO_DIR}/scripts/apply_mysql_outbox_triggers.py"
 }
 
-apply_outbox_triggers || echo "Aviso: no se pudo aplicar outbox. Revise MySQL y permisos TRIGGER." >&2
-
-HUEY_ENABLED=""
-if [[ -f "${NODO_DIR}/.env" ]]; then
-  while IFS='=' read -r k v; do
-    [[ -z "${k}" ]] && continue
-    [[ "${k}" =~ ^# ]] && continue
-    v="${v%\r}"
-    v="${v#\"}"
-    v="${v%\"}"
-    if [[ "${k}" == "HUEY_ENABLED" ]]; then
-      HUEY_ENABLED="${v}"
-    fi
-  done < "${NODO_DIR}/.env"
+if [[ "${HUEY_ENABLED}" == "true" || "${HUB_PUSH_ENABLED}" == "true" ]]; then
+  apply_outbox_triggers || echo "Aviso: no se pudo aplicar outbox. Revise MySQL y permisos TRIGGER." >&2
+else
+  echo "Outbox/triggers omitidos (fork router: HUEY_ENABLED y HUB_PUSH_ENABLED no son true)."
 fi
 
 echo "Nodo Linux listo. Arranque API: ${NODO_DIR}/venv/bin/python ${NODO_DIR}/main.py"

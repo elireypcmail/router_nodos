@@ -12,6 +12,8 @@ param(
     [switch]$RegisterWgResume,
     [switch]$KeepVenv,
     [switch]$NoStart,
+    [switch]$SkipOutboxTriggers,
+    [switch]$ApplyOutboxTriggers,
     [switch]$NonInteractive
 )
 

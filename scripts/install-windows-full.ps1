@@ -1,4 +1,5 @@
-# Instala/configura nodo en Windows (6 pasos): copia, WireGuard, .env, venv, ExecutionPolicy, outbox, tareas API/VPN.
+# Instala/configura nodo en Windows: copia, WireGuard, .env, venv, ExecutionPolicy,
+# triggers/outbox (solo si HUEY/HUB_PUSH), tareas API/VPN.
 # Ejecutar como Administrador para instalación automática de servicio WireGuard y tareas.
 #
 # Si PowerShell bloquea scripts no firmados (ExecutionPolicy), use una de estas opciones:
@@ -13,6 +14,8 @@
 #   .\install-windows.ps1 -SkipExecutionPolicy   # no cambiar ExecutionPolicy del usuario
 #   .\install-windows.ps1 -KeepVenv   # no borrar venv existente
 #   .\install-windows.ps1 -NoStart      # no arrancar API ahora (si hay tarea, igual se registra)
+#   .\install-windows.ps1 -SkipOutboxTriggers   # no aplicar triggers MySQL (default en fork router)
+#   .\install-windows.ps1 -ApplyOutboxTriggers  # forzar triggers aunque HUEY/HUB_PUSH esten en false
 #
 #   .\install-windows.ps1 -InstallRoot "D:\Multishop\router"   # otra ruta fija
 #   .\install-windows.ps1 -SkipProgramFilesCopy                # quedarse en carpeta actual
@@ -30,6 +33,8 @@ param(
     [switch]$RegisterWgResume,
     [switch]$KeepVenv,
     [switch]$NoStart,
+    [switch]$SkipOutboxTriggers,
+    [switch]$ApplyOutboxTriggers,
     [switch]$NonInteractive
 )
 
@@ -941,21 +946,35 @@ if ($SkipExecutionPolicy) {
 }
 
 Write-Host ""
-Write-Host "Paso 6/6 - Triggers/outbox (MySQL local o Docker dev) [opcional] ..."
-$triggersInDocker = Enable-OutboxTriggersIfDocker -NodoDirPath $NodoDir
-if (-not $triggersInDocker) {
-    try {
-        $envFileForDb = Join-Path $NodoDir '.env'
-        Enable-OutboxTriggersWithPython -NodoDirPath $NodoDir -EnvFilePath $envFileForDb -VenvPython $venvPython
-    } catch {
-        Write-Warning "No se pudieron activar triggers/outbox en MySQL: $($_.Exception.Message)"
-        Write-Host ""
-        Write-Host "Verifique MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD y MYSQL_DATABASE en .env." -ForegroundColor Yellow
-        Write-Host "El usuario MySQL necesita CREATE TRIGGER y acceso a la base del ERP." -ForegroundColor Yellow
-        Write-Host "Puede reintentar manualmente:" -ForegroundColor Yellow
-        Write-Host "  cd `"$NodoDir`"" -ForegroundColor Gray
-        Write-Host "  .\venv\Scripts\python.exe .\scripts\apply_mysql_outbox_triggers.py" -ForegroundColor Gray
-        Write-Host "  (defina antes MS_MYSQL_* y MS_SQL_FILE; el instalador las asigna al ejecutar el paso 6)" -ForegroundColor Gray
+Write-Host "Paso 6/6 - Triggers/outbox (MySQL) ..."
+$envFileForDb = Join-Path $NodoDir '.env'
+$envMapForOutbox = Parse-EnvFile -Path $envFileForDb
+$needsOutbox = $false
+if (Get-Command Test-MultishopNodoNeedsOutboxTriggers -ErrorAction SilentlyContinue) {
+    $needsOutbox = Test-MultishopNodoNeedsOutboxTriggers -EnvMap $envMapForOutbox
+}
+$runOutbox = $ApplyOutboxTriggers -or ((-not $SkipOutboxTriggers) -and $needsOutbox)
+if (-not $runOutbox) {
+    if ($SkipOutboxTriggers) {
+        Write-Host "  Omitido (-SkipOutboxTriggers)." -ForegroundColor DarkGray
+    } else {
+        Write-Host "  Omitido (fork router: HUEY_ENABLED=false y HUB_PUSH_ENABLED=false; el hub consulta la API directamente)." -ForegroundColor DarkGray
+    }
+} else {
+    $triggersInDocker = Enable-OutboxTriggersIfDocker -NodoDirPath $NodoDir
+    if (-not $triggersInDocker) {
+        try {
+            Enable-OutboxTriggersWithPython -NodoDirPath $NodoDir -EnvFilePath $envFileForDb -VenvPython $venvPython
+        } catch {
+            Write-Warning "No se pudieron activar triggers/outbox en MySQL: $($_.Exception.Message)"
+            Write-Host ""
+            Write-Host "Verifique MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD y MYSQL_DATABASE en .env." -ForegroundColor Yellow
+            Write-Host "El usuario MySQL necesita CREATE TRIGGER y acceso a la base del ERP." -ForegroundColor Yellow
+            Write-Host "Puede reintentar manualmente:" -ForegroundColor Yellow
+            Write-Host "  cd `"$NodoDir`"" -ForegroundColor Gray
+            Write-Host "  .\venv\Scripts\python.exe .\scripts\apply_mysql_outbox_triggers.py" -ForegroundColor Gray
+            Write-Host "  (defina antes MS_MYSQL_* y MS_SQL_FILE; el instalador las asigna al ejecutar el paso 6)" -ForegroundColor Gray
+        }
     }
 }
 

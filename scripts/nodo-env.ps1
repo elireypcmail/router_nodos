@@ -907,6 +907,14 @@ function Test-MultishopNodoNeedsMysqlAtStartup {
     return $false
 }
 
+function Test-MultishopNodoNeedsOutboxTriggers {
+    param([hashtable]$EnvMap)
+    if (-not $EnvMap) { return $false }
+    if (Test-MultishopEnvFlagTrue -Value $EnvMap["HUEY_ENABLED"]) { return $true }
+    if (Test-MultishopEnvFlagTrue -Value $EnvMap["HUB_PUSH_ENABLED"]) { return $true }
+    return $false
+}
+
 function Wait-MultishopNodoMysqlReady {
     param(
         [Parameter(Mandatory = $true)]
