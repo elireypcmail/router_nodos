@@ -122,13 +122,7 @@ NODO_ALLOW_INSECURE=true
 NODO_SSL_CERTFILE=
 NODO_SSL_KEYFILE=
 
-# Features fuera de alcance (fork-router)
-SYNC_WORKER_ENABLED=false
-HUB_PULL_ENABLED=false
-HUB_PUSH_ENABLED=false
-HUEY_ENABLED=false
-
-# MySQL del nodo (dev con Docker)
+# Features fuera de alcance (fork-router: sin push/pull al hub)
 MYSQL_HOST=127.0.0.1
 MYSQL_PORT=3306
 MYSQL_USER=root

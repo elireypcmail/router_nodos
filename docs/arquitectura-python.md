@@ -62,21 +62,15 @@ Los archivos `.py` en la raíz que queden son **shims de compatibilidad** (re-ex
 ```mermaid
 flowchart LR
   ERP[(MySQL ERP)]
-  OB[sync_outbox]
-  OW[outbox.worker]
-  HC[hub.client]
-  HUB[Nest hub]
+  NODO[Nodo FastAPI]
+  ROUTER[Nest router]
 
-  ERP -->|triggers| OB
-  OW --> OB
-  OW --> HC
-  HC -->|events/batch| HUB
-  HC -->|catalog-push/batch| HUB
+  ROUTER -->|GET/POST /api/... Bearer| NODO
+  NODO --> ERP
 ```
 
-- **Transaccional:** `kardex` / `comprasdbf` / `ventasi` / `detalle` → `POST /api/nodo/events/batch`.
-- **Catálogo ERP:** `catego` / `sprv` / `sinv` → digest en `catalog_push_digest` → `POST /api/nodo/catalog-push/.../batch`.
-- **Hub → tienda:** `POST /api/sync/events` (PGMQ); ver `sync/apply.py`.
+- **Router → tienda:** proxy en vivo cuando un tercero llama `/api/v1/*` (inventario, ventas, maestros).
+- **Tienda → router:** no hay ingest ni `/api/nodo/*` en este fork.
 
 ## Relacionado
 

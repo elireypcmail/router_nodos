@@ -11,8 +11,6 @@ from typing import Any
 MYSQL_NOT_CONFIGURED = "Node MySQL not configured (set MYSQL_* in env.txt/.env)"
 SYNC_STORE_NOT_INIT = "sync_store not initialized"
 OUTBOX_REPO_NOT_INIT = "outbox_repo not initialized"
-HUB_BASE_URL_NOT_SET = "HUB_BASE_URL not set"
-HUB_PUSH_REQUIRES_MYSQL = "HUB_PUSH_ENABLED requires MYSQL_* configured"
 HUEY_REQUIRES_MYSQL = "HUEY_ENABLED requires MYSQL_* configured"
 
 _DEFAULT_LOGGER_NAMES = (
