@@ -11,28 +11,62 @@ from middleware.auth import verify_bearer
 router = APIRouter(prefix="/api/laboratorios", tags=["laboratorios"])
 
 
-def _list_laboratorios(search: str, limit: int) -> list[dict]:
+def _catalog_like(term: str) -> str:
+    return f"%{term.strip()}%"
+
+
+def _fetch_laboratorios(
+    search: str,
+    codigo: str,
+    nombre: str,
+    page: int,
+    limit: int,
+) -> tuple[list[dict], int]:
     mysql = MySqlClient()
     if not mysql.is_configured():
         raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
 
     q = search.strip()
-    like = f"%{q}%"
+    c = codigo.strip()
+    n = nombre.strip()
+    like_search = _catalog_like(q) if q else None
+    like_codigo = _catalog_like(c) if c else None
+    like_nombre = _catalog_like(n) if n else None
+    offset = max(0, (page - 1) * limit)
 
     conn = mysql.connect()
     try:
         cur = conn.cursor(dictionary=True)
+        where = """
+            WHERE 1=1
+              AND (%s = '' OR cgeneral LIKE %s OR ngeneral LIKE %s)
+              AND (%s = '' OR cgeneral LIKE %s)
+              AND (%s = '' OR ngeneral LIKE %s)
+        """
+        params = (
+            q,
+            like_search or "",
+            like_search or "",
+            c,
+            like_codigo or "",
+            n,
+            like_nombre or "",
+        )
+        cur.execute(f"SELECT COUNT(*) AS cnt FROM general {where}", params)
+        total_row = cur.fetchone() or {}
+        total = int(total_row.get("cnt") or 0)
+
         cur.execute(
-            """
+            f"""
             SELECT cgeneral, ngeneral
             FROM general
-            WHERE (%s = '' OR cgeneral LIKE %s OR ngeneral LIKE %s)
+            {where}
             ORDER BY ngeneral ASC
-            LIMIT %s
+            LIMIT %s OFFSET %s
             """,
-            (q, like, like, int(limit)),
+            (*params, int(limit), offset),
         )
-        return list(cur.fetchall() or [])
+        return list(cur.fetchall() or []), total
     finally:
         conn.close()
 
@@ -130,14 +164,26 @@ def _patch_laboratorio(cgeneral: str, patch: dict) -> int:
 @router.get("")
 async def list_laboratorios(
     search: str = Query("", description="Match code or name"),
-    limit: int = Query(200, ge=1, le=2000),
+    codigo: str = Query("", description="Filter by code (partial)"),
+    nombre: str = Query("", description="Filter by name (partial)"),
+    page: int = Query(1, ge=1, description="Page"),
+    limit: int = Query(25, ge=1, le=500, description="Rows per page"),
     _: None = Depends(verify_bearer),
 ):
-    items = await anyio.to_thread.run_sync(lambda: _list_laboratorios(search, limit))
+    items, total = await anyio.to_thread.run_sync(
+        lambda: _fetch_laboratorios(search, codigo, nombre, page, limit)
+    )
+    total_pages = 0 if total == 0 else (total + limit - 1) // limit
     return {
         "search": search,
+        "codigo": codigo,
+        "filtro_nombre": nombre,
         "nodo_id": settings.nodo_id,
         "items": items,
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "totalPages": total_pages,
         "message": "ok",
     }
 
