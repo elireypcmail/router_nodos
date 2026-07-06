@@ -1,5 +1,5 @@
 # Desinstalador completo Multishop nodo (Windows).
-# Quita API en segundo plano, tareas programadas, tunel WireGuard wg0 y archivos en Program Files.
+# Quita API en segundo plano, tareas programadas, tunel WireGuard wg0, outbox MySQL y archivos en Program Files.
 #
 # Ejecutar PowerShell COMO ADMINISTRADOR (o uninstall-windows.cmd).
 #
@@ -8,6 +8,7 @@
 #   .\uninstall-windows.ps1 -Force
 #   .\uninstall-windows.ps1 -KeepVpn -KeepLogs
 #   .\uninstall-windows.ps1 -KeepProgramFiles   # solo quitar tareas/servicios, conservar carpeta
+#   .\uninstall-windows.ps1 -SkipOutboxCleanup  # no quitar triggers/tablas outbox en MySQL
 
 param(
     [string]$NodoDir = "",
@@ -22,7 +23,9 @@ param(
 
     [switch]$KeepProgramFiles,
 
-    [switch]$KeepLogs
+    [switch]$KeepLogs,
+
+    [switch]$SkipOutboxCleanup
 )
 
 $ErrorActionPreference = "Stop"
@@ -172,6 +175,7 @@ function Invoke-RelaunchFromTempIfNeeded {
     if ($KeepVpn) { $argList += "-KeepVpn" }
     if ($KeepProgramFiles) { $argList += "-KeepProgramFiles" }
     if ($KeepLogs) { $argList += "-KeepLogs" }
+    if ($SkipOutboxCleanup) { $argList += "-SkipOutboxCleanup" }
     $argList += "-ScriptsDir"
     $argList += $ScriptsDir
     if ($TunnelName -and $TunnelName -ne "wg0") {
@@ -497,6 +501,109 @@ function Remove-MultishopDataDirs {
     }
 }
 
+function Parse-EnvFile {
+    param([string]$Path)
+    $map = @{}
+    if (-not $Path) { return $map }
+    if (-not (Test-Path -LiteralPath $Path)) { return $map }
+    $lines = Get-Content -LiteralPath $Path -ErrorAction SilentlyContinue
+    foreach ($raw in $lines) {
+        $line = ($raw -as [string])
+        if (-not $line) { continue }
+        $line = $line.Trim()
+        if (-not $line) { continue }
+        if ($line.StartsWith("#")) { continue }
+        $idx = $line.IndexOf("=")
+        if ($idx -le 0) { continue }
+        $k = $line.Substring(0, $idx).Trim()
+        $v = $line.Substring($idx + 1).Trim()
+        if (($v.StartsWith('"') -and $v.EndsWith('"')) -or ($v.StartsWith("'") -and $v.EndsWith("'"))) {
+            $v = $v.Substring(1, $v.Length - 2)
+        }
+        if ($k) {
+            $map[$k] = $v
+        }
+    }
+    return $map
+}
+
+function Remove-OutboxTriggersFromMysql {
+    param(
+        [string]$NodoDirPath
+    )
+
+    $sqlFile = if (Get-Command Get-MultishopOutboxSqlFile -ErrorAction SilentlyContinue) {
+        Get-MultishopOutboxSqlFile -NodoDir $NodoDirPath
+    } else {
+        Join-Path $NodoDirPath 'scripts\mysql_outbox_triggers_movimientos.sql'
+    }
+    if (-not (Test-Path -LiteralPath $sqlFile)) {
+        $sqlFile = Join-Path $NodoDirPath 'scripts\mysql_outbox_triggers.sql'
+    }
+    if (-not (Test-Path -LiteralPath $sqlFile)) {
+        Write-Warning "No se encontro SQL outbox en scripts\. Omitiendo limpieza MySQL."
+        return
+    }
+
+    $envFilePath = Join-Path $NodoDirPath '.env'
+    if (-not (Test-Path -LiteralPath $envFilePath)) {
+        Write-Warning "No se encontro .env en $NodoDirPath. Omitiendo limpieza outbox MySQL."
+        return
+    }
+
+    $venvPython = Join-Path $NodoDirPath 'venv\Scripts\python.exe'
+    if (-not (Test-Path -LiteralPath $venvPython)) {
+        Write-Warning "No se encontro Python venv ($venvPython). Omitiendo limpieza outbox MySQL."
+        return
+    }
+
+    $applyScript = Join-Path $NodoDirPath 'scripts\apply_mysql_outbox_triggers.py'
+    if (-not (Test-Path -LiteralPath $applyScript)) {
+        Write-Warning "No se encontro $applyScript. Omitiendo limpieza outbox MySQL."
+        return
+    }
+
+    $envMap = Parse-EnvFile -Path $envFilePath
+    $mysqlHost = $envMap["MYSQL_HOST"]
+    $user = $envMap["MYSQL_USER"]
+    $pass = $envMap["MYSQL_PASSWORD"]
+    $db = $envMap["MYSQL_DATABASE"]
+    $port = $envMap["MYSQL_PORT"]
+    if (-not $port) { $port = "3306" }
+
+    if (-not $mysqlHost -or -not $user -or -not $pass -or -not $db) {
+        Write-Warning "Faltan MYSQL_* en .env. Omitiendo limpieza outbox MySQL."
+        return
+    }
+
+    Write-Host "Outbox MySQL: quitando triggers/funciones/tablas aux (${mysqlHost}:${port} / $db) ..." -ForegroundColor Cyan
+
+    $env:MS_MYSQL_HOST = $mysqlHost
+    $env:MS_MYSQL_USER = $user
+    $env:MS_MYSQL_PASSWORD = $pass
+    $env:MS_MYSQL_DATABASE = $db
+    $env:MS_MYSQL_PORT = $port
+    $env:MS_SQL_FILE = $sqlFile
+    $env:MS_OUTBOX_UNINSTALL = "1"
+    Remove-Item Env:MS_OUTBOX_SKIP_PREFLIGHT -ErrorAction SilentlyContinue
+    Remove-Item Env:MS_OUTBOX_RECREATE_TABLES -ErrorAction SilentlyContinue
+
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & $venvPython $applyScript --uninstall 2>&1 | Out-Host
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $prev
+
+    Remove-Item Env:MS_OUTBOX_UNINSTALL -ErrorAction SilentlyContinue
+
+    if ($code -ne 0) {
+        Write-Warning "No se pudo limpiar outbox MySQL (codigo $code). Revise credenciales y permisos DROP TRIGGER/TABLE."
+        return
+    }
+
+    Write-Host "Outbox MySQL eliminado." -ForegroundColor Green
+}
+
 function Remove-NodoInstallTree {
     param([string]$InstallRoot)
     if (-not (Test-Path -LiteralPath $InstallRoot)) {
@@ -531,20 +638,25 @@ function Show-UninstallPlan {
     Write-Host "  2. Quitar tareas ONSTART: $($ApiTaskNames -join ', ')"
     Write-Host "  3. Quitar tareas: $($WgResumeTaskNames -join ', ')"
     Write-Host "  4. Quitar acceso directo en carpeta Inicio ($StartupVbsName)"
-    if (-not $KeepVpn) {
-        Write-Host "  5. Desinstalar tunel WireGuard: $Tunnel (+ w0g si existe)"
+    if (-not $SkipOutboxCleanup) {
+        Write-Host "  5. Quitar triggers/funciones/tablas outbox en MySQL (MYSQL_* del .env)"
     } else {
-        Write-Host "  5. Conservar tunel WireGuard (-KeepVpn)"
+        Write-Host "  5. Conservar outbox MySQL (-SkipOutboxCleanup)"
+    }
+    if (-not $KeepVpn) {
+        Write-Host "  6. Desinstalar tunel WireGuard: $Tunnel (+ w0g si existe)"
+    } else {
+        Write-Host "  6. Conservar tunel WireGuard (-KeepVpn)"
     }
     if (-not $KeepLogs) {
-        Write-Host "  6. Borrar $ProgramDataDir y $LocalAppDataDir"
+        Write-Host "  7. Borrar $ProgramDataDir y $LocalAppDataDir"
     } else {
-        Write-Host "  6. Conservar logs; quitar solo launchers en ProgramData"
+        Write-Host "  7. Conservar logs; quitar solo launchers en ProgramData"
     }
     if (-not $KeepProgramFiles) {
-        Write-Host "  7. Borrar carpeta del nodo: $InstallRoot"
+        Write-Host "  8. Borrar carpeta del nodo: $InstallRoot"
     } else {
-        Write-Host "  7. Conservar archivos del nodo (-KeepProgramFiles)"
+        Write-Host "  8. Conservar archivos del nodo (-KeepProgramFiles)"
     }
     Write-Host ""
     Write-Host "NO se desinstala WireGuard ni Python del sistema."
@@ -572,24 +684,32 @@ if (-not (Confirm-UninstallContinue)) {
 }
 
 Write-Host ""
-Write-Host "[1/5] Quitando tareas programadas Multishop ..." -ForegroundColor Cyan
+Write-Host "[1/6] Quitando tareas programadas Multishop ..." -ForegroundColor Cyan
 Remove-AllMultishopAutostartTasks
 Remove-NodoApiStartupLinks
 
 Write-Host ""
-Write-Host "[2/5] Deteniendo procesos API ..." -ForegroundColor Cyan
+Write-Host "[2/6] Deteniendo procesos API ..." -ForegroundColor Cyan
 Stop-NodoApiProcesses -NodoDirPath $NodoInstallDir
 
 Write-Host ""
-Write-Host "[3/5] Quitando autostart API (launchers ProgramData) ..." -ForegroundColor Cyan
+Write-Host "[3/6] Quitando outbox MySQL (triggers/tablas) ..." -ForegroundColor Cyan
+if (-not $SkipOutboxCleanup) {
+    Remove-OutboxTriggersFromMysql -NodoDirPath $NodoInstallDir
+} else {
+    Write-Host "Outbox MySQL conservado (-SkipOutboxCleanup)."
+}
+
+Write-Host ""
+Write-Host "[4/6] Quitando autostart API (launchers ProgramData) ..." -ForegroundColor Cyan
 Remove-NodoApiAutostart -InstallRoot $NodoInstallDir
 
 Write-Host ""
-Write-Host "[4/5] Quitando tareas VPN resume/hibernacion ..." -ForegroundColor Cyan
+Write-Host "[5/6] Quitando tareas VPN resume/hibernacion ..." -ForegroundColor Cyan
 Remove-WgResumeTasks -Tunnel $TunnelName
 
 Write-Host ""
-Write-Host "[5/5] WireGuard, datos Multishop y archivos del nodo ..." -ForegroundColor Cyan
+Write-Host "[6/6] WireGuard, datos Multishop y archivos del nodo ..." -ForegroundColor Cyan
 if (-not $KeepVpn) {
     Remove-WireGuardVpn -PrimaryName $TunnelName
 } else {

@@ -696,32 +696,6 @@ function Parse-EnvFile {
     return $map
 }
 
-function Invoke-MysqlUpgradeIfAvailable {
-    param(
-        [string]$MysqlBinDir = "C:\MySQL\MySQL Server 5.6\bin",
-        [string]$MysqlUser = "root",
-        [string]$MysqlPassword = ""
-    )
-
-    $upgradeExe = Join-Path $MysqlBinDir "mysql_upgrade.exe"
-    if (-not (Test-Path -LiteralPath $upgradeExe)) {
-        Write-Host "mysql_upgrade.exe no encontrado en $MysqlBinDir; omitiendo." -ForegroundColor DarkGray
-        return
-    }
-
-    Write-Host "MySQL: mysql_upgrade (repara mysql.innodb_*_stats) ..." -ForegroundColor Cyan
-    $args = @("-u", $MysqlUser)
-    if ($MysqlPassword) {
-        $args += @("-p$MysqlPassword")
-    }
-    & $upgradeExe @args
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "mysql_upgrade salió con código $LASTEXITCODE (continuando con triggers/outbox)."
-    } else {
-        Write-Host "mysql_upgrade OK." -ForegroundColor Green
-    }
-}
-
 function Enable-OutboxTriggersWithPython {
     param(
         [string]$NodoDirPath,
@@ -764,8 +738,6 @@ function Enable-OutboxTriggersWithPython {
     }
 
     Write-Host "Validando conectividad MySQL (${mysqlHost}:${port} / $db / usuario $user) ..." -ForegroundColor Cyan
-
-    Invoke-MysqlUpgradeIfAvailable -MysqlUser $user -MysqlPassword $pass
 
     $applyScript = Join-Path $NodoDirPath 'scripts\apply_mysql_outbox_triggers.py'
     if (-not (Test-Path -LiteralPath $applyScript)) {

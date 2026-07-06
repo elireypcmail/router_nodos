@@ -1,7 +1,7 @@
 """Aplica mysql_outbox_triggers.sql: siempre desinstala triggers/funciones Multishop y reinstala desde cero.
 
 Evita duplicar eventos por triggers viejos (JSON_OBJECT, orden incorrecto, reinstalaciones parciales).
-Usado por install Windows/Linux/Mac y start-dev.sh.
+Usado por install Windows/Linux/Mac, start-dev.sh y uninstall-windows.ps1.
 
 Variables de entorno:
   MS_MYSQL_HOST, MS_MYSQL_USER, MS_MYSQL_PASSWORD, MS_MYSQL_DATABASE, MS_MYSQL_PORT
@@ -9,10 +9,12 @@ Variables de entorno:
     solo movimientos: scripts/mysql_outbox_triggers_movimientos.sql)
   MS_OUTBOX_SKIP_PREFLIGHT=1 - solo reaplicar SQL sin DROP previo (no recomendado)
   MS_OUTBOX_RECREATE_TABLES=1 - DROP sync_outbox_router antes de CREATE (reparación)
+  MS_OUTBOX_UNINSTALL=1 - quitar triggers/funciones/tablas aux sin reinstalar
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import sys
@@ -90,6 +92,17 @@ def manifest_from_sql(sql_text: str) -> tuple[list[str], list[str]]:
     return triggers, functions
 
 
+def uninstall_manifest_from_sql(sql_text: str) -> tuple[list[str], list[str], list[str]]:
+    """Triggers, funciones y tablas auxiliares a eliminar en desinstalación completa."""
+    triggers = set(re.findall(r"CREATE\s+TRIGGER\s+(\w+)\s+", sql_text, re.I))
+    triggers.update(re.findall(r"DROP\s+TRIGGER\s+IF\s+EXISTS\s+(\w+)", sql_text, re.I))
+    functions = set(re.findall(r"CREATE\s+FUNCTION\s+(\w+)\s*\(", sql_text, re.I))
+    functions.update(re.findall(r"DROP\s+FUNCTION\s+IF\s+EXISTS\s+(\w+)", sql_text, re.I))
+    tables = set(re.findall(r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+(\w+)", sql_text, re.I))
+    tables.update(_NODO_AUX_TABLES)
+    return sorted(triggers), sorted(functions), sorted(tables)
+
+
 def connect_mysql(
     *,
     host: str,
@@ -123,9 +136,13 @@ def preflight_drop_outbox_objects(
         cur.execute(f"DROP FUNCTION IF EXISTS `{name}`")
 
 
-def preflight_drop_aux_tables(cur: pymysql.cursors.Cursor) -> None:
+def preflight_drop_aux_tables(
+    cur: pymysql.cursors.Cursor,
+    *,
+    tables: list[str] | None = None,
+) -> None:
     """Elimina tablas auxiliares del nodo (cola outbox + digest catálogo)."""
-    for name in _NODO_AUX_TABLES:
+    for name in tables if tables is not None else _NODO_AUX_TABLES:
         cur.execute(f"DROP TABLE IF EXISTS `{name}`")
 
 
@@ -225,7 +242,87 @@ def apply_sql_file(
     return 0
 
 
+def uninstall_outbox(
+    *,
+    host: str,
+    port: int,
+    user: str,
+    password: str,
+    database: str,
+    sql_path: str | Path,
+) -> int:
+    sql_path = Path(sql_path)
+    if not sql_path.is_file():
+        print(f"SQL file not found: {sql_path}", file=sys.stderr)
+        return 1
+
+    with sql_path.open(encoding="utf-8") as f:
+        sql_text = f.read()
+
+    triggers, functions, tables = uninstall_manifest_from_sql(sql_text)
+    if not triggers and not functions and not tables:
+        print("No outbox objects found in SQL manifest", file=sys.stderr)
+        return 1
+
+    try:
+        cn = connect_mysql(
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            database=database,
+            autocommit=False,
+        )
+    except pymysql_errors.MySQLError as e:
+        print(
+            f"Could not connect to database '{database}' at {host}:{port}: {e}",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        with cn.cursor() as cur:
+            print(
+                f"Outbox: removing {len(triggers)} triggers, "
+                f"{len(functions)} functions and {len(tables)} aux tables..."
+            )
+            preflight_drop_outbox_objects(cur, triggers=triggers, functions=functions)
+            preflight_drop_aux_tables(cur, tables=tables)
+        cn.commit()
+    except pymysql_errors.MySQLError as e:
+        cn.rollback()
+        print(f"Error uninstalling outbox: {e}", file=sys.stderr)
+        return 1
+    finally:
+        cn.close()
+
+    print(
+        f"Outbox uninstalled from '{database}': {len(triggers)} triggers, "
+        f"{len(functions)} functions, {len(tables)} tables removed."
+    )
+    return 0
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Install or uninstall Multishop MySQL outbox triggers."
+    )
+    parser.add_argument(
+        "--uninstall",
+        action="store_true",
+        help="Remove outbox triggers, functions and aux tables without reinstalling",
+    )
+    return parser.parse_args()
+
+
 def main() -> int:
+    args = parse_args()
+    uninstall_only = args.uninstall or os.environ.get("MS_OUTBOX_UNINSTALL", "").strip() in (
+        "1",
+        "true",
+        "yes",
+    )
+
     host = os.environ.get("MS_MYSQL_HOST", "").strip()
     user = os.environ.get("MS_MYSQL_USER", "").strip()
     password = os.environ.get("MS_MYSQL_PASSWORD", "")
@@ -280,6 +377,16 @@ def main() -> int:
                 return 1
     finally:
         cn.close()
+
+    if uninstall_only:
+        return uninstall_outbox(
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            database=database,
+            sql_path=sql_path,
+        )
 
     return apply_sql_file(
         host=host,
