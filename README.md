@@ -128,6 +128,11 @@ MYSQL_PORT=3306
 MYSQL_USER=root
 MYSQL_PASSWORD=multishop
 MYSQL_DATABASE=mi_base_historica
+
+# Outbox movimientos → webhooks del tenant (Huey POST a ROUTER_EVENTS_URL)
+ROUTER_EVENTS_URL=http://10.66.0.1:3000
+HUEY_ENABLED=true
+HUEY_DB_PATH=./data/huey.sqlite
 ```
 
 ### Variables más comunes

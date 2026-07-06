@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Desarrollo en macOS: MySQL (Docker), triggers/outbox, VPN opcional (wg0.conf), API en primer plano.
 #
-# Uso (desde cualquier ruta):
-#   Multishop-nodo-API/scripts/mac/start-dev.sh
-#   Multishop-nodo-API/scripts/mac/start-dev.sh --bundle-dir ~/Downloads/nodo-bundle
+# Punto de entrada habitual desde la raíz del nodo:
+#   ./start-dev.sh
+# Este script también puede invocarse directamente:
+#   scripts/mac/start-dev.sh --bundle-dir ~/Downloads/nodo-bundle
 #
 # Opciones:
 #   --bundle-dir DIR   Copia .env y usa wg0.conf del bundle si existen
@@ -19,7 +20,10 @@ NODO_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 REPO_ROOT="$(cd "${NODO_DIR}/.." && pwd)"
 COMPOSE_FILE="${REPO_ROOT}/docker-compose.mysql.yml"
 MYSQL_CONTAINER="${MS_MYSQL_CONTAINER:-multishop-mysql-tienda}"
-SQL_TRIGGERS="${NODO_DIR}/scripts/mysql_outbox_triggers.sql"
+SQL_TRIGGERS="${NODO_DIR}/scripts/mysql_outbox_triggers_movimientos.sql"
+if [[ ! -f "${SQL_TRIGGERS}" ]]; then
+  SQL_TRIGGERS="${NODO_DIR}/scripts/mysql_outbox_triggers.sql"
+fi
 ENV_FILE="${NODO_DIR}/.env"
 VENV_DIR="${NODO_DIR}/venv"
 PYTHON_BIN="${VENV_DIR}/bin/python"
@@ -281,9 +285,19 @@ wait_mysql_app() {
 
 ensure_triggers() {
   [[ "${SKIP_TRIGGERS}" -eq 1 ]] && return 0
+
+  local huey_on router_url hub_push
+  huey_on="$(load_env_var HUEY_ENABLED)"
+  router_url="$(load_env_var ROUTER_EVENTS_URL)"
+  hub_push="$(load_env_var HUB_PUSH_ENABLED)"
+  if [[ "${huey_on}" != "true" && -z "${router_url// }" && "${hub_push}" != "true" ]]; then
+    log "Outbox omitido (HUEY_ENABLED, ROUTER_EVENTS_URL y HUB_PUSH_ENABLED no activan triggers)."
+    return 0
+  fi
+
   [[ -f "${SQL_TRIGGERS}" ]] || die "No existe ${SQL_TRIGGERS}"
 
-  log "Outbox: desinstalar triggers Multishop y reinstalar desde cero..."
+  log "Outbox movimientos: desinstalar triggers Multishop y reinstalar desde cero..."
   export_mysql_env_for_scripts
   export MS_SQL_FILE="${SQL_TRIGGERS}"
   unset MS_OUTBOX_SKIP_PREFLIGHT
@@ -336,7 +350,7 @@ export LOG_LEVEL="${LOG_LEVEL:-INFO}"
 export NODO_DEV_RELOAD="${NODO_DEV_RELOAD:-false}"
 
 log "Variables: MYSQL_HOST=${MYSQL_HOST} MYSQL_DATABASE=${MYSQL_DATABASE}"
-log "Hub: HUB_BASE_URL=$(load_env_var HUB_BASE_URL) HUB_PUSH_ENABLED=$(load_env_var HUB_PUSH_ENABLED) HUEY_ENABLED=$(load_env_var HUEY_ENABLED)"
+log "Router: ROUTER_EVENTS_URL=$(load_env_var ROUTER_EVENTS_URL) HUEY_ENABLED=$(load_env_var HUEY_ENABLED)"
 
 HUEY_PID=""
 cleanup_dev() {

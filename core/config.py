@@ -43,5 +43,17 @@ class Settings(BaseSettings):
     nodo_mysql_startup_attempts: int = 30
     nodo_mysql_startup_delay_seconds: float = 2.0
 
+    # Reenvío sync_outbox_router (kardex) → router → webhooks del tenant
+    router_events_url: str = ""
+    webhook_forwarder_enabled: bool = False
+    webhook_forwarder_poll_seconds: float = 5.0
+    webhook_forwarder_batch_size: int = 25
+
+    # Huey outbox (movimientos → router webhooks)
+    huey_enabled: bool = False
+    huey_db_path: str = "./data/huey.sqlite"
+    huey_outbox_enqueue_interval_seconds: float = 5.0
+    huey_outbox_batch_size: int = 200
+
 
 settings = Settings()

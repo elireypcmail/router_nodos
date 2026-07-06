@@ -13,6 +13,7 @@ from db.calternos_store import (
     replace_codigos_alternos,
 )
 from db.inventario_identifier_conflict import assert_product_identifiers_available
+from db.lotes_store import fetch_lotes_groups, lotes_where
 from db.detallepr_store import (
     apply_inventario_create_pricing,
     apply_inventario_pg1_pricing,
@@ -336,35 +337,11 @@ def _fetch_lotes(codigo: str) -> list[dict]:
     if not mysql.is_configured():
         raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
 
+    where_sql, params = lotes_where(codigo)
     conn = mysql.connect()
     try:
         cur = conn.cursor(dictionary=True)
-        cur.execute(
-            """
-            SELECT
-              indice,
-              codigod,
-              d.lote,
-              d.cubica,
-              u.nubica,
-              existencia,
-              vence,
-              elabora,
-              calidad,
-              costo,
-              costopr,
-              costopro,
-              costopropr,
-              disponible,
-              traslado
-            FROM detalle d
-            LEFT JOIN ubica u ON d.cubica = u.cubica
-            WHERE d.codigo = %s
-            ORDER BY d.cubica ASC, d.lote ASC, d.vence ASC
-            """,
-            (codigo,),
-        )
-        return list(cur.fetchall() or [])
+        return fetch_lotes_groups(cur, where_sql, params)
     finally:
         conn.close()
 
@@ -494,10 +471,20 @@ async def get_inventario_imagen(codigo: str, _: None = Depends(verify_bearer)):
 
 @router.get("/inventario/{codigo}")
 async def get_inventario_item(codigo: str, _: None = Depends(verify_bearer)):
-    item = await anyio.to_thread.run_sync(lambda: _get_item(codigo))
-    if not item:
+    def _fetch() -> dict | None:
+        item = _get_item(codigo)
+        if not item:
+            return None
+        try:
+            lotes = _fetch_lotes(codigo)
+        except Exception:
+            lotes = []
+        return {"item": item, "lotes": lotes}
+
+    payload = await anyio.to_thread.run_sync(_fetch)
+    if not payload:
         raise HTTPException(status_code=404, detail="Item not found")
-    return {"nodo_id": settings.nodo_id, "item": item}
+    return {"nodo_id": settings.nodo_id, **payload}
 
 
 @router.post("/inventario")

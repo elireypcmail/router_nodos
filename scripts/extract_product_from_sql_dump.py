@@ -38,7 +38,7 @@ AJUSTE_NRO_RE = re.compile(r"Ajuste Nro:\s*([^\s]+)", re.I)
 DEFAULT_TEXT_TABLES = frozenset(
     {
         "catalog_push_digest",
-        "sync_outbox",
+        "sync_outbox_router",
         "auditoriag",
         "auditor",
         "auditorcompras",

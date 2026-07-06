@@ -14,7 +14,7 @@ fi
 
 sudo tee "${UNIT_PATH}" >/dev/null <<EOF
 [Unit]
-Description=Multishop nodo Huey consumer (outbox + catalog sync jobs)
+Description=Multishop nodo Huey consumer (outbox movimientos → router webhooks)
 After=network-online.target mysql.service
 Wants=network-online.target
 

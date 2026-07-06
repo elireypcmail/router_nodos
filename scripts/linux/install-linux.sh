@@ -30,6 +30,7 @@ MYSQL_PASSWORD=""
 MYSQL_DATABASE=""
 HUEY_ENABLED=""
 HUB_PUSH_ENABLED=""
+ROUTER_EVENTS_URL=""
 
 if [[ -f "${NODO_DIR}/.env" ]]; then
   while IFS='=' read -r k v; do
@@ -49,12 +50,30 @@ if [[ -f "${NODO_DIR}/.env" ]]; then
       MYSQL_DATABASE) MYSQL_DATABASE="${v}" ;;
       HUEY_ENABLED) HUEY_ENABLED="${v}" ;;
       HUB_PUSH_ENABLED) HUB_PUSH_ENABLED="${v}" ;;
+      ROUTER_EVENTS_URL) ROUTER_EVENTS_URL="${v}" ;;
     esac
   done < "${NODO_DIR}/.env"
 fi
 
 HUEY_ENABLED="${HUEY_ENABLED:-}"
 HUB_PUSH_ENABLED="${HUB_PUSH_ENABLED:-}"
+ROUTER_EVENTS_URL="${ROUTER_EVENTS_URL:-}"
+
+needs_outbox_triggers() {
+  [[ "${HUEY_ENABLED}" == "true" ]] && return 0
+  [[ "${HUB_PUSH_ENABLED}" == "true" ]] && return 0
+  [[ -n "${ROUTER_EVENTS_URL// }" ]] && return 0
+  return 1
+}
+
+outbox_sql_file() {
+  local mov="${NODO_DIR}/scripts/mysql_outbox_triggers_movimientos.sql"
+  if [[ -f "${mov}" ]]; then
+    printf '%s' "${mov}"
+    return 0
+  fi
+  printf '%s' "${NODO_DIR}/scripts/mysql_outbox_triggers.sql"
+}
 
 if [[ -z "${MYSQL_PORT}" ]]; then
   MYSQL_PORT="3306"
@@ -73,16 +92,16 @@ apply_outbox_triggers() {
   export MS_MYSQL_USER="${MYSQL_USER}"
   export MS_MYSQL_PASSWORD="${MYSQL_PASSWORD}"
   export MS_MYSQL_DATABASE="${MYSQL_DATABASE}"
-  export MS_SQL_FILE="${NODO_DIR}/scripts/mysql_outbox_triggers.sql"
+  export MS_SQL_FILE="$(outbox_sql_file)"
   unset MS_OUTBOX_SKIP_PREFLIGHT
   echo "Outbox: desinstalar triggers Multishop y reinstalar (apply_mysql_outbox_triggers.py)..."
   "${NODO_DIR}/venv/bin/python" "${NODO_DIR}/scripts/apply_mysql_outbox_triggers.py"
 }
 
-if [[ "${HUEY_ENABLED}" == "true" || "${HUB_PUSH_ENABLED}" == "true" ]]; then
+if needs_outbox_triggers; then
   apply_outbox_triggers || echo "Aviso: no se pudo aplicar outbox. Revise MySQL y permisos TRIGGER." >&2
 else
-  echo "Outbox/triggers omitidos (fork router: HUEY_ENABLED y HUB_PUSH_ENABLED no son true)."
+  echo "Outbox/triggers omitidos (HUEY_ENABLED, ROUTER_EVENTS_URL y HUB_PUSH_ENABLED no activan outbox)."
 fi
 
 echo "Nodo Linux listo. Arranque API: ${NODO_DIR}/venv/bin/python ${NODO_DIR}/main.py"

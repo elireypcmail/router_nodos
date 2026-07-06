@@ -896,6 +896,25 @@ function Test-MultishopEnvFlagTrue {
     return ($Value.Trim() -match '^(?i:true|1|yes)$')
 }
 
+function Get-MultishopOutboxSqlFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NodoDir
+    )
+    $movimientos = Join-Path $NodoDir 'scripts\mysql_outbox_triggers_movimientos.sql'
+    if (Test-Path -LiteralPath $movimientos) {
+        return $movimientos
+    }
+    return Join-Path $NodoDir 'scripts\mysql_outbox_triggers.sql'
+}
+
+function Test-MultishopNodoHasRouterEventsUrl {
+    param([string]$Value)
+    if (-not $Value) { return $false }
+    $trimmed = $Value.Trim()
+    return ($trimmed.Length -gt 0)
+}
+
 function Test-MultishopNodoNeedsMysqlAtStartup {
     param([hashtable]$EnvMap)
     if (-not $EnvMap) { return $false }
@@ -904,6 +923,7 @@ function Test-MultishopNodoNeedsMysqlAtStartup {
     }
     if (Test-MultishopEnvFlagTrue -Value $EnvMap["HUEY_ENABLED"]) { return $true }
     if (Test-MultishopEnvFlagTrue -Value $EnvMap["HUB_PUSH_ENABLED"]) { return $true }
+    if (Test-MultishopNodoHasRouterEventsUrl -Value $EnvMap["ROUTER_EVENTS_URL"]) { return $true }
     return $false
 }
 
@@ -912,6 +932,7 @@ function Test-MultishopNodoNeedsOutboxTriggers {
     if (-not $EnvMap) { return $false }
     if (Test-MultishopEnvFlagTrue -Value $EnvMap["HUEY_ENABLED"]) { return $true }
     if (Test-MultishopEnvFlagTrue -Value $EnvMap["HUB_PUSH_ENABLED"]) { return $true }
+    if (Test-MultishopNodoHasRouterEventsUrl -Value $EnvMap["ROUTER_EVENTS_URL"]) { return $true }
     return $false
 }
 

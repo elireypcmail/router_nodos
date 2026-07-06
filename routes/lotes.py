@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, Query
 import anyio
 
 from core.config import settings
+from db.lotes_store import count_lotes_groups, fetch_lotes_groups, lotes_where
 from db.mysql import MySqlClient
 from middleware.auth import verify_bearer
 
@@ -18,55 +19,15 @@ def _fetch_lotes(
     if not mysql.is_configured():
         raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
 
-    c = (codigo or "").strip()
     offset = max(0, (page - 1) * limit)
+    where_sql, params = lotes_where(codigo)
 
     conn = mysql.connect()
     try:
         cur = conn.cursor(dictionary=True)
-        where = "WHERE (%s = '' OR d.codigo = %s)"
-        params = (c, c)
-
-        cur.execute(
-            f"""
-            SELECT COUNT(*) AS cnt
-            FROM detalle d
-            {where}
-            """,
-            params,
-        )
-        total_row = cur.fetchone() or {}
-        total = int(total_row.get("cnt") or 0)
-
-        cur.execute(
-            f"""
-            SELECT
-              d.codigo,
-              d.indice,
-              d.codigod,
-              d.lote,
-              d.cubica,
-              u.nubica,
-              d.existencia,
-              d.vence,
-              d.elabora,
-              d.calidad,
-              d.costo,
-              d.costopr,
-              d.costopro,
-              d.costopropr,
-              d.disponible,
-              d.traslado
-            FROM detalle d
-            LEFT JOIN ubica u ON d.cubica = u.cubica
-            {where}
-            ORDER BY d.codigo ASC, d.cubica ASC, d.lote ASC, d.vence ASC
-            LIMIT %s OFFSET %s
-            """,
-            (*params, int(limit), int(offset)),
-        )
-        rows = cur.fetchall() or []
-        return list(rows), total
+        total = count_lotes_groups(cur, where_sql, params)
+        rows = fetch_lotes_groups(cur, where_sql, params, limit=limit, offset=offset)
+        return rows, total
     finally:
         conn.close()
 

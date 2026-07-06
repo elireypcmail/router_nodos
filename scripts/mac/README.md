@@ -18,33 +18,47 @@ MYSQL_PORT=3306
 MYSQL_USER=multishop
 MYSQL_PASSWORD=multishop
 MYSQL_DATABASE=mi_base_historica
-HUB_BASE_URL=http://localhost:3000
-HUB_PUSH_ENABLED=true
-HUB_API_KEY=...
+ROUTER_EVENTS_URL=http://localhost:3000
+HUEY_ENABLED=true
+NODO_ID=...
+ROUTER_INTERNAL_API_KEY=...
 ```
 
 La base debe existir (importar dump en el volumen Docker). Credenciales por defecto del compose: usuario `multishop` / BD `mi_base_historica` (ver `docker-compose.mysql.yml` en la raíz del monorepo).
 
-## Uso
+## Instalación (provisioning)
+
+Para copiar `.env` del bundle, crear venv, aplicar triggers de movimientos y registrar Huey en LaunchAgent:
 
 ```bash
-cd Multishop-nodo-API
-chmod +x scripts/mac/start-dev.sh
-./scripts/mac/start-dev.sh
+chmod +x scripts/mac/install-mac.sh scripts/mac/install-huey-launchd.sh
+./scripts/mac/install-mac.sh ~/Downloads/mi-tienda-bundle
+```
+
+Requiere `HUEY_ENABLED=true` y `ROUTER_EVENTS_URL` en `.env` para activar outbox y el consumer.
+
+## Desarrollo (`./start-dev.sh` en la raíz del nodo)
+
+```bash
+cd router_nodos   # raíz del agente
+chmod +x start-dev.sh
+./start-dev.sh
 ```
 
 Con bundle de provisioning (copia `.env` y usa `wg0.conf` del bundle):
 
 ```bash
-./scripts/mac/start-dev.sh --bundle-dir ~/Downloads/mi-tienda-bundle
+./start-dev.sh --bundle-dir ~/Downloads/mi-tienda-bundle
 ```
+
+(`start-dev.sh` delega en `scripts/mac/start-dev.sh`; también existe `start-dev-quick.sh` con `--skip-venv`.)
 
 ### Qué hace el script
 
 1. Comprueba Python y crea/actualiza `venv` + `pip install -r requirements.txt`
 2. `docker compose -f ../../docker-compose.mysql.yml up -d` (contenedor `multishop-mysql-tienda`)
 3. Espera a que MySQL responda
-4. Si no existe `trg_kardex_ai`, ejecuta `scripts/apply_mysql_outbox_triggers.py`
+4. Si `HUEY_ENABLED=true` o hay `ROUTER_EVENTS_URL`, aplica `mysql_outbox_triggers_movimientos.sql` vía `apply_mysql_outbox_triggers.py`
 5. Si encuentra `wg0.conf` (nodo, `vpn/`, bundle o `nodo/wg0.conf` del repo), intenta `sudo wg-quick up` (pide contraseña de Mac)
 6. Arranca `python main.py` en primer plano (logs en la misma terminal)
 
@@ -56,7 +70,7 @@ Con bundle de provisioning (copia `.env` y usa `wg0.conf` del bundle):
 | `--no-wg` | No toca WireGuard |
 | `--skip-triggers` | No aplica outbox |
 
-Cada arranque con triggers ejecuta `apply_mysql_outbox_triggers.py`: **borra todos los `trg_*` del SQL y las funciones `ms_json_*`, luego reinstala**. No hace falta `--force-triggers`.
+Cada arranque con triggers ejecuta `apply_mysql_outbox_triggers.py`: **borra solo los `trg_router_*` y `ms_router_json_*` del manifiesto**, luego reinstala. No toca `sync_outbox` ni triggers del hub.
 
 | `--skip-docker` | No levanta Docker; usa MySQL ya corriendo según `.env` |
 
@@ -77,11 +91,17 @@ Con VPN al hub de dev: `HUB_BASE_URL=http://10.66.0.1:3000` en `.env`.
 
 Al salir con Ctrl+C, el script baja el túnel si lo había levantado él.
 
-## Huey (outbox con reintentos)
+## Huey (outbox movimientos → webhooks)
 
-Si en `.env` tienes `HUEY_ENABLED=true` (default del bundle provisioning), `start-dev.sh` arranca el consumer Huey en background junto con la API.
+Con `HUEY_ENABLED=true` en `.env`, `start-dev.sh` arranca el consumer Huey en background junto con la API.
 
-En **otra terminal** (solo si no usas `start-dev.sh`):
+Instalación persistente (LaunchAgent del usuario):
+
+```bash
+./scripts/mac/install-huey-launchd.sh
+```
+
+En **otra terminal** (solo si no usas `start-dev.sh` ni LaunchAgent):
 
 ```bash
 cd Multishop-nodo-API
@@ -89,7 +109,7 @@ source venv/bin/activate
 python -m huey.bin.huey_consumer huey_tasks.huey
 ```
 
-Con `HUEY_ENABLED=false` y `HUB_PUSH_ENABLED=true`, el `OutboxWorker` dentro de la API envía el outbox (modo legacy).
+Sin Huey (`HUEY_ENABLED=false`), la API puede usar el forwarder asyncio en `main.py` si `ROUTER_EVENTS_URL` está configurada.
 
 ## Simulaciones transaccionales
 

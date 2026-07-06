@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Arranca el consumer Huey (outbox transaccional + jobs sync catálogo).
+# Arranca el consumer Huey (outbox movimientos → ROUTER_EVENTS_URL / webhooks).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -1,6 +1,7 @@
 """Multishop store node API - orchestrated by Nest hub over VPN."""
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -21,7 +22,18 @@ from core.partner_request_context import (
     bind_partner_request_context,
     reset_partner_request_context,
 )
-from routes import categorias, compras, health, inventario, laboratorios, lotes, movimientos, proveedores, ventas
+from routes import (
+    categorias,
+    compras,
+    health,
+    inventario,
+    laboratorios,
+    lotes,
+    movimientos,
+    proveedores,
+    sync_outbox,
+    ventas,
+)
 from core.categoria_trace import is_categoria_http_path, trace, trace_exc
 
 logger = logging.getLogger("multishop-nodo-api")
@@ -31,8 +43,69 @@ def configure_logging() -> None:
     configure_node_logging()
 
 
+async def _ensure_outbox_schema_with_retry() -> None:
+    from db.mysql import MySqlClient
+    from outbox.mysql import OutboxRepository
+
+    mysql = MySqlClient()
+    if not mysql.is_configured():
+        logger.warning("MySQL no configurado; outbox omitido en arranque")
+        return
+    repo = OutboxRepository(mysql)
+    attempts = max(1, int(settings.nodo_mysql_startup_attempts))
+    delay = max(0.5, float(settings.nodo_mysql_startup_delay_seconds))
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            repo.ensure_schema()
+            logger.info("Outbox schema listo (intento %s)", attempt)
+            return
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                "Outbox schema no listo (intento %s/%s): %s",
+                attempt,
+                attempts,
+                ascii_safe(exc),
+            )
+            if attempt < attempts:
+                await asyncio.sleep(delay)
+    if last_exc:
+        raise last_exc
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    outbox_active = bool((settings.router_events_url or "").strip())
+    if outbox_active:
+        await _ensure_outbox_schema_with_retry()
+        if settings.huey_enabled:
+            from workers.huey_tasks import bootstrap_outbox_scheduler
+
+            bootstrap_outbox_scheduler()
+            logger.info("Outbox Huey scheduler iniciado (consumer aparte)")
+        elif settings.webhook_forwarder_enabled:
+            from workers.huey_tasks import run_outbox_flush_once
+
+            poll_seconds = max(1.0, float(settings.webhook_forwarder_poll_seconds))
+
+            async def _forwarder_loop() -> None:
+                while True:
+                    try:
+                        await asyncio.to_thread(run_outbox_flush_once)
+                    except Exception:
+                        logger.exception("Error en webhook forwarder")
+                    await asyncio.sleep(poll_seconds)
+
+            task = asyncio.create_task(_forwarder_loop())
+            logger.info("Webhook forwarder asyncio activo (poll=%ss)", poll_seconds)
+            try:
+                yield
+            finally:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+            return
     yield
 
 
@@ -54,6 +127,7 @@ app.include_router(lotes.router)
 app.include_router(compras.router)
 app.include_router(ventas.router)
 app.include_router(movimientos.router)
+app.include_router(sync_outbox.router)
 
 
 @app.middleware("http")

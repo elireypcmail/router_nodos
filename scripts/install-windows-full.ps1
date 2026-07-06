@@ -1,5 +1,5 @@
 # Instala/configura nodo en Windows: copia, WireGuard, .env, venv, ExecutionPolicy,
-# triggers/outbox (solo si HUEY/HUB_PUSH), tareas API/VPN.
+# triggers/outbox movimientos (HUEY / ROUTER_EVENTS_URL / HUB_PUSH), tareas API+Huey/VPN.
 # Ejecutar como Administrador para instalación automática de servicio WireGuard y tareas.
 #
 # Si PowerShell bloquea scripts no firmados (ExecutionPolicy), use una de estas opciones:
@@ -729,9 +729,16 @@ function Enable-OutboxTriggersWithPython {
         [string]$VenvPython
     )
 
-    $sqlFile = Join-Path $NodoDirPath 'scripts\\mysql_outbox_triggers.sql'
+    $sqlFile = if (Get-Command Get-MultishopOutboxSqlFile -ErrorAction SilentlyContinue) {
+        Get-MultishopOutboxSqlFile -NodoDir $NodoDirPath
+    } else {
+        Join-Path $NodoDirPath 'scripts\mysql_outbox_triggers_movimientos.sql'
+    }
     if (-not (Test-Path -LiteralPath $sqlFile)) {
-        Write-Warning "No se encontró $sqlFile. Omitiendo activación de triggers/outbox."
+        $sqlFile = Join-Path $NodoDirPath 'scripts\mysql_outbox_triggers.sql'
+    }
+    if (-not (Test-Path -LiteralPath $sqlFile)) {
+        Write-Warning "No se encontró SQL outbox en scripts\. Omitiendo activación de triggers/outbox."
         return
     }
     if (-not (Test-Path -LiteralPath $EnvFilePath)) {
@@ -858,7 +865,7 @@ if ($envSource) {
     $envDest = Join-Path $NodoDir '.env'
     Install-ProvisioningFile -SourcePath $envSource -DestPath $envDest -Label '.env'
 } else {
-    Write-Warning "No se encontró .env/env/env.txt. El nodo puede arrancar, pero no podrá comunicarse con el hub sin HUB_BASE_URL."
+    Write-Warning "No se encontró .env/env/env.txt. El nodo puede arrancar, pero sin ROUTER_EVENTS_URL no habrá outbox→webhooks."
 }
 
 Write-Host ""
@@ -958,7 +965,7 @@ if (-not $runOutbox) {
     if ($SkipOutboxTriggers) {
         Write-Host "  Omitido (-SkipOutboxTriggers)." -ForegroundColor DarkGray
     } else {
-        Write-Host "  Omitido (fork router: HUEY_ENABLED=false y HUB_PUSH_ENABLED=false; el hub consulta la API directamente)." -ForegroundColor DarkGray
+        Write-Host "  Omitido (HUEY_ENABLED, ROUTER_EVENTS_URL y HUB_PUSH_ENABLED no activan outbox)." -ForegroundColor DarkGray
     }
 } else {
     $triggersInDocker = Enable-OutboxTriggersIfDocker -NodoDirPath $NodoDir
@@ -1054,5 +1061,19 @@ if (-not $SkipApiAutostart) {
 Write-Host "Nodo Windows listo en $(Get-MultishopDefaultInstallRoot)."
 Write-Host "Arranque API: $(Join-Path $venvDir 'Scripts\\python') $(Join-Path $NodoDir 'main.py')"
 Write-Host ""
-Write-Host "Conexion directa (fork router): HUEY_ENABLED=false en .env; solo API + tarea $(Get-MultishopApiScheduledTaskName)."
+$envMapFinal = Parse-EnvFile -Path (Join-Path $NodoDir '.env')
+$hueyOn = $false
+if ($envMapFinal -and (Get-Command Test-MultishopEnvFlagTrue -ErrorAction SilentlyContinue)) {
+    $hueyOn = Test-MultishopEnvFlagTrue -Value $envMapFinal['HUEY_ENABLED']
+}
+if ($hueyOn) {
+    $hueyTask = if (Get-Command Get-MultishopHueyScheduledTaskName -ErrorAction SilentlyContinue) {
+        Get-MultishopHueyScheduledTaskName
+    } else { 'Multishop-Router-Huey' }
+    Write-Host "Huey activo (HUEY_ENABLED=true): tareas ONSTART $(Get-MultishopApiScheduledTaskName) + $hueyTask."
+    Write-Host "Outbox movimientos → ROUTER_EVENTS_URL (webhooks). SQLite en data\ (HUEY_DB_PATH)."
+} else {
+    Write-Host "Huey desactivado: solo API + tarea $(Get-MultishopApiScheduledTaskName)."
+    Write-Host "Para webhooks de movimientos: HUEY_ENABLED=true, ROUTER_EVENTS_URL y triggers outbox en .env."
+}
 Write-Host "Convive con Multishop\\nodo en la misma PC (carpetas y tareas distintas)."

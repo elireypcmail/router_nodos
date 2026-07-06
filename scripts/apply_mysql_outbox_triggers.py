@@ -5,9 +5,10 @@ Usado por install Windows/Linux/Mac y start-dev.sh.
 
 Variables de entorno:
   MS_MYSQL_HOST, MS_MYSQL_USER, MS_MYSQL_PASSWORD, MS_MYSQL_DATABASE, MS_MYSQL_PORT
-  MS_SQL_FILE - ruta al .sql (default: scripts/mysql_outbox_triggers.sql junto a este script)
+  MS_SQL_FILE - ruta al .sql (default: scripts/mysql_outbox_triggers.sql;
+    solo movimientos: scripts/mysql_outbox_triggers_movimientos.sql)
   MS_OUTBOX_SKIP_PREFLIGHT=1 - solo reaplicar SQL sin DROP previo (no recomendado)
-  MS_OUTBOX_RECREATE_TABLES=1 - DROP sync_outbox y catalog_push_digest antes de CREATE (reparación)
+  MS_OUTBOX_RECREATE_TABLES=1 - DROP sync_outbox_router antes de CREATE (reparación)
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from pymysql import err as pymysql_errors
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _DEFAULT_SQL = _SCRIPT_DIR / "mysql_outbox_triggers.sql"
-_NODO_AUX_TABLES = ("sync_outbox", "catalog_push_digest")
+_NODO_AUX_TABLES = ("sync_outbox_router",)
 
 
 def parse_sql_statements(text: str) -> list[str]:
@@ -174,7 +175,7 @@ def apply_sql_file(
             if not skip_preflight:
                 print(
                     f"Outbox: uninstalling {len(triggers)} triggers and "
-                    f"{len(functions)} ms_json_* functions (clean install)..."
+                    f"{len(functions)} ms_router_json_* functions (clean install)..."
                 )
                 preflight_drop_outbox_objects(cur, triggers=triggers, functions=functions)
                 if recreate_tables:
