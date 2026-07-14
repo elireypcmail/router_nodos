@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
 import anyio
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from core.config import settings
 from db.calternos_store import (
@@ -26,6 +26,7 @@ from db.general_store import (
 )
 from db.inventario_catalog_attach import attach_category_provider_to_items
 from db.mysql import MySqlClient
+from db.price_from_net_apply import PriceFromNetError, apply_price_from_net
 from db.product_porvg import validate_porvg
 from db.sinv_store import default_fcrea_today, upsert_sinv
 from db.sinvimg_store import (
@@ -134,6 +135,36 @@ class InventarioPatchRequest(BaseModel):
             return normalize_codigos_alternos(value)
         except ValueError as exc:
             raise ValueError(str(exc)) from exc
+
+
+class PrecioDesdeNetoRequest(BaseModel):
+    precio_sin_iva_usd: float | None = Field(
+        default=None,
+        gt=0,
+        description="Precio sin IVA en USD",
+    )
+    tasa: float | None = Field(
+        default=None,
+        gt=0,
+        description="Tasa BCV del día (requerida si precio_sin_iva_usd)",
+    )
+    porvg: float | None = Field(
+        default=None,
+        description="Alícuota IVA: 0, 8, 16 o 31 (opcional)",
+    )
+
+    @field_validator("porvg")
+    @classmethod
+    def _validate_porvg_field(cls, value: float | None) -> float | None:
+        return validate_porvg(value)
+
+    @model_validator(mode="after")
+    def _validate_request_shape(self) -> "PrecioDesdeNetoRequest":
+        if self.precio_sin_iva_usd is None and self.porvg is None:
+            raise ValueError("precio_sin_iva_usd or porvg is required")
+        if self.precio_sin_iva_usd is not None and self.tasa is None:
+            raise ValueError("tasa is required when precio_sin_iva_usd is sent")
+        return self
 
 
 class InventarioUpsertRequest(BaseModel):
@@ -646,3 +677,50 @@ async def patch_inventario_item(
     await anyio.to_thread.run_sync(_patch_with_fk_check)
     item = await anyio.to_thread.run_sync(lambda: _get_item(codigo))
     return {"nodo_id": settings.nodo_id, "item": item, "message": "ok"}
+
+
+@router.post("/inventario/{codigo}/precio-desde-neto")
+async def post_precio_desde_neto(
+    codigo: str,
+    body: PrecioDesdeNetoRequest,
+    _: None = Depends(verify_bearer),
+):
+    def _apply() -> dict:
+        mysql = MySqlClient()
+        if not mysql.is_configured():
+            raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
+        conn = mysql.connect()
+        try:
+            cur = conn.cursor()
+            try:
+                result = apply_price_from_net(
+                    cur,
+                    codigo,
+                    price_ex_tax_usd=body.precio_sin_iva_usd,
+                    exchange_rate=body.tasa,
+                    porvg=body.porvg,
+                )
+            except PriceFromNetError as exc:
+                raise HTTPException(
+                    status_code=exc.status_code,
+                    detail=exc.message,
+                ) from exc
+            conn.commit()
+            return result
+        except HTTPException:
+            conn.rollback()
+            raise
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    data = await anyio.to_thread.run_sync(_apply)
+    return {
+        "nodo_id": settings.nodo_id,
+        "nombre": settings.nodo_nombre,
+        "codigo": codigo.strip(),
+        **data,
+        "message": "ok",
+    }

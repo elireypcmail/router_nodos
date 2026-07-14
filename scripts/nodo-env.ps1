@@ -763,9 +763,17 @@ function Get-MultishopHueyStartFailureHint {
         [string]$NodoDir
     )
     $lines = @("NodoDir: $NodoDir")
+    $logDirs = @()
+    if (Get-Command Get-MultishopDeployRoot -ErrorAction SilentlyContinue) {
+        $logDirs += Get-MultishopDeployRoot
+    }
     foreach ($base in @($env:ProgramData, $env:LOCALAPPDATA)) {
         if (-not $base) { continue }
-        $logDir = Join-Path $base "Multishop"
+        $logDirs += Join-Path $base "Multishop"
+        $logDirs += Join-Path $base "Multishop\router"
+        $logDirs += Join-Path $base "Multishop\nodo"
+    }
+    foreach ($logDir in ($logDirs | Select-Object -Unique)) {
         foreach ($name in @("nodo-huey.err.log", "nodo-huey-start.log", "nodo-huey.out.log")) {
             $path = Join-Path $logDir $name
             if (-not (Test-Path -LiteralPath $path)) { continue }
@@ -777,6 +785,16 @@ function Get-MultishopHueyStartFailureHint {
     }
     $dataDir = Join-Path $NodoDir "data"
     $lines += "Data dir: $dataDir (HUEY_DB_PATH / SYNC_DB_PATH en .env)"
+    $hueyVbs = $null
+    if (Get-Command Get-MultishopDeployRoot -ErrorAction SilentlyContinue) {
+        $hueyBase = if (Get-Command Get-MultishopHueyLauncherBasename -ErrorAction SilentlyContinue) {
+            Get-MultishopHueyLauncherBasename
+        } else { 'start-huey' }
+        $hueyVbs = Join-Path (Get-MultishopDeployRoot) "$hueyBase.vbs"
+        if (Test-Path -LiteralPath $hueyVbs) {
+            $lines += "Arranque manual: wscript.exe //nologo `"$hueyVbs`""
+        }
+    }
     return ($lines -join "`n  ")
 }
 

@@ -75,11 +75,42 @@ if ($apiLeaderPid -gt 0) {
 if ($nodoDir -and (Get-Command Get-MultishopNodoProcessCounts -ErrorAction SilentlyContinue)) {
     $counts = Get-MultishopNodoProcessCounts -NodoDir $nodoDir
     Write-Host "Procesos en $($nodoDir): API=$($counts.Api) Huey=$($counts.Huey)"
+    $envMap = @{}
+    $envPath = Join-Path $nodoDir ".env"
+    if (Test-Path -LiteralPath $envPath) {
+        $envMap = Read-MultishopEnvFile -Path $envPath
+    }
+    $hueyWanted = Test-MultishopEnvFlagTrue -Value $envMap['HUEY_ENABLED']
+    if ($hueyWanted -and $counts.Huey -lt 1) {
+        Write-Host "Huey: HUEY_ENABLED=true pero no hay consumer (Huey=0)." -ForegroundColor Yellow
+        if (Get-Command Get-MultishopHueyStartFailureHint -ErrorAction SilentlyContinue) {
+            Write-Host "  $(Get-MultishopHueyStartFailureHint -NodoDir $nodoDir)"
+        }
+        $hueyBase = if (Get-Command Get-MultishopHueyLauncherBasename -ErrorAction SilentlyContinue) {
+            Get-MultishopHueyLauncherBasename
+        } else { 'start-huey' }
+        $hueyVbs = Join-Path $DeployDir "$hueyBase.vbs"
+        if (Test-Path -LiteralPath $hueyVbs) {
+            Write-Host "  Arrancar ahora: wscript.exe //nologo `"$hueyVbs`"" -ForegroundColor Cyan
+        } else {
+            Write-Host "  Arrancar ahora: powershell -NoProfile -ExecutionPolicy Bypass -File `"$($PSScriptRoot)\start-nodo-huey.ps1`" -NodoDir `"$nodoDir`"" -ForegroundColor Cyan
+        }
+    } elseif (-not $hueyWanted) {
+        Write-Host "Huey: desactivado (HUEY_ENABLED!=true en .env)." -ForegroundColor DarkGray
+    } elseif ($counts.Huey -ge 1) {
+        Write-Host "Huey: consumer activo." -ForegroundColor Green
+    }
 }
 
 Write-Host ""
 Write-Host "Logs:"
-foreach ($p in @($logStart, $logStartLocal, $logOut, $logErr)) {
+$hueyLogs = @(
+    (Join-Path $DeployDir "nodo-huey-start.log"),
+    (Join-Path $DeployDir "nodo-huey.err.log"),
+    (Join-Path $env:LOCALAPPDATA "Multishop\router\nodo-huey-start.log"),
+    (Join-Path $env:LOCALAPPDATA "Multishop\router\nodo-huey.err.log")
+)
+foreach ($p in @($logStart, $logStartLocal, $logOut, $logErr) + $hueyLogs) {
     if (Test-Path -LiteralPath $p) {
         Write-Host "  $p"
     }
