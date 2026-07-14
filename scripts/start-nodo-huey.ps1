@@ -5,27 +5,81 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$DeployDir = if (Get-Command Get-MultishopDeployRoot -ErrorAction SilentlyContinue) {
-    Get-MultishopDeployRoot
-} else {
-    Join-Path $env:ProgramData "Multishop"
-}
-$DirFile = if (Get-Command Get-MultishopDirFilePath -ErrorAction SilentlyContinue) {
-    Get-MultishopDirFilePath
-} else {
-    Join-Path $DeployDir "nodo-dir.txt"
-}
-$StartLog = Join-Path $DeployDir "nodo-huey-start.log"
+
 $envHelper = Join-Path $PSScriptRoot "nodo-env.ps1"
 if (Test-Path -LiteralPath $envHelper) {
     . $envHelper
 }
 
+function Get-MultishopHueyDeployRoot {
+    if (Get-Command Get-MultishopDeployRoot -ErrorAction SilentlyContinue) {
+        return (Get-MultishopDeployRoot)
+    }
+    # Copiado a ProgramData sin nodo-env: inferir producto por carpeta del launcher.
+    $root = ($PSScriptRoot -as [string])
+    if ($root -and $root.ToLowerInvariant() -match '\\multishop\\router$') {
+        return (Join-Path $env:ProgramData 'Multishop\router')
+    }
+    if ($root -and $root.ToLowerInvariant() -match '\\multishop\\nodo$') {
+        return (Join-Path $env:ProgramData 'Multishop\nodo')
+    }
+    foreach ($candidate in @(
+            (Join-Path $env:ProgramData 'Multishop\router'),
+            (Join-Path $env:ProgramData 'Multishop\nodo'),
+            (Join-Path $env:ProgramData 'Multishop')
+        )) {
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+    return (Join-Path $env:ProgramData 'Multishop')
+}
+
+function Get-MultishopHueyNodoDir {
+    param([string]$NodoDirOverride = "")
+    if ($NodoDirOverride) {
+        return $NodoDirOverride.Trim().TrimEnd('\')
+    }
+    foreach ($name in @('router-dir.txt', 'nodo-dir.txt')) {
+        $local = Join-Path $PSScriptRoot $name
+        if (Test-Path -LiteralPath $local) {
+            $dir = (Get-Content -LiteralPath $local -Raw).Trim()
+            if ($dir) { return $dir.TrimEnd('\') }
+        }
+    }
+    if (Get-Command Get-MultishopDirFilePath -ErrorAction SilentlyContinue) {
+        $dirFile = Get-MultishopDirFilePath
+        if (Test-Path -LiteralPath $dirFile) {
+            $dir = (Get-Content -LiteralPath $dirFile -Raw).Trim()
+            if ($dir) { return $dir.TrimEnd('\') }
+        }
+    }
+    $deploy = Get-MultishopHueyDeployRoot
+    foreach ($name in @('router-dir.txt', 'nodo-dir.txt')) {
+        $path = Join-Path $deploy $name
+        if (Test-Path -LiteralPath $path) {
+            $dir = (Get-Content -LiteralPath $path -Raw).Trim()
+            if ($dir) { return $dir.TrimEnd('\') }
+        }
+    }
+    # Fallback: Program Files\Multishop\router|nodo
+    foreach ($leaf in @('router', 'nodo')) {
+        $pf = Join-Path ${env:ProgramFiles} (Join-Path 'Multishop' $leaf)
+        if (Test-Path -LiteralPath (Join-Path $pf 'main.py')) {
+            return $pf
+        }
+    }
+    throw "NodoDir not set (falta router-dir.txt / nodo-dir.txt en $deploy). Reejecute nodo-api-windows-install.ps1 como administrador."
+}
+
+$DeployDir = Get-MultishopHueyDeployRoot
+if (-not (Test-Path -LiteralPath $DeployDir)) {
+    New-Item -ItemType Directory -Path $DeployDir -Force | Out-Null
+}
+$StartLog = Join-Path $DeployDir "nodo-huey-start.log"
+
 function Write-HueyStartLog {
     param([string]$Message)
-    if (-not (Test-Path $DeployDir)) {
-        New-Item -ItemType Directory -Path $DeployDir -Force | Out-Null
-    }
     $line = "{0} {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message
     Add-Content -LiteralPath $StartLog -Value $line -Encoding ASCII -ErrorAction SilentlyContinue
 }
@@ -50,16 +104,16 @@ function Test-HueyConsumerRunning {
 function Start-MultishopHueyConsumer {
     param([string]$NodoDirPath)
 
-    Write-HueyStartLog "=== huey launcher user=$env:USERNAME session=$env:SESSIONNAME ==="
+    Write-HueyStartLog "=== huey launcher user=$env:USERNAME session=$env:SESSIONNAME deploy=$DeployDir ==="
 
-    if (-not $NodoDirPath -and (Test-Path $DirFile)) {
-        $NodoDirPath = (Get-Content -LiteralPath $DirFile -Raw).Trim()
-    }
-    if (-not $NodoDirPath) {
-        throw "NodoDir not set (missing nodo-dir.txt in ProgramData\Multishop)"
-    }
+    $NodoDirPath = Get-MultishopHueyNodoDir -NodoDirOverride $NodoDirPath
+    Write-HueyStartLog "NodoDir=$NodoDirPath"
+
     if (-not (Test-Path -LiteralPath $NodoDirPath)) {
         throw "NodoDir does not exist: $NodoDirPath"
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $NodoDirPath 'main.py'))) {
+        throw "NodoDir does not look like a node install (missing main.py): $NodoDirPath"
     }
 
     $existingPid = Test-HueyConsumerRunning -NodoDirPath $NodoDirPath

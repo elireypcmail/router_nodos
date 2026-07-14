@@ -291,6 +291,12 @@ function Install-NodoHueyAutostart {
         Write-Warning "Missing $hueyScript; Huey ONSTART no se registrara."
         return
     }
+    Ensure-MultishopDeployDir -Path $DeployDir
+    # Asegura router-dir.txt y nodo-env junto al launcher (VBS no pasa -NodoDir).
+    Set-Content -LiteralPath $DirFile -Value $NodoDir -Encoding ASCII -NoNewline -Force
+    if (Test-Path -LiteralPath $SourceEnvHelper) {
+        Copy-Item -LiteralPath $SourceEnvHelper -Destination $DeployedEnvHelper -Force
+    }
     $hueyLauncher = Join-Path $DeployDir "$(Get-MultishopHueyLauncherBasename).ps1"
     Copy-Item $hueyScript $hueyLauncher -Force
     $hueyVbs = Join-Path $DeployDir "$(Get-MultishopHueyLauncherBasename).vbs"
@@ -334,10 +340,10 @@ function Start-NodoHueyBackground {
     if (-not (Test-Path -LiteralPath $hueyScript)) {
         $hueyScript = Join-Path $PSScriptRoot "start-nodo-huey.ps1"
     }
-    Start-Process -FilePath "powershell.exe" -ArgumentList @(
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-        '-File', $hueyScript, '-NodoDir', $NodoDir, '-SkipMutex'
-    ) -WindowStyle Hidden
+    # Importante: un solo string con comillas. ArgumentList @(..., $NodoDir) parte
+    # "C:\Program Files\..." en C:\Program (Huey=0 permanente).
+    $argLine = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -SkipMutex' -f $hueyScript
+    Start-Process -FilePath "powershell.exe" -ArgumentList $argLine -WindowStyle Hidden
     Write-Host "Huey consumer en segundo plano (ver $DeployDir\nodo-huey-start.log)." -ForegroundColor Green
 }
 
