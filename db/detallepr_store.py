@@ -15,6 +15,8 @@ from db.sinv_price_from_cost import fetch_sinv_cost_price_row, recalc_prices_fro
 
 DETALLEPR_DIVISA_PRICE_FIELDS = ("precio1div", "precio2div", "precio3div", "precio4div")
 DETALLEPR_DIVISA_PG_FIELDS = ("pg1div", "pg2div", "pg3div", "pg4div")
+# Espejo detallepr.* → *div para no pisar costo/costopro de sinv en el item.
+DETALLEPR_DIVISA_COST_FIELDS = ("costodiv", "costoprodiv", "costoantdiv")
 DETALLEPR_PRICING_COLUMNS = (
     "codigo",
     "precio1",
@@ -25,6 +27,9 @@ DETALLEPR_PRICING_COLUMNS = (
     "pg2",
     "pg3",
     "pg4",
+    "costo",
+    "costopro",
+    "costoant",
 )
 
 
@@ -51,11 +56,21 @@ def _detallepr_row_to_divisa_fields(row: dict[str, Any]) -> dict[str, float]:
         "pg2div": _to_float(row.get("pg2")),
         "pg3div": _to_float(row.get("pg3")),
         "pg4div": _to_float(row.get("pg4")),
+        "costodiv": _to_float(row.get("costo")),
+        "costoprodiv": _to_float(row.get("costopro")),
+        "costoantdiv": _to_float(row.get("costoant")),
     }
 
 
 def _default_divisa_fields() -> dict[str, float]:
-    return {key: 0.0 for key in (*DETALLEPR_DIVISA_PRICE_FIELDS, *DETALLEPR_DIVISA_PG_FIELDS)}
+    return {
+        key: 0.0
+        for key in (
+            *DETALLEPR_DIVISA_PRICE_FIELDS,
+            *DETALLEPR_DIVISA_PG_FIELDS,
+            *DETALLEPR_DIVISA_COST_FIELDS,
+        )
+    }
 
 
 def fetch_detallepr_pricing_row(cur, codigo: str) -> dict[str, float]:
