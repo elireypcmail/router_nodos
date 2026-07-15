@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -8,6 +9,11 @@ _DOTENV_FILE = _ROOT_DIR / ".env"
 
 
 def _pick_env_file() -> Path | None:
+    override = (os.environ.get("NODO_DOTENV_PATH") or "").strip()
+    if override:
+        p = Path(override)
+        if p.is_file():
+            return p
     if _ENV_TXT_FILE.is_file():
         return _ENV_TXT_FILE
     if _DOTENV_FILE.is_file():
