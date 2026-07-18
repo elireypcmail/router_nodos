@@ -9,10 +9,17 @@ from outbox.erp_fetch import (
     fetch_detalle_lotes,
     fetch_detallepr_row,
     fetch_diariovi_line,
+    fetch_kardex_obs,
     fetch_lotes_aggregated,
     fetch_scom_line,
     fetch_sinv_row,
+    fetch_sprv_row,
     parse_sale_keys,
+)
+from outbox.kobs_parse import (
+    build_movement_timestamp,
+    parse_hora_column,
+    parse_kobs,
 )
 from outbox.movement_tables import resolve_entity_type
 
@@ -29,6 +36,48 @@ def _codigo_from_row(row: dict[str, Any] | None) -> str:
 
 def _purchase_numero(row: dict[str, Any]) -> str:
     return str(row.get("numdoc") or row.get("numero") or "").strip()
+
+
+def _kardex_indice(row: dict[str, Any]) -> object:
+    return row.get("kardex_indice") if row.get("kardex_indice") is not None else row.get("indice")
+
+
+def _ensure_kobs_and_hora(enriched: dict[str, Any], mysql: MySqlClient) -> None:
+    """Si el trigger no mandó kobs/hora, léelos del kardex por índice."""
+    needs_kobs = not str(enriched.get("kobs") or "").strip()
+    needs_hora = not str(enriched.get("hora") or "").strip()
+    if not needs_kobs and not needs_hora:
+        return
+    obs = fetch_kardex_obs(mysql, _kardex_indice(enriched))
+    if not obs:
+        return
+    if needs_kobs and obs.get("kobs") is not None:
+        enriched["kobs"] = obs["kobs"]
+    if needs_hora and obs.get("hora") is not None:
+        enriched["hora"] = obs["hora"]
+    if not enriched.get("fecha") and obs.get("fecha") is not None:
+        enriched["fecha"] = obs["fecha"]
+
+
+def _attach_kobs_enrichment(enriched: dict[str, Any], mysql: MySqlClient) -> None:
+    _ensure_kobs_and_hora(enriched, mysql)
+    parsed = parse_kobs(enriched.get("kobs"))
+    local_time = parsed.local_time or parse_hora_column(enriched.get("hora"))
+
+    enriched["kobs_parsed"] = {
+        "provider_code": parsed.provider_code,
+        "local_time": local_time.strftime("%H:%M:%S") if local_time else None,
+        "local_time_raw": parsed.local_time_raw,
+    }
+    enriched["movement_timestamp"] = build_movement_timestamp(
+        enriched.get("fecha"),
+        local_time,
+    )
+
+    if parsed.provider_code:
+        enriched["sprv"] = fetch_sprv_row(mysql, parsed.provider_code)
+    else:
+        enriched["sprv"] = None
 
 
 def _attach_product_bundle(
@@ -70,6 +119,7 @@ def enrich_purchase_row(
     if scom is not None:
         enriched["scom"] = scom
     _attach_product_bundle(enriched, codigo, mysql)
+    _attach_kobs_enrichment(enriched, mysql)
     return enriched
 
 
@@ -100,6 +150,7 @@ def enrich_sale_row(
     enriched = dict(row)
     enriched["diariovi"] = diariovi
     _attach_product_bundle(enriched, codigo, mysql)
+    _attach_kobs_enrichment(enriched, mysql)
     return enriched
 
 
@@ -116,6 +167,7 @@ def enrich_kardex_adjustment_row(
 
     enriched = dict(row)
     _attach_product_bundle(enriched, codigo, mysql)
+    _attach_kobs_enrichment(enriched, mysql)
     return enriched
 
 

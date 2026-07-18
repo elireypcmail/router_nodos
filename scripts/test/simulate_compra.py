@@ -13,9 +13,11 @@ from _common import (
     connect_dict,
     distribute_cantidad_por_lotes,
     equal_lote_percentages,
+    erp_compra_numero,
     format_kobs_compra,
     insert_kardex_header,
     insert_kardexd_line,
+    insert_scst_purchase_confirmation,
     insert_scom_purchase_line,
     lookup_provider,
     make_test_lote_ids,
@@ -30,6 +32,7 @@ from _common import (
     read_sinv_costs,
     read_sinv_existencia,
     require_mysql,
+    resolve_movimiento_datetime,
     resolve_simulation_fecha,
     show_recent_outbox,
     test_suffix,
@@ -329,8 +332,10 @@ def main() -> int:
                 row = cur.fetchone() or {}
             cod_prv, nom_prv = lookup_provider(conn, row.get("cod_prv"))
 
+        mov_dt = resolve_movimiento_datetime()
+        kardex_fecha = mov_dt.date()
         num_compra = (
-            args.num_compra or f"{fecha.strftime('%d%m%Y')}{test_suffix()}"
+            args.num_compra or erp_compra_numero(mov_dt)
         ).strip()[:30]
         ex_despues = ex_antes + cantidad
         factor = float(args.factor) if args.factor and args.factor > 0 else DEFAULT_SCOM_FACTOR
@@ -387,7 +392,12 @@ def main() -> int:
             f"factor={scom_line.get('factor')} costopro={scom_line.get('costopro')}"
         )
         print(
-            f"INSERT kardex: compras={cantidad} costo={precio} numero={num_compra}"
+            f"INSERT scst: numero={num_compra} fecha={kardex_fecha} "
+            f"fconfirma={kardex_fecha} hconfirma={mov_dt.strftime('%H:%M:%S')}"
+        )
+        print(
+            f"INSERT kardex: fecha={kardex_fecha} compras={cantidad} costo={precio} "
+            f"numero={num_compra} (scom.fecha={fecha})"
         )
         for i, (cubica, qty, calidad, vence_row) in enumerate(lote_splits):
             bucket = critical_bucket_label(i) if args.lotes_criticos else None
@@ -416,14 +426,31 @@ def main() -> int:
                 fecha=fecha,
                 line=scom_line,
             )
+            if not insert_scst_purchase_confirmation(
+                cur,
+                numero=num_compra,
+                cod_prv=cod_prv or "0000000000",
+                subtotal2=float(scom_line.get("subtotal2") or subtotal2),
+                factor=factor,
+                confirmado_en=mov_dt,
+            ):
+                print(
+                    "Aviso: tabla scst no disponible; outbox sin fconfirma/hconfirma",
+                    file=sys.stderr,
+                )
             kobs = format_kobs_compra(
-                num_compra, cod_prv, nom_prv, ind=scom_indice
+                num_compra,
+                cod_prv,
+                nom_prv,
+                ind=scom_indice,
+                operador=args.operador,
+                when=mov_dt,
             )
             cpp_kardex = float(scom_line.get("costopro") or costopro_antes)
             indice_k = insert_kardex_header(
                 cur,
                 codigo=codigo,
-                fecha=fecha,
+                fecha=kardex_fecha,
                 compras=float(cantidad),
                 existenciai=ex_antes,
                 entradas=float(cantidad),
@@ -439,7 +466,7 @@ def main() -> int:
                 indice_d = insert_kardexd_line(
                     cur,
                     codigo=codigo,
-                    fecha=fecha,
+                    fecha=kardex_fecha,
                     cubica=cubica,
                     ajustesp=float(qty),
                     existenciai=ex_antes,
@@ -492,7 +519,7 @@ def main() -> int:
             f"OK: scom indice={scom_indice}, kardex indice={indice_k}, "
             f"kardexd={indices_d} (outbox monto=subtotal2 from scom)."
         )
-        show_recent_outbox(conn, ["kardex", "historialp"])
+        show_recent_outbox(conn, ["comprasdbf", "historialp"])
     except Exception as ex:
         conn.rollback()
         print(f"Error: {ex}", file=__import__("sys").stderr)

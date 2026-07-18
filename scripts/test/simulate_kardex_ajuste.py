@@ -9,6 +9,7 @@ from _common import (
     add_common_args,
     apply_sinv_existencia_delta,
     connect_dict,
+    erp_ajuste_nro,
     format_kobs_ajuste,
     insert_kardex_header,
     maybe_flush,
@@ -16,9 +17,8 @@ from _common import (
     read_sinv_costs,
     read_sinv_existencia,
     require_mysql,
+    resolve_movimiento_datetime,
     show_recent_outbox,
-    resolve_simulation_fecha,
-    test_suffix,
 )
 
 
@@ -33,6 +33,21 @@ def main() -> int:
         default="entrada",
         help="entrada=ajustesp; salida=ajustesn",
     )
+    parser.add_argument(
+        "--operador",
+        default="SUPERVISOR",
+        help="Usuario ERP en kobs (default: SUPERVISOR)",
+    )
+    parser.add_argument(
+        "--deposito",
+        default="01-PISO DE VENTA (O) - TARIBA",
+        help="Depósito en kobs",
+    )
+    parser.add_argument(
+        "--motivo",
+        default="06-PRODUCTO MAL ESTADO O DEFECTUOSO",
+        help="Motivo en kobs",
+    )
     args = parser.parse_args()
 
     mysql = require_mysql()
@@ -46,11 +61,18 @@ def main() -> int:
 
         ajustesp = qty if args.direccion == "entrada" else 0.0
         ajustesn = qty if args.direccion == "salida" else 0.0
-        suf = test_suffix()
-        nro_ajuste = f"{int(suf):06d}"[:12]
-        accion = "*Aumento" if args.direccion == "entrada" else "*Disminucion"
-        fecha = resolve_simulation_fecha(args)
-        kobs = format_kobs_ajuste(nro_ajuste, accion=accion)
+        mov_dt = resolve_movimiento_datetime()
+        nro_ajuste = erp_ajuste_nro(mov_dt)
+        accion = "*Aumentar*" if args.direccion == "entrada" else "*Disminuir*"
+        kardex_fecha = mov_dt.date()
+        kobs = format_kobs_ajuste(
+            nro_ajuste,
+            accion=accion,
+            operador=args.operador,
+            deposito=args.deposito,
+            motivo=args.motivo,
+            when=mov_dt,
+        )
 
         delta = ajustesp - ajustesn
         ex_antes = read_sinv_existencia(conn, codigo)
@@ -61,7 +83,7 @@ def main() -> int:
 
         print(f"Product: {codigo} (sinv stock={ex_antes})")
         print(
-            f"INSERT kardex: ajustesp={ajustesp} ajustesn={ajustesn} "
+            f"INSERT kardex: fecha={kardex_fecha} ajustesp={ajustesp} ajustesn={ajustesn} "
             f"kobs={kobs[:50]}..."
         )
         if not args.no_update_sinv and delta != 0:
@@ -74,7 +96,7 @@ def main() -> int:
             indice = insert_kardex_header(
                 cur,
                 codigo=codigo,
-                fecha=fecha,
+                fecha=kardex_fecha,
                 ajustesp=ajustesp,
                 ajustesn=ajustesn,
                 existenciai=ex_antes,

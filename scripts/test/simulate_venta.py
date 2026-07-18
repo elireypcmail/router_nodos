@@ -10,6 +10,7 @@ from _common import (
     apply_detalle_venta_deducciones,
     apply_sinv_existencia_delta,
     connect_dict,
+    erp_venta_numero,
     format_kobs_venta,
     insert_diariovi_sale_line,
     insert_kardex_header,
@@ -22,8 +23,8 @@ from _common import (
     read_sinv_existencia,
     require_mysql,
     resolve_diariovi_sale_pricing,
+    resolve_movimiento_datetime,
     show_recent_outbox,
-    resolve_simulation_fecha,
     test_suffix,
 )
 
@@ -98,17 +99,10 @@ def main() -> int:
         if cantidad <= 0:
             cantidad = 1.0
 
-        suf = test_suffix()
-        numero = (args.numero or f"VT{suf}")[:15]
+        mov_dt = resolve_movimiento_datetime()
+        kardex_fecha = mov_dt.date()
+        numero = (args.numero or erp_venta_numero(mov_dt))[:15]
         contador = next_kardex_contador(conn)
-        fecha = resolve_simulation_fecha(args)
-        kobs = format_kobs_venta(
-            numero, cliente=args.cliente, caja=args.caja, operador="CAJA01"
-        )
-
-        ex_antes = read_sinv_existencia(conn, codigo)
-        costo, costopro = read_sinv_costs(conn, codigo)
-        ex_despues = ex_antes - cantidad
         pricing = resolve_diariovi_sale_pricing(
             conn,
             codigo,
@@ -116,6 +110,23 @@ def main() -> int:
             precio_bs_override=args.precio,
             factor_override=args.factor,
         )
+        kobs_kwargs: dict = {
+            "cliente": args.cliente,
+            "caja": args.caja,
+            "operador": "CAJA01",
+            "when": mov_dt,
+        }
+        if pricing.preciodiv is not None and pricing.dolar > 0:
+            kobs_kwargs.update(
+                precio_bs=pricing.precio_bs,
+                precio_usd=pricing.preciodiv,
+                tasa_usd=pricing.dolar,
+            )
+        kobs = format_kobs_venta(numero, **kobs_kwargs)
+
+        ex_antes = read_sinv_existencia(conn, codigo)
+        costo, costopro = read_sinv_costs(conn, codigo)
+        ex_despues = ex_antes - cantidad
         descrip = str(product.get("descrip") or "").strip()
 
         deducciones = []
@@ -130,12 +141,13 @@ def main() -> int:
 
         print(f"Product: {codigo} (sinv stock={ex_antes})")
         print(
-            f"INSERT diariovi: cantidad={cantidad} costo={pricing.precio_bs} "
+            f"INSERT diariovi: fecha={kardex_fecha} cantidad={cantidad} costo={pricing.precio_bs} "
             f"preciodiv={pricing.preciodiv} dolar={pricing.dolar} "
             f"subtotal2={pricing.subtotal2} numero={numero} contador={contador}"
         )
         print(
-            f"INSERT kardex: ventas={cantidad} numero={numero} contador={contador}"
+            f"INSERT kardex: fecha={kardex_fecha} ventas={cantidad} numero={numero} "
+            f"contador={contador}"
         )
         if deducciones:
             for d in deducciones:
@@ -160,7 +172,7 @@ def main() -> int:
                       numero, codigo, cantidad, fecha, contador, ccaja, cod_ven
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (numero, codigo, cantidad, fecha, contador, args.caja, ""),
+                    (numero, codigo, cantidad, kardex_fecha, contador, args.caja, ""),
                 )
             if not args.no_update_sinv:
                 apply_detalle_venta_deducciones(conn, deducciones)
@@ -178,7 +190,7 @@ def main() -> int:
                 numero=numero,
                 codigo=codigo,
                 descrip=descrip,
-                fecha=fecha,
+                fecha=kardex_fecha,
                 cantidad=cantidad,
                 pricing=pricing,
                 contador=contador,
@@ -187,7 +199,7 @@ def main() -> int:
             indice_k = insert_kardex_header(
                 cur,
                 codigo=codigo,
-                fecha=fecha,
+                fecha=kardex_fecha,
                 ventas=cantidad,
                 existenciai=ex_antes,
                 salidas=cantidad,
@@ -207,7 +219,7 @@ def main() -> int:
                     indice_d = insert_kardexd_line(
                         cur,
                         codigo=codigo,
-                        fecha=fecha,
+                        fecha=kardex_fecha,
                         cubica=d.cubica,
                         ajustesn=d.deducido,
                         existenciai=running_ex,
@@ -226,7 +238,7 @@ def main() -> int:
                 indice_d = insert_kardexd_line(
                     cur,
                     codigo=codigo,
-                    fecha=fecha,
+                    fecha=kardex_fecha,
                     cubica="01",
                     ajustesn=cantidad,
                     existenciai=ex_antes,
@@ -251,7 +263,7 @@ def main() -> int:
             f"OK: ERP sale diariovi + kardex indice={indice_k}, kardexd={indices_d} "
             f"(outbox diariovi + detalle inventory_lot)."
         )
-        show_recent_outbox(conn, "kardex")
+        show_recent_outbox(conn, ["diariovi", "ventasi", "detalle"])
     except Exception as ex:
         conn.rollback()
         print(f"Error: {ex}", file=__import__("sys").stderr)

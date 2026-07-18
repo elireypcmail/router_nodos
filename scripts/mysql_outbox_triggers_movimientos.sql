@@ -173,7 +173,7 @@ BEGIN
       'kardex',
       'I',
       CONCAT('{','\"indice\":',ms_router_json_int(NEW.indice),'}'),
-      CONCAT('{','\"numero\":',ms_router_json_str(NEW.numero),',','\"fecha\":',ms_router_json_date(NEW.fecha),',','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"cantidad\":',ms_router_json_num(NEW.ventas),',','\"contador\":',ms_router_json_int(IFNULL(NEW.contador, NEW.indice)),',','\"ccaja\":',ms_router_json_str(NEW.cajero),',','\"ventas\":',ms_router_json_num(NEW.ventas),',','\"kardex_indice\":',ms_router_json_int(NEW.indice),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+      CONCAT('{','\"numero\":',ms_router_json_str(NEW.numero),',','\"fecha\":',ms_router_json_date(NEW.fecha),',','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"cantidad\":',ms_router_json_num(NEW.ventas),',','\"contador\":',ms_router_json_int(IFNULL(NEW.contador, NEW.indice)),',','\"ccaja\":',ms_router_json_str(NEW.cajero),',','\"ventas\":',ms_router_json_num(NEW.ventas),',','\"kobs\":',ms_router_json_str(NEW.kobs),',','\"hora\":',ms_router_json_str(NEW.hora),',','\"kardex_indice\":',ms_router_json_int(NEW.indice),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
       NOW(3)
     );
   END IF;
@@ -187,7 +187,7 @@ BEGIN
       'kardex',
       'I',
       CONCAT('{','\"indice\":',ms_router_json_int(NEW.indice),'}'),
-      CONCAT('{','\"indice\":',ms_router_json_int(NEW.indice),',','\"kardex_indice\":',ms_router_json_int(NEW.indice),',','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"fecha\":',ms_router_json_date(NEW.fecha),',','\"contador\":',ms_router_json_int(NEW.contador),',','\"ajustesp\":',ms_router_json_num(NEW.ajustesp),',','\"ajustesn\":',ms_router_json_num(NEW.ajustesn),',','\"compras\":',ms_router_json_num(NEW.compras),',','\"ventas\":',ms_router_json_num(NEW.ventas),',','\"devoc\":',ms_router_json_num(NEW.devoc),',','\"devov\":',ms_router_json_num(NEW.devov),',','\"outbox_op\":',ms_router_json_str('I'),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+      CONCAT('{','\"indice\":',ms_router_json_int(NEW.indice),',','\"kardex_indice\":',ms_router_json_int(NEW.indice),',','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"fecha\":',ms_router_json_date(NEW.fecha),',','\"contador\":',ms_router_json_int(NEW.contador),',','\"ajustesp\":',ms_router_json_num(NEW.ajustesp),',','\"ajustesn\":',ms_router_json_num(NEW.ajustesn),',','\"compras\":',ms_router_json_num(NEW.compras),',','\"ventas\":',ms_router_json_num(NEW.ventas),',','\"devoc\":',ms_router_json_num(NEW.devoc),',','\"devov\":',ms_router_json_num(NEW.devov),',','\"kobs\":',ms_router_json_str(NEW.kobs),',','\"hora\":',ms_router_json_str(NEW.hora),',','\"outbox_op\":',ms_router_json_str('I'),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
       NOW(3)
     );
   END IF;
@@ -236,7 +236,7 @@ BEGIN
       'kardex',
       'U',
       CONCAT('{','\"indice\":',ms_router_json_int(NEW.indice),'}'),
-      CONCAT('{','\"numero\":',ms_router_json_str(NEW.numero),',','\"fecha\":',ms_router_json_date(NEW.fecha),',','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"cantidad\":',ms_router_json_num(NEW.ventas),',','\"contador\":',ms_router_json_int(IFNULL(NEW.contador, NEW.indice)),',','\"ccaja\":',ms_router_json_str(NEW.cajero),',','\"ventas\":',ms_router_json_num(NEW.ventas),',','\"kardex_indice\":',ms_router_json_int(NEW.indice),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+      CONCAT('{','\"numero\":',ms_router_json_str(NEW.numero),',','\"fecha\":',ms_router_json_date(NEW.fecha),',','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"cantidad\":',ms_router_json_num(NEW.ventas),',','\"contador\":',ms_router_json_int(IFNULL(NEW.contador, NEW.indice)),',','\"ccaja\":',ms_router_json_str(NEW.cajero),',','\"ventas\":',ms_router_json_num(NEW.ventas),',','\"kobs\":',ms_router_json_str(NEW.kobs),',','\"hora\":',ms_router_json_str(NEW.hora),',','\"kardex_indice\":',ms_router_json_int(NEW.indice),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
       NOW(3)
     );
   END IF;
@@ -250,7 +250,7 @@ BEGIN
       'kardex',
       'U',
       CONCAT('{','\"indice\":',ms_router_json_int(NEW.indice),'}'),
-      CONCAT('{','\"indice\":',ms_router_json_int(NEW.indice),',','\"kardex_indice\":',ms_router_json_int(NEW.indice),',','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"fecha\":',ms_router_json_date(NEW.fecha),',','\"contador\":',ms_router_json_int(NEW.contador),',','\"ajustesp\":',ms_router_json_num(NEW.ajustesp),',','\"ajustesn\":',ms_router_json_num(NEW.ajustesn),',','\"compras\":',ms_router_json_num(NEW.compras),',','\"ventas\":',ms_router_json_num(NEW.ventas),',','\"devoc\":',ms_router_json_num(NEW.devoc),',','\"devov\":',ms_router_json_num(NEW.devov),',','\"outbox_op\":',ms_router_json_str('U'),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+      CONCAT('{','\"indice\":',ms_router_json_int(NEW.indice),',','\"kardex_indice\":',ms_router_json_int(NEW.indice),',','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"fecha\":',ms_router_json_date(NEW.fecha),',','\"contador\":',ms_router_json_int(NEW.contador),',','\"ajustesp\":',ms_router_json_num(NEW.ajustesp),',','\"ajustesn\":',ms_router_json_num(NEW.ajustesn),',','\"compras\":',ms_router_json_num(NEW.compras),',','\"ventas\":',ms_router_json_num(NEW.ventas),',','\"devoc\":',ms_router_json_num(NEW.devoc),',','\"devov\":',ms_router_json_num(NEW.devov),',','\"kobs\":',ms_router_json_str(NEW.kobs),',','\"hora\":',ms_router_json_str(NEW.hora),',','\"outbox_op\":',ms_router_json_str('U'),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
       NOW(3)
     );
   END IF;
@@ -284,7 +284,7 @@ BEGIN
       'kardex',
       'D',
       CONCAT('{','\"indice\":',ms_router_json_int(OLD.indice),'}'),
-      CONCAT('{','\"numero\":',ms_router_json_str(OLD.numero),',','\"fecha\":',ms_router_json_date(OLD.fecha),',','\"codigo\":',ms_router_json_str(OLD.codigo),',','\"cantidad\":',ms_router_json_num(OLD.ventas),',','\"contador\":',ms_router_json_int(IFNULL(OLD.contador, OLD.indice)),',','\"ccaja\":',ms_router_json_str(OLD.cajero),',','\"ventas\":',ms_router_json_num(OLD.ventas),',','\"kardex_indice\":',ms_router_json_int(OLD.indice),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+      CONCAT('{','\"numero\":',ms_router_json_str(OLD.numero),',','\"fecha\":',ms_router_json_date(OLD.fecha),',','\"codigo\":',ms_router_json_str(OLD.codigo),',','\"cantidad\":',ms_router_json_num(OLD.ventas),',','\"contador\":',ms_router_json_int(IFNULL(OLD.contador, OLD.indice)),',','\"ccaja\":',ms_router_json_str(OLD.cajero),',','\"ventas\":',ms_router_json_num(OLD.ventas),',','\"kobs\":',ms_router_json_str(OLD.kobs),',','\"hora\":',ms_router_json_str(OLD.hora),',','\"kardex_indice\":',ms_router_json_int(OLD.indice),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
       NOW(3)
     );
   END IF;
@@ -298,7 +298,7 @@ BEGIN
       'kardex',
       'D',
       CONCAT('{','\"indice\":',ms_router_json_int(OLD.indice),'}'),
-      CONCAT('{','\"indice\":',ms_router_json_int(OLD.indice),',','\"kardex_indice\":',ms_router_json_int(OLD.indice),',','\"codigo\":',ms_router_json_str(OLD.codigo),',','\"fecha\":',ms_router_json_date(OLD.fecha),',','\"contador\":',ms_router_json_int(OLD.contador),',','\"ajustesp\":',ms_router_json_num(OLD.ajustesp),',','\"ajustesn\":',ms_router_json_num(OLD.ajustesn),',','\"compras\":',ms_router_json_num(OLD.compras),',','\"ventas\":',ms_router_json_num(OLD.ventas),',','\"devoc\":',ms_router_json_num(OLD.devoc),',','\"devov\":',ms_router_json_num(OLD.devov),',','\"outbox_op\":',ms_router_json_str('D'),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+      CONCAT('{','\"indice\":',ms_router_json_int(OLD.indice),',','\"kardex_indice\":',ms_router_json_int(OLD.indice),',','\"codigo\":',ms_router_json_str(OLD.codigo),',','\"fecha\":',ms_router_json_date(OLD.fecha),',','\"contador\":',ms_router_json_int(OLD.contador),',','\"ajustesp\":',ms_router_json_num(OLD.ajustesp),',','\"ajustesn\":',ms_router_json_num(OLD.ajustesn),',','\"compras\":',ms_router_json_num(OLD.compras),',','\"ventas\":',ms_router_json_num(OLD.ventas),',','\"devoc\":',ms_router_json_num(OLD.devoc),',','\"devov\":',ms_router_json_num(OLD.devov),',','\"kobs\":',ms_router_json_str(OLD.kobs),',','\"hora\":',ms_router_json_str(OLD.hora),',','\"outbox_op\":',ms_router_json_str('D'),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
       NOW(3)
     );
   END IF;

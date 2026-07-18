@@ -8,6 +8,17 @@ Scripts que insertan en las tablas del ERP local para disparar los triggers de `
 
 **Importante:** los triggers de outbox **no** actualizan `sinv`. Por defecto `simulate_compra.py` también hace `UPDATE sinv` de **existencia** y **costo/costopro** (CPP con `--precio`, misma lógica que el hub). Sin eso, el hub puede recibir el evento por `--flush`, pero **Sync existencia** en el portal lee `sinv` en la tienda y verá stock/costos viejos. Usa `--no-update-sinv` solo si quieres probar únicamente el outbox.
 
+**Fechas (alineado con `./test` del monorepo padre):**
+
+| Destino | Origen |
+|---------|--------|
+| `scom.fecha` | `--fecha` / columna CSV (fecha comercial) |
+| `scst.fecha` / `fconfirma` / `hconfirma` | instante de ejecución (timezone tienda) |
+| `kardex.fecha` + hora en `kobs` / `kardex.hora` | mismo instante de ejecución |
+| `diariovi.fecha` | mismo instante de ejecución |
+
+`NODO_STORE_TZ` (default `America/Caracas`). Así `movementTimestamp` del webhook coincide con fecha+hora del kardex, no con una fecha histórica del CSV mezclada con la hora actual.
+
 `simulate_compra.py` además hace UPSERT en `detalle` (lote default, cubica `01`) para encolar `inventory_lot` y poblar lotes unificados en el hub. Requiere triggers `trg_detalle_*` en MySQL.
 
 Con `--lotes N` crea **N** filas en `detalle` y reparte la cantidad de la compra entre ellas (`N` no puede ser mayor que `--cantidad`). Sin `--lotes-pct` reparte en partes iguales; con `--lotes-pct 50,30,20` usa esos porcentajes (deben coincidir con `N`).
@@ -68,7 +79,7 @@ python scripts/test/plan_cpp_from_csv.py --match 10082025
 
 | Nodo CSV | Dónde corre |
 |----------|-------------|
-| 1, 2, 3 | Desde el **Mac**: `docker exec multishop-nodo-tienda-N python scripts/test/simulate_*.py` |
+| 1, 2, 3 | Desde el **Mac**: `docker exec multishop-router-nodo-tienda-N python scripts/test/simulate_*.py` |
 | 4 (default) | Mac en `Multishop-nodo-API/` con `.env` local (`--local-nodo` para otro número) |
 
 **Orquestar todas las tiendas** (Mac, con Docker en PATH):
@@ -82,9 +93,9 @@ python scripts/test/run_movimientos_csv.py --flush --limit 5 --no-recalc-precios
 **Solo una tienda Docker** (dentro del contenedor; no hay `docker` dentro):
 
 ```bash
-docker exec multishop-nodo-tienda-3 python scripts/test/run_movimientos_csv.py --flush
+docker exec multishop-router-nodo-tienda-3 python scripts/test/run_movimientos_csv.py --flush
 # o explícito:
-docker exec multishop-nodo-tienda-3 python scripts/test/run_movimientos_csv.py --runner in-container --container-nodo 3 --flush
+docker exec multishop-router-nodo-tienda-3 python scripts/test/run_movimientos_csv.py --runner in-container --container-nodo 3 --flush
 ```
 
 En modo contenedor se omiten filas de otros nodos del CSV. Para el flujo completo multi-tienda, ejecuta desde el Mac.
@@ -125,7 +136,7 @@ Opciones comunes (todos los scripts):
 - `--codigo` — SKU; si se omite, primer registro de `sinv`
 - `--aleatorio` — producto al azar de `sinv` (no usar con `--codigo`)
 - `--cantidad` — cantidad del movimiento (default 1)
-- `--fecha YYYY-MM-DD` — fecha comercial ERP en `scom`/`kardex`/`diariovi` (default: hoy). No cambia `outbox_enqueued_at` del trigger (`NOW()`).
+- `--fecha YYYY-MM-DD` — fecha comercial en **`scom.fecha`** (default: hoy). **kardex / diariovi / kobs** usan la fecha y hora de ejecución (timezone tienda `NODO_STORE_TZ`, default America/Caracas). Así `movementTimestamp` del webhook coincide con el instante real del simulador, no con una fecha histórica del CSV mezclada con la hora actual.
 - `--dry-run` — no inserta, solo imprime el plan
 - `--flush` — envía batch `pending` a `POST /api/nodo/events/batch`
 - `--no-update-sinv` — no toca `sinv.existencia` (solo movimiento + outbox)

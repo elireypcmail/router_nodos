@@ -354,7 +354,8 @@ def _get_item(codigo: str) -> dict | None:
         row = cur.fetchone()
         if row:
             row["codigos_alternos"] = fetch_codigos_alternos(cur, codigo)
-            attach_imagen_metadata(cur, row, include_payload=True)
+            # Solo flag; el binario va por GET /inventario/{codigo}/imagen
+            attach_imagen_metadata(cur, row, include_payload=False)
             attach_detallepr_divisa_pricing_to_item(cur, row)
             attach_category_provider_to_items(cur, [row])
             attach_laboratory_to_items(cur, [row])

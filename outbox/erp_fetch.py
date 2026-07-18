@@ -203,3 +203,47 @@ def fetch_lotes_aggregated(
     lotes = [json_safe(row) for row in rows]
     existencia = sum(float(row.get("existencia") or 0) for row in lotes)
     return lotes, existencia
+
+
+def fetch_sprv_row(mysql: MySqlClient, cod_prv: str) -> dict[str, Any] | None:
+    code = _strip(cod_prv)
+    if not code:
+        return None
+    conn = mysql.connect()
+    try:
+        cur = conn.cursor(dictionary=True)
+        return _fetch_one(
+            cur,
+            "SELECT * FROM sprv WHERE TRIM(cod_prv)=%s LIMIT 1",
+            (code,),
+        )
+    finally:
+        conn.close()
+
+
+def fetch_kardex_obs(
+    mysql: MySqlClient,
+    indice: object,
+) -> dict[str, Any] | None:
+    """kobs / hora / fecha desde kardex por índice (ventas/ajustes sin kobs en outbox)."""
+    if indice is None or indice == "":
+        return None
+    try:
+        idx = int(indice)
+    except (TypeError, ValueError):
+        return None
+    conn = mysql.connect()
+    try:
+        cur = conn.cursor(dictionary=True)
+        return _fetch_one(
+            cur,
+            """
+            SELECT kobs, hora, fecha, indice
+            FROM kardex
+            WHERE indice=%s
+            LIMIT 1
+            """,
+            (idx,),
+        )
+    finally:
+        conn.close()

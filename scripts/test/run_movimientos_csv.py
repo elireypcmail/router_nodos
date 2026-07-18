@@ -29,7 +29,11 @@ LOCAL_ENV_FILE = NODO_ROOT / ".env"
 
 DOCKER_NODOS = frozenset({1, 2, 3})
 DEFAULT_LOCAL_NODO = 4
-DOCKER_CONTAINER_TEMPLATE = "multishop-nodo-tienda-{nodo}"
+# Alineado con docker-compose.dev.yml (repo router). Override: MOVIMIENTOS_DOCKER_CONTAINER
+DOCKER_CONTAINER_TEMPLATE = os.environ.get(
+    "MOVIMIENTOS_DOCKER_CONTAINER",
+    "multishop-router-nodo-tienda-{nodo}",
+)
 DOCKER_SCRIPT_PREFIX = "scripts/test"
 DEFAULT_MOVEMENT_DELAY_SEC = 5.0
 
@@ -162,7 +166,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         metavar="N",
         help=(
-            "Nodo CSV al ejecutar dentro de multishop-nodo-tienda-N "
+            "Nodo CSV al ejecutar dentro de multishop-router-nodo-tienda-N "
             "(default: detectar por HOSTNAME)"
         ),
     )
@@ -217,7 +221,11 @@ def is_docker_available(docker_bin: str) -> bool:
 def detect_container_nodo() -> int | None:
     for key in ("HOSTNAME", "CONTAINER_NAME"):
         name = os.environ.get(key, "")
-        match = re.search(r"multishop-nodo-tienda-(\d+)", name, re.IGNORECASE)
+        match = re.search(
+            r"multishop(?:-router)?-nodo-tienda-(\d+)",
+            name,
+            re.IGNORECASE,
+        )
         if match:
             return int(match.group(1))
     return None
@@ -235,7 +243,8 @@ def resolve_runner_mode(args: argparse.Namespace) -> tuple[RunnerMode, int | Non
         nodo = args.container_nodo if args.container_nodo is not None else detect_container_nodo()
         if nodo is None:
             raise SystemExit(
-                "Error: --runner in-container requiere HOSTNAME multishop-nodo-tienda-N "
+                "Error: --runner in-container requiere HOSTNAME "
+                "multishop-router-nodo-tienda-N (o multishop-nodo-tienda-N) "
                 "o --container-nodo N."
             )
         return "in-container", nodo
@@ -248,9 +257,10 @@ def resolve_runner_mode(args: argparse.Namespace) -> tuple[RunnerMode, int | Non
         return "in-container", nodo
 
     raise SystemExit(
-        "Error: no hay 'docker' en PATH y no se detectó contenedor multishop-nodo-tienda-N.\n"
+        "Error: no hay 'docker' en PATH y no se detectó contenedor "
+        "multishop-router-nodo-tienda-N.\n"
         "  Orquesta todas las tiendas desde el Mac:\n"
-        "    cd Multishop-nodo-API && python scripts/test/run_movimientos_csv.py --flush\n"
+        "    cd router_nodos && python scripts/test/run_movimientos_csv.py --flush\n"
         "  O ejecuta solo esta tienda dentro del contenedor:\n"
         "    python scripts/test/run_movimientos_csv.py --runner in-container --container-nodo N"
     )

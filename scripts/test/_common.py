@@ -65,7 +65,10 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
         type=parse_fecha_cli,
         default=None,
         metavar="YYYY-MM-DD",
-        help="Fecha comercial ERP en scom/kardex/diariovi (default: hoy)",
+        help=(
+            "Fecha comercial en scom (default: hoy); "
+            "kardex/diariovi/kobs usan la fecha y hora de ejecución (timezone tienda)"
+        ),
     )
 
 
@@ -82,8 +85,16 @@ def parse_fecha_cli(raw: str) -> date:
 
 
 def resolve_simulation_fecha(args: argparse.Namespace) -> date:
+    """Fecha comercial (p. ej. scom.fecha / columna CSV)."""
     fecha = getattr(args, "fecha", None)
     return fecha if isinstance(fecha, date) else today()
+
+
+def resolve_movimiento_datetime() -> datetime:
+    """Instante del movimiento kardex/kobs (timezone tienda; fecha+hora coherentes)."""
+    from core.store_datetime import store_timezone
+
+    return datetime.now(store_timezone()).replace(microsecond=0)
 
 
 def require_mysql() -> MySqlClient:
@@ -935,8 +946,117 @@ def read_sinv_costs(
     return float(row.get("costo") or 0), float(row.get("costopro") or 0)
 
 
-def erp_hora_label() -> str:
-    return datetime.now().strftime("%I:%M:%S %p").replace("AM", "a. m.").replace("PM", "p. m.")
+def _mysql_table_columns(cur: pymysql.cursors.Cursor, table: str) -> set[str]:
+    cur.execute(f"SHOW COLUMNS FROM `{table}`")
+    rows = cur.fetchall() or []
+    out: set[str] = set()
+    for row in rows:
+        if isinstance(row, dict):
+            field = str(row.get("Field") or row.get("field") or "").strip().lower()
+        else:
+            field = str(row[0]).strip().lower()
+        if field:
+            out.add(field)
+    return out
+
+
+def insert_scst_purchase_confirmation(
+    cur: pymysql.cursors.Cursor,
+    *,
+    numero: str,
+    cod_prv: str,
+    subtotal2: float,
+    factor: float = 0.0,
+    confirmado_en: datetime | None = None,
+) -> bool:
+    """
+    Cabecera de compra confirmada en scst (mismo numero que scom).
+    fecha/fconfirma/hconfirma = instante de ejecución (timezone tienda).
+    La fecha comercial de factura va solo en scom.fecha.
+    """
+    cur.execute("SHOW TABLES LIKE 'scst'")
+    if not cur.fetchone():
+        return False
+
+    cols = _mysql_table_columns(cur, "scst")
+    if "numero" not in cols:
+        return False
+
+    sim = (confirmado_en or resolve_movimiento_datetime()).replace(microsecond=0)
+    # naive date/time for MySQL columns
+    sim_naive = sim.replace(tzinfo=None) if sim.tzinfo else sim
+    hconfirma = sim_naive.strftime("%H:%M:%S")
+    total = round(float(subtotal2), 2)
+    fx = round(float(factor), 4) if factor and factor > 0 else 0.0
+
+    wanted: dict[str, Any] = {
+        "numero": numero.strip()[:30],
+        "cod_prv": cod_prv.strip()[:30],
+        "fecha": sim_naive.date(),
+        "subtotal": total,
+        "exento": total,
+        "total": total,
+        "hora": hconfirma,
+        "fconfirma": sim_naive.date(),
+        "hconfirma": hconfirma,
+        "confirma": "E",
+        "tipo_doc": "Credito",
+        "factor": fx,
+        "tasa": round(fx, 2) if fx > 0 else 0.0,
+    }
+
+    insert_cols = [name for name in wanted if name.lower() in cols]
+    if not insert_cols:
+        return False
+
+    placeholders = ", ".join(["%s"] * len(insert_cols))
+    col_sql = ", ".join(f"`{c}`" for c in insert_cols)
+    cur.execute(
+        f"INSERT INTO scst ({col_sql}) VALUES ({placeholders})",
+        tuple(wanted[c] for c in insert_cols),
+    )
+    return True
+
+
+def erp_hora_label(when: datetime | None = None) -> str:
+    from core.store_datetime import store_timezone
+
+    dt = when if when is not None else datetime.now(store_timezone())
+    return (
+        dt.strftime("%I:%M:%S %p")
+        .replace("AM", "a. m.")
+        .replace("PM", "p. m.")
+    )
+
+
+def erp_bs_amount_label(amount: float) -> str:
+    """Miles con punto y decimales con coma (ej. 2872.75 → 2.872,75)."""
+    text = f"{float(amount):,.2f}"
+    return text.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def erp_decimal_comma_label(amount: float, *, decimals: int = 6) -> str:
+    return f"{float(amount):.{decimals}f}".replace(".", ",")
+
+
+def erp_compra_numero(when: datetime | None = None) -> str:
+    dt = when if when is not None else resolve_movimiento_datetime()
+    return f"{dt.strftime('%d%m')}{int(dt.strftime('%H%M%S')) % 1000:03d}"
+
+
+def erp_venta_numero(when: datetime | None = None) -> str:
+    dt = when if when is not None else resolve_movimiento_datetime()
+    return f"10000{int(dt.strftime('%H%M%S')):05d}"
+
+
+def erp_ajuste_nro(when: datetime | None = None) -> str:
+    dt = when if when is not None else resolve_movimiento_datetime()
+    return f"{int(dt.strftime('%H%M%S')):010d}"
+
+
+def erp_devolucion_numero(when: datetime | None = None) -> str:
+    dt = when if when is not None else resolve_movimiento_datetime()
+    return dt.strftime("%d%m%Y")
 
 
 def format_kobs_compra(
@@ -944,14 +1064,15 @@ def format_kobs_compra(
     cod_prv: str,
     nom_prv: str = "",
     *,
-    ind: str | None = None,
+    ind: str | int | None = None,
     operador: str = "SUPERVISOR",
+    when: datetime | None = None,
 ) -> str:
     prv = f"{cod_prv} {nom_prv}".strip() if nom_prv else cod_prv
-    ind_part = ind or test_suffix()[:5]
+    ind_part = str(ind).strip() if ind is not None else test_suffix()[:5]
     return (
         f"Compra#: {num_compra} Proveedor: {prv} Ind: {ind_part} "
-        f"{erp_hora_label()}  Relizado por: {operador}"
+        f"{erp_hora_label(when)}  Relizado por: {operador}"
     )
 
 
@@ -961,19 +1082,80 @@ def format_kobs_venta(
     cliente: str = "V25497333 CLIENTE PRUEBA",
     caja: str = "10",
     operador: str = "CAJA01",
+    precio_bs: float | None = None,
+    precio_usd: float | None = None,
+    tasa_usd: float | None = None,
+    when: datetime | None = None,
+) -> str:
+    base = (
+        f"Vta#: {numero} Cliente: {cliente}  Caja:{caja} "
+        f"Hora:{erp_hora_label(when)}  Atendido por: {operador} /"
+    )
+    if precio_bs is None or precio_usd is None or tasa_usd is None:
+        return base
+    return (
+        f"{base} Precio de Venta Bs.: {erp_bs_amount_label(precio_bs)} / "
+        f"USD: {erp_decimal_comma_label(precio_usd)} / "
+        f"Tasa USD: {erp_decimal_comma_label(tasa_usd)}"
+    )
+
+
+def format_kobs_ajuste(
+    nro: str,
+    *,
+    accion: str = "*Aumentar*",
+    operador: str = "SUPERVISOR",
+    deposito: str = "01-PISO DE VENTA (O) - TARIBA",
+    motivo: str = "06-PRODUCTO MAL ESTADO O DEFECTUOSO",
+    when: datetime | None = None,
+) -> str:
+    from core.store_datetime import store_timezone
+
+    dt = when if when is not None else datetime.now(store_timezone())
+    fecha = dt.strftime("%d/%m/%Y")
+    nro_pad = str(nro).strip().zfill(10)[:10]
+    return (
+        f"Ajuste Nro: {nro_pad} de Fecha {fecha} - Hora: {erp_hora_label(dt)}  "
+        f"Accion:  {accion}  Relizado por: {operador} / "
+        f"Deposito Afectado: {deposito} / Motivo: {motivo}"
+    )
+
+
+def format_kobs_devolucion_compra(
+    num_dev: str,
+    cod_prv: str,
+    *,
+    operador: str = "SUPERVISOR",
+    when: datetime | None = None,
 ) -> str:
     return (
-        f"Vta#: {numero} Cliente: {cliente}  Caja:{caja} "
-        f"Hora:{erp_hora_label()}  Atendido por: {operador} /"
+        f"Dev.Compra#: {num_dev} Proveedor: {cod_prv.strip()} "
+        f"{erp_hora_label(when)}  Relizado por: {operador}"
     )
 
 
-def format_kobs_ajuste(nro: str, *, accion: str = "*Aumento") -> str:
-    fecha = datetime.now().strftime("%d/%m/%Y")
-    return (
-        f"Ajuste Nro: {nro} de Fecha {fecha} - Hora: {erp_hora_label()}  "
-        f"Accion:  {accion}"
+def kardex_hora_compact_from_kobs(kobs: str) -> str:
+    """Columna kardex.hora compacta (H:MM) coherente con kobs ERP."""
+    import re
+
+    match = re.search(
+        r"(?:Hora:\s*)?(\d{1,2}):(\d{2})(?::\d{2})?\s*[ap]\.?\s*m\.?",
+        kobs or "",
+        re.I,
     )
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        ampm = match.group(0).lower()
+        if "p" in ampm and hour != 12:
+            hour += 12
+        elif "a" in ampm and hour == 12:
+            hour = 0
+        return f"{hour}:{minute:02d}"
+    from core.store_datetime import store_timezone
+
+    now = datetime.now(store_timezone())
+    return f"{now.hour}:{now.minute:02d}"
 
 
 def insert_kardex_header(
@@ -997,39 +1179,60 @@ def insert_kardex_header(
     cajero: str = "TEST",
     numero: str = "",
     contador: int | None = None,
+    hora: str | None = None,
 ) -> int:
+    hora_val = (hora or kardex_hora_compact_from_kobs(kobs))[:10]
+    base_cols = [
+        "codigo",
+        "fecha",
+        "existenciai",
+        "entradas",
+        "salidas",
+        "existenciaf",
+        "compras",
+        "ventas",
+        "devoc",
+        "devov",
+        "ajustesp",
+        "ajustesn",
+        "costo",
+        "costopro",
+        "kobs",
+        "cajero",
+        "numero",
+        "contador",
+    ]
+    base_vals: list[Any] = [
+        codigo.strip(),
+        fecha,
+        existenciai,
+        entradas,
+        salidas,
+        existenciaf,
+        compras,
+        ventas,
+        devoc,
+        devov,
+        ajustesp,
+        ajustesn,
+        costo,
+        costopro,
+        kobs,
+        cajero[:10],
+        numero[:15],
+        contador,
+    ]
+    kardex_cols = _mysql_table_columns(cur, "kardex")
+    if "hora" in kardex_cols:
+        base_cols.append("hora")
+        base_vals.append(hora_val)
+    placeholders = ", ".join(["%s"] * len(base_cols))
     cur.execute(
-        """
-        INSERT INTO kardex (
-          codigo, fecha, existenciai, entradas, salidas, existenciaf,
-          compras, ventas, devoc, devov, ajustesp, ajustesn,
-          costo, costopro, kobs, cajero, numero, contador
-        ) VALUES (
-          %s, %s, %s, %s, %s, %s,
-          %s, %s, %s, %s, %s, %s,
-          %s, %s, %s, %s, %s, %s
-        )
+        f"""
+        INSERT INTO kardex ({", ".join(base_cols)})
+        VALUES ({placeholders})
         """,
-        (
-            codigo.strip(),
-            fecha,
-            existenciai,
-            entradas,
-            salidas,
-            existenciaf,
-            compras,
-            ventas,
-            devoc,
-            devov,
-            ajustesp,
-            ajustesn,
-            costo,
-            costopro,
-            kobs,
-            cajero[:10],
-            numero[:15],
-            contador,
-        ),
+        tuple(base_vals),
     )
     cur.execute("SELECT LAST_INSERT_ID() AS indice")
     row = cur.fetchone() or {}
