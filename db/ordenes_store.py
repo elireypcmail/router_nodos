@@ -1,0 +1,609 @@
+"""Creación de preventas (órdenes por facturar): diariov + diariovi + pagos.
+
+No toca kardex, ventasi, detalle ni sinv.existencia.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, datetime
+from decimal import Decimal, ROUND_HALF_UP
+from typing import Any, Literal
+from zoneinfo import ZoneInfo
+
+from db.product_price_formula import price_ex_tax_from_inc_tax
+
+STORE_TZ = ZoneInfo("America/Caracas")
+PAYMENT_TOLERANCE = Decimal("0.01")
+MONEY_Q = Decimal("0.01")
+
+
+def _money(value: float | Decimal | int | str) -> Decimal:
+    return Decimal(str(value)).quantize(MONEY_Q, rounding=ROUND_HALF_UP)
+
+
+def _now_store() -> datetime:
+    return datetime.now(STORE_TZ)
+
+
+@dataclass(frozen=True)
+class OrdenLineInput:
+    sku: str
+    quantity: float
+    unit_price: float | None = None
+
+
+@dataclass(frozen=True)
+class OrdenPaymentInput:
+    method: Literal["card", "deposit"]
+    amount: float
+    bank_code: str
+    card_number: str | None = None
+    holder_name: str | None = None
+    confirmation_number: str | None = None
+    operation_type: str | None = None
+
+
+@dataclass(frozen=True)
+class OrdenCustomerInput:
+    document_id: str
+    name: str
+    phone: str
+    address_line1: str = ""
+    address_line2: str = ""
+    address_line3: str = ""
+
+
+class OrdenesStoreError(ValueError):
+    """Error de negocio al crear preventa."""
+
+
+def _split_iva(total_incl: Decimal, porvg: Decimal) -> tuple[Decimal, Decimal, Decimal]:
+    """Devuelve (base, iva, exento) a partir del precio con IVA incluido."""
+    rate = float(porvg)
+    if rate <= 0:
+        return Decimal("0.00"), Decimal("0.00"), total_incl
+    divisor = Decimal("1") + (porvg / Decimal("100"))
+    base = (total_incl / divisor).quantize(MONEY_Q, rounding=ROUND_HALF_UP)
+    iva = (total_incl - base).quantize(MONEY_Q, rounding=ROUND_HALF_UP)
+    return base, iva, Decimal("0.00")
+
+
+def _bucket_porvg(porvg: Decimal) -> str:
+    rate = float(porvg)
+    if rate <= 0:
+        return "exento"
+    if abs(rate - 8.0) < 0.01:
+        return "base2"
+    if abs(rate - 31.0) < 0.01:
+        return "base3"
+    return "base1"
+
+
+def ensure_scli(
+    cur,
+    *,
+    document_id: str,
+    name: str,
+    phone: str,
+    address_line1: str = "",
+    address_line2: str = "",
+    address_line3: str = "",
+) -> str:
+    """Devuelve cod_cli; crea cliente mínimo si no existe."""
+    cod_cli = document_id.strip()[:15]
+    if not cod_cli:
+        raise OrdenesStoreError("customer.document_id is required")
+    cur.execute(
+        "SELECT cod_cli FROM scli WHERE cod_cli = %s OR rif_cli = %s LIMIT 1",
+        (cod_cli, cod_cli),
+    )
+    row = cur.fetchone()
+    if row:
+        existing = row["cod_cli"] if isinstance(row, dict) else row[0]
+        return str(existing)
+
+    nom = (name or "").strip()[:240]
+    tel = (phone or "").strip()[:80]
+    dir1 = (address_line1 or "").strip()[:200]
+    dir2 = (address_line2 or "").strip()[:200]
+    dir3 = (address_line3 or "").strip()[:200]
+    if not nom or not tel:
+        raise OrdenesStoreError(
+            "customer name and phone are required to create a new client"
+        )
+    today = _now_store().date()
+    cur.execute(
+        """
+        INSERT INTO scli (
+          cod_cli, nom_cli, rif_cli, nit_cli,
+          dir1_cli, dir2_cli, dir3_cli,
+          tel_cli, email1_cli, email2_cli, rep_cli,
+          limite, tprecio, especial, tipo_cli,
+          cod_ven, casociada, cobserva, diasp, ccaract,
+          act_banco, retefu, reteiva, adic, ced_rep, ccontab,
+          bloqueo, rbloqueo, czona, ccate_cli, fcrea, genero
+        ) VALUES (
+          %s, %s, %s, '',
+          %s, %s, %s,
+          %s, '', '', '',
+          0, 0, 'No', 'No Contribuyente',
+          '', '', '', 0, '00',
+          'N', 'N', 'N', '', 0, '',
+          0, '', '', '99', %s, 'M'
+        )
+        """,
+        (cod_cli, nom, cod_cli, dir1, dir2, dir3, tel, today),
+    )
+    return cod_cli
+
+
+def next_ccaja(cur) -> str:
+    cur.execute(
+        """
+        SELECT LPAD(IFNULL(MAX(CAST(ccaja AS UNSIGNED)), 0) + 1, 8, '0') AS next_ccaja
+        FROM diariov
+        WHERE ccaja REGEXP '^[0-9]+$'
+        """
+    )
+    row = cur.fetchone()
+    value = row["next_ccaja"] if isinstance(row, dict) else row[0]
+    return str(value)
+
+
+def next_contador(cur, count: int) -> list[int]:
+    cur.execute("SELECT IFNULL(MAX(contador), 0) AS m FROM diariovi")
+    row = cur.fetchone()
+    start = int(row["m"] if isinstance(row, dict) else row[0])
+    return [start + i for i in range(1, count + 1)]
+
+
+def _load_product(cur, sku: str) -> dict[str, Any]:
+    cur.execute(
+        """
+        SELECT codigo, descrip, COALESCE(porvg, 0) AS porvg,
+               COALESCE(precio1, 0) AS precio1,
+               COALESCE(costo, 0) AS costo,
+               COALESCE(costoant, 0) AS costoant,
+               COALESCE(pg1, 0) AS pg1
+        FROM sinv
+        WHERE codigo = %s
+        LIMIT 1
+        """,
+        (sku.strip(),),
+    )
+    row = cur.fetchone()
+    if not row:
+        raise OrdenesStoreError(f"product not found: {sku}")
+    if not isinstance(row, dict):
+        return {
+            "codigo": row[0],
+            "descrip": row[1],
+            "porvg": row[2],
+            "precio1": row[3],
+            "costo": row[4],
+            "costoant": row[5],
+            "pg1": row[6],
+        }
+    return row
+
+
+def _pg1_for_line(
+    *,
+    unit_inc_tax: Decimal,
+    porvg: Decimal,
+    sinv_costo: Decimal,
+    sinv_pg1: Decimal,
+    from_catalog_price: bool,
+) -> float:
+    """
+    Margen de la línea en diariovi.pg1.
+
+    - Precio de lista (`sinv.precio1`, sin unitPrice o con use_sinv_precio1):
+      copia sinv.pg1.
+    - unitPrice explícito en la orden: quita IVA y calcula
+      pg = 100 - (sinv.costo / precio_sin_iva) × 100
+      (puede ser negativo si se vende bajo el costo).
+    """
+    if from_catalog_price:
+        return float(_money(sinv_pg1))
+
+    psi = price_ex_tax_from_inc_tax(float(unit_inc_tax), float(porvg))
+    if psi is None or psi <= 0:
+        return 0.0
+    costo = float(sinv_costo)
+    if costo <= 0:
+        return 0.0
+    pg = 100.0 - (costo / float(psi)) * 100.0
+    return round(pg, 4)
+
+
+def _lookup_banco(cur, cbanco: str) -> tuple[str, str]:
+    """Devuelve (nbanco, cmoneda). Exige que cbanco exista en banco."""
+    code = (cbanco or "").strip()[:10]
+    if not code:
+        raise OrdenesStoreError("bank_code is required")
+    cur.execute(
+        "SELECT nbanco, COALESCE(cmoneda, '03') AS cmoneda FROM banco WHERE cbanco = %s LIMIT 1",
+        (code,),
+    )
+    row = cur.fetchone()
+    if not row:
+        raise OrdenesStoreError(
+            f"bank_code {code!r} not found in banco catalog"
+        )
+    if isinstance(row, dict):
+        return str(row.get("nbanco") or ""), str(row.get("cmoneda") or "03")
+    return str(row[0] or ""), str(row[1] or "03")
+
+
+def create_orden(
+    conn,
+    *,
+    customer: OrdenCustomerInput,
+    items: list[OrdenLineInput],
+    payments: list[OrdenPaymentInput],
+    deposito_ncuenta: str,
+    tarjeta_npunto: str,
+    cod_ven: str,
+    use_sinv_precio1: bool = False,
+    enforce_min_precio1: bool = False,
+) -> dict[str, Any]:
+    if not items:
+        raise OrdenesStoreError("items must not be empty")
+    if not payments:
+        raise OrdenesStoreError("payments must not be empty")
+
+    ncuenta = (deposito_ncuenta or "").strip()
+    if any(p.method == "deposit" for p in payments) and not ncuenta:
+        raise OrdenesStoreError(
+            "deposito_ncuenta is required when using deposit payments "
+            "(configure system parameter ordenes.deposito_ncuenta in admin)"
+        )
+
+    npunto = (tarjeta_npunto or "").strip()[:2]
+    if not npunto:
+        raise OrdenesStoreError(
+            "tarjeta_npunto is required "
+            "(configure system parameter ordenes.tarjeta_npunto in admin)"
+        )
+    vendor = (cod_ven or "").strip()[:10]
+    if not vendor:
+        raise OrdenesStoreError(
+            "cod_ven is required "
+            "(configure system parameter ordenes.cod_ven in admin)"
+        )
+    now = _now_store()
+    fecha: date = now.date()
+    hora = now.strftime("%H:%M:%S:")
+
+    with conn.cursor(dictionary=True) as cur:
+        cod_cli = ensure_scli(
+            cur,
+            document_id=customer.document_id,
+            name=customer.name,
+            phone=customer.phone,
+            address_line1=customer.address_line1,
+            address_line2=customer.address_line2,
+            address_line3=customer.address_line3,
+        )
+        ccaja = next_ccaja(cur)
+        contadores = next_contador(cur, len(items))
+
+        line_rows: list[dict[str, Any]] = []
+        tot_subtotal_incl = Decimal("0.00")
+        tot_base1 = Decimal("0.00")
+        tot_base2 = Decimal("0.00")
+        tot_base3 = Decimal("0.00")
+        tot_exento = Decimal("0.00")
+        tot_iva1 = Decimal("0.00")
+        tot_iva2 = Decimal("0.00")
+        tot_iva3 = Decimal("0.00")
+
+        for idx, item in enumerate(items):
+            product = _load_product(cur, item.sku)
+            qty = Decimal(str(item.quantity))
+            if qty <= 0:
+                raise OrdenesStoreError(f"invalid quantity for sku {item.sku}")
+            porvg = _money(product["porvg"])
+            catalog_price = _money(product["precio1"])
+            # unitPrice API = con IVA. Default: sinv.precio1.
+            # use_sinv_precio1=true → siempre precio1 (ignora unitPrice del request).
+            used_custom_unit_price = False
+            if use_sinv_precio1:
+                unit = catalog_price
+            elif item.unit_price is not None and float(item.unit_price) > 0:
+                unit = _money(item.unit_price)
+                used_custom_unit_price = True
+                if enforce_min_precio1 and catalog_price > 0 and unit < catalog_price:
+                    raise OrdenesStoreError(
+                        f"unit price {unit} below sinv.precio1 {catalog_price} "
+                        f"for sku {item.sku} "
+                        "(ordenes.enforce_min_precio1 is enabled)"
+                    )
+            else:
+                unit = catalog_price
+            if unit <= 0:
+                raise OrdenesStoreError(
+                    f"unit price missing for sku {item.sku}; pass unit_price"
+                    if not use_sinv_precio1
+                    else f"sinv.precio1 missing for sku {item.sku}"
+                )
+            line_total = _money(unit * qty)
+            base, iva, exento = _split_iva(line_total, porvg)
+            bucket = _bucket_porvg(porvg)
+
+            if bucket == "exento":
+                tot_exento += exento
+            elif bucket == "base2":
+                tot_base2 += base
+                tot_iva2 += iva
+            elif bucket == "base3":
+                tot_base3 += base
+                tot_iva3 += iva
+            else:
+                tot_base1 += base
+                tot_iva1 += iva
+            tot_subtotal_incl += line_total
+
+            costo_ref = _money(product["costo"] or 0)
+            costoant = _money(product["costoant"] or product["costo"] or 0)
+            pg1 = _pg1_for_line(
+                unit_inc_tax=unit,
+                porvg=porvg,
+                sinv_costo=costo_ref,
+                sinv_pg1=_money(product.get("pg1") or 0),
+                from_catalog_price=not used_custom_unit_price,
+            )
+            line_rows.append(
+                {
+                    "sku": str(product["codigo"]),
+                    "descrip": str(product["descrip"] or "")[:240],
+                    "quantity": float(qty),
+                    "unit_price": float(unit),
+                    "subtotal1": float(line_total),
+                    "subtotal2": float(line_total),
+                    "porvg": float(porvg),
+                    "base": float(base),
+                    "iva": float(iva),
+                    "exento": float(exento),
+                    "contador": contadores[idx],
+                    "costoant": float(costoant),
+                    "nuevocosto": float(costo_ref),
+                    "pg1": float(pg1),
+                    "bucket": bucket,
+                }
+            )
+
+        tot_iva = tot_iva1 + tot_iva2 + tot_iva3
+        tot_total = tot_subtotal_incl
+        # Neto solo para la respuesta API; diariov.subtotal sigue = total (con IVA).
+        tot_neto = tot_base1 + tot_base2 + tot_base3 + tot_exento
+
+        pay_sum = sum((_money(p.amount) for p in payments), Decimal("0.00"))
+        if abs(pay_sum - tot_total) > PAYMENT_TOLERANCE:
+            raise OrdenesStoreError(
+                f"payments sum {pay_sum} does not match order total {tot_total}"
+            )
+
+        cur.execute(
+            """
+            INSERT INTO diariov (
+              numero, cod_cli, fecha, subtotal, base1, base2, exento,
+              iva1, iva2, por_des, descuento, total, hora,
+              importado, editado, tipo_doc, iva, confirma, hconfirma,
+              ccaja, cod_ven, norden, numerocf, nordene, pret, ncompra,
+              pretiva, base3, iva3, obs_adi, tasausd, trpromocion,
+              baseigtf, montoigtf
+            ) VALUES (
+              NULL, %s, %s, %s, %s, %s, %s,
+              %s, %s, NULL, 0, %s, %s,
+              '', '', 'FC', %s, 'N', '0',
+              %s, %s, 'NA', '', '', 0, '',
+              0, %s, %s, '', 0, 0,
+              0, 0
+            )
+            """,
+            (
+                cod_cli,
+                fecha,
+                float(tot_total),
+                float(tot_base1),
+                float(tot_base2),
+                float(tot_exento),
+                float(tot_iva1),
+                float(tot_iva2),
+                float(tot_total),
+                hora,
+                float(tot_iva),
+                ccaja,
+                vendor,
+                float(tot_base3),
+                float(tot_iva3),
+            ),
+        )
+
+        for line in line_rows:
+            base1 = line["base"] if line["bucket"] == "base1" else 0.0
+            iva1 = line["iva"] if line["bucket"] == "base1" else 0.0
+            base2 = line["base"] if line["bucket"] == "base2" else 0.0
+            iva2 = line["iva"] if line["bucket"] == "base2" else 0.0
+            base3 = line["base"] if line["bucket"] == "base3" else 0.0
+            iva3 = line["iva"] if line["bucket"] == "base3" else 0.0
+            cur.execute(
+                """
+                INSERT INTO diariovi (
+                  numero, cod_cli, fecha, porvg, codigo, descrip, cantidad,
+                  costo, subtotal1, descuento1, descuento2, subtotal2,
+                  exento, iva1, iva2, base1, base2, pg1, pg2, pg3, pg4,
+                  precio1, aplicaprecio, costoant, nuevocosto, uxb,
+                  lotei, lotef, vence, canlote, calidad,
+                  nprecio1, ccaja, cod_ven, contador, numerocd, obsi,
+                  numerocf, dcantidad, ucantidad, base3, iva3
+                ) VALUES (
+                  '', %s, %s, %s, %s, %s, %s,
+                  %s, %s, 0, 0, %s,
+                  %s, %s, %s, %s, %s, %s, 0, 0, 0,
+                  %s, 'N', %s, %s, 1,
+                  '', '', %s, 0, '',
+                  %s, %s, %s, %s, '', '',
+                  '', 'UND', %s, %s, %s
+                )
+                """,
+                (
+                    cod_cli,
+                    fecha,
+                    line["porvg"],
+                    line["sku"],
+                    line["descrip"],
+                    line["quantity"],
+                    line["unit_price"],
+                    line["subtotal1"],
+                    line["subtotal2"],
+                    line["exento"],
+                    iva1,
+                    iva2,
+                    base1,
+                    base2,
+                    line["pg1"],
+                    line["unit_price"],
+                    line["costoant"],
+                    line["nuevocosto"],
+                    fecha,
+                    line["unit_price"],
+                    ccaja,
+                    vendor,
+                    line["contador"],
+                    line["quantity"],
+                    base3,
+                    iva3,
+                ),
+            )
+
+        payment_out: list[dict[str, Any]] = []
+        for pay in payments:
+            amount = float(_money(pay.amount))
+            bank_code = (pay.bank_code or "").strip()[:10]
+            nbanco, cmoneda = _lookup_banco(cur, bank_code)
+
+            if pay.method == "card":
+                ntarjeta = (pay.card_number or "").strip()[:15]
+                if not ntarjeta:
+                    raise OrdenesStoreError("card payments require card_number")
+                titular = (pay.holder_name or "").strip()[:200]
+                indice = f"{ccaja}{npunto}"[:15]
+                cur.execute(
+                    """
+                    INSERT INTO tarjetas (
+                      fecha, cajero, numero, monto, fvalor, ntarjeta, titular,
+                      cbanco, estado, numie, cod_cli, procesa, chequeo, npunto, indice
+                    ) VALUES (
+                      %s, %s, '', %s, %s, %s, %s,
+                      %s, 'R', NULL, '', 'N', '', %s, %s
+                    )
+                    """,
+                    (
+                        fecha,
+                        ccaja,
+                        amount,
+                        fecha,
+                        ntarjeta,
+                        titular,
+                        bank_code,
+                        npunto,
+                        indice,
+                    ),
+                )
+                payment_out.append(
+                    {
+                        "method": "card",
+                        "amount": amount,
+                        "card_number": ntarjeta,
+                        "holder_name": titular,
+                        "bank_code": bank_code,
+                    }
+                )
+            elif pay.method == "deposit":
+                ndeposito = (pay.confirmation_number or "").strip()[:15]
+                if not ndeposito:
+                    raise OrdenesStoreError(
+                        "deposit payments require confirmation_number"
+                    )
+                # depositos.titular = nombre de quien realizó el depósito
+                # (no el tipo de operación). Fallback: nombre del cliente.
+                titular = (pay.holder_name or customer.name or "").strip()[:240]
+                if not titular:
+                    raise OrdenesStoreError(
+                        "deposit payments require holder_name or customer.name"
+                    )
+                cur.execute(
+                    """
+                    INSERT INTO depositos (
+                      fecha, cajero, numero, monto, fvalor, ndeposito, titular,
+                      cbanco, estado, numie, cod_cli, procesa, recibido, cambio,
+                      cmoneda, nmoneda, nbanco, chequeo, ncuenta, cusuario
+                    ) VALUES (
+                      %s, %s, '', %s, %s, %s, %s,
+                      %s, 'R', NULL, %s, NULL, %s, 1,
+                      %s, 'Bolivares', %s, '', %s, ''
+                    )
+                    """,
+                    (
+                        fecha,
+                        ccaja,
+                        amount,
+                        fecha,
+                        ndeposito,
+                        titular,
+                        bank_code,
+                        cod_cli,
+                        amount,
+                        cmoneda,
+                        nbanco,
+                        ncuenta[:25],
+                    ),
+                )
+                payment_out.append(
+                    {
+                        "method": "deposit",
+                        "amount": amount,
+                        "confirmation_number": ndeposito,
+                        "holder_name": titular,
+                        "bank_code": bank_code,
+                    }
+                )
+            else:
+                raise OrdenesStoreError(f"unsupported payment method: {pay.method}")
+
+        return {
+            "ccaja": ccaja,
+            "cod_cli": cod_cli,
+            "fecha": fecha.isoformat(),
+            "subtotal": float(tot_neto),
+            "base1": float(tot_base1),
+            "iva1": float(tot_iva1),
+            "base2": float(tot_base2),
+            "iva2": float(tot_iva2),
+            "base3": float(tot_base3),
+            "iva3": float(tot_iva3),
+            "exento": float(tot_exento),
+            "iva": float(tot_iva),
+            "total": float(tot_total),
+            "items": [
+                {
+                    "codigo": r["sku"],
+                    "descrip": r["descrip"],
+                    "cantidad": r["quantity"],
+                    "costo": r["unit_price"],
+                    "subtotal2": r["subtotal2"],
+                    "porvg": r["porvg"],
+                    "base": r["base"],
+                    "iva": r["iva"],
+                    "exento": r["exento"],
+                    "contador": r["contador"],
+                }
+                for r in line_rows
+            ],
+            "payments": payment_out,
+            "message": "orden creada",
+        }

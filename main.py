@@ -23,6 +23,7 @@ from core.partner_request_context import (
     reset_partner_request_context,
 )
 from routes import (
+    bancos,
     categorias,
     compras,
     health,
@@ -30,6 +31,7 @@ from routes import (
     laboratorios,
     lotes,
     movimientos,
+    ordenes,
     proveedores,
     sync_outbox,
     ventas,
@@ -123,9 +125,11 @@ app.include_router(inventario.router)
 app.include_router(proveedores.router)
 app.include_router(categorias.router)
 app.include_router(laboratorios.router)
+app.include_router(bancos.router)
 app.include_router(lotes.router)
 app.include_router(compras.router)
 app.include_router(ventas.router)
+app.include_router(ordenes.router)
 app.include_router(movimientos.router)
 app.include_router(sync_outbox.router)
 
