@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Simula venta ERP: kardex (ventas) + kardexd + detalle (FEFO) -> outbox sale + inventory_lot."""
+"""Simula venta ERP: kardex (ventas) + kardexd + detalle (FEFO) -> outbox sale + inventory_lot.
+
+Productos sin lotes: descuenta solo sinv.existencia (auto si no hay detalle, o --sin-lotes).
+"""
 
 from __future__ import annotations
 
 import argparse
+import sys
 
 from _common import (
     add_common_args,
@@ -25,7 +29,6 @@ from _common import (
     resolve_diariovi_sale_pricing,
     resolve_movimiento_datetime,
     show_recent_outbox,
-    test_suffix,
 )
 
 
@@ -41,7 +44,7 @@ def _print_detalle_plan(deducciones) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Simula venta ERP (kardex + kardexd + detalle FEFO; "
+            "Simula venta ERP (kardex + kardexd; detalle FEFO si hay lotes; "
             "outbox diariovi + inventory_lot vía triggers)"
         )
     )
@@ -72,6 +75,22 @@ def main() -> int:
         help="Filtrar detalle por cubica (opcional)",
     )
     parser.add_argument(
+        "--sin-lotes",
+        action="store_true",
+        help=(
+            "No usa tabla detalle; solo descuenta sinv.existencia "
+            "(productos sin control de lotes)"
+        ),
+    )
+    parser.add_argument(
+        "--require-lotes",
+        action="store_true",
+        help=(
+            "Exige filas en detalle (falla si no hay lotes). "
+            "Por defecto, si no hay detalle se descuenta solo sinv."
+        ),
+    )
+    parser.add_argument(
         "--legacy-ventasi",
         action="store_true",
         help="INSERT solo en ventasi (sin outbox; ya no hay trg_ventasi_*)",
@@ -89,6 +108,16 @@ def main() -> int:
         help="Tipo de cambio ticket (diariovi.dolar; default detallepr.cambiodc o 400)",
     )
     args = parser.parse_args()
+
+    if args.sin_lotes and args.require_lotes:
+        print("Error: no combines --sin-lotes y --require-lotes", file=sys.stderr)
+        return 2
+    if args.sin_lotes and (args.lote or args.cubica):
+        print(
+            "Error: --sin-lotes no admite --lote / --cubica",
+            file=sys.stderr,
+        )
+        return 2
 
     mysql = require_mysql()
     conn = connect_dict(mysql)
@@ -130,14 +159,30 @@ def main() -> int:
         descrip = str(product.get("descrip") or "").strip()
 
         deducciones = []
-        if not args.no_update_sinv:
+        use_detalle = False
+        if not args.no_update_sinv and not args.sin_lotes:
+            require_detalle = bool(args.require_lotes or args.lote or args.cubica)
             deducciones = plan_detalle_venta(
                 conn,
                 codigo,
                 cantidad,
                 lote=args.lote,
                 cubica=args.cubica,
+                require_detalle=require_detalle,
             )
+            use_detalle = bool(deducciones)
+            if not use_detalle:
+                print(
+                    f"Aviso: sin filas en detalle para {codigo}; "
+                    "descontando solo sinv.existencia"
+                )
+
+        if not args.no_update_sinv and not use_detalle:
+            if ex_antes + 1e-9 < cantidad:
+                raise RuntimeError(
+                    f"Stock insuficiente en sinv para {codigo!r}: "
+                    f"pedido={cantidad}, existencia={ex_antes}"
+                )
 
         print(f"Product: {codigo} (sinv stock={ex_antes})")
         print(
@@ -156,10 +201,11 @@ def main() -> int:
                     f"(lote={d.lote or 'default'})"
                 )
         else:
-            print(f"INSERT kardexd: cubica=01 ajustesn={cantidad}")
+            print(f"INSERT kardexd: cubica=01 ajustesn={cantidad} (sin lotes / solo sinv)")
         if not args.no_update_sinv:
             print(f"UPDATE sinv: stock -= {cantidad}")
-            _print_detalle_plan(deducciones)
+            if deducciones:
+                _print_detalle_plan(deducciones)
 
         if args.dry_run:
             return 0
@@ -175,7 +221,8 @@ def main() -> int:
                     (numero, codigo, cantidad, kardex_fecha, contador, args.caja, ""),
                 )
             if not args.no_update_sinv:
-                apply_detalle_venta_deducciones(conn, deducciones)
+                if deducciones:
+                    apply_detalle_venta_deducciones(conn, deducciones)
                 ex0, ex1 = apply_sinv_existencia_delta(conn, codigo, -cantidad)
                 print(f"sinv.stock: {ex0} -> {ex1}")
             conn.commit()
@@ -254,19 +301,21 @@ def main() -> int:
                 indices_d = [indice_d]
 
         if not args.no_update_sinv:
-            apply_detalle_venta_deducciones(conn, deducciones)
+            if deducciones:
+                apply_detalle_venta_deducciones(conn, deducciones)
             ex0, ex1 = apply_sinv_existencia_delta(conn, codigo, -cantidad)
             print(f"sinv.stock: {ex0} -> {ex1}")
 
         conn.commit()
+        mode = "detalle FEFO" if deducciones else "solo sinv.existencia"
         print(
             f"OK: ERP sale diariovi + kardex indice={indice_k}, kardexd={indices_d} "
-            f"(outbox diariovi + detalle inventory_lot)."
+            f"({mode}; outbox diariovi)."
         )
         show_recent_outbox(conn, ["diariovi", "ventasi", "detalle"])
     except Exception as ex:
         conn.rollback()
-        print(f"Error: {ex}", file=__import__("sys").stderr)
+        print(f"Error: {ex}", file=sys.stderr)
         return 1
     finally:
         conn.close()

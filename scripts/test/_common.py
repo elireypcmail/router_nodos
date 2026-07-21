@@ -369,14 +369,21 @@ def plan_detalle_venta(
     *,
     lote: str | None = None,
     cubica: str | None = None,
+    require_detalle: bool = True,
 ) -> list[DetalleVentaDeduccion]:
-    """Reparto FEFO de una venta sobre filas detalle disponibles."""
+    """Reparto FEFO de una venta sobre filas detalle disponibles.
+
+    Si no hay filas en ``detalle`` y ``require_detalle=False``, devuelve []
+    (venta solo contra ``sinv.existencia``, sin lotes).
+    """
     qty = float(cantidad)
     if qty <= 0:
         raise ValueError("cantidad debe ser > 0 para descontar detalle")
 
     rows = _fetch_detalle_disponible(conn, codigo, lote=lote, cubica=cubica)
     if not rows:
+        if not require_detalle:
+            return []
         hint = (
             f"codigo={codigo!r}"
             + (f" lote={lote!r}" if lote else "")
@@ -384,7 +391,8 @@ def plan_detalle_venta(
         )
         raise RuntimeError(
             f"Sin filas detalle disponibles ({hint}). "
-            "Ejecuta simulate_compra.py con --lotes antes de vender."
+            "Ejecuta simulate_compra.py con --lotes, o usa --sin-lotes "
+            "para descontar solo sinv.existencia."
         )
 
     remaining = qty

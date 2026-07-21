@@ -158,11 +158,13 @@ Solo `simulate_venta.py`:
 - `--caja` / `--cliente` — texto en kobs
 - `--lote` — descontar solo de ese lote (default: FEFO por vencimiento)
 - `--cubica` — filtrar detalle por cubica
+- `--sin-lotes` — no usa `detalle`; solo descuenta `sinv.existencia`
+- `--require-lotes` — exige filas en `detalle` (falla si no hay). **Por defecto**, si no hay lotes se descuenta solo `sinv`
 - `--precio` — precio unitario Bs en diariovi (default: `sinv.precio1`)
 - `--factor` — tipo de cambio del ticket (`diariovi.dolar`; default `detallepr.cambiodc` o 400)
 - `--legacy-ventasi` — INSERT directo en `ventasi` (modo antiguo)
 
-Requiere stock en `detalle` (p. ej. tras `simulate_compra.py --lotes`). Con `--no-update-sinv` no toca `detalle` ni `sinv`. La línea **diariovi** (costo + subtotal2) es la que lleva precio al hub.
+Con lotes: stock en `detalle` (p. ej. tras `simulate_compra.py --lotes`). Sin lotes: basta `sinv.existencia`. Con `--no-update-sinv` no toca `detalle` ni `sinv`. La línea **diariovi** (costo + subtotal2) es la que lleva precio al hub.
 
 Ejemplos:
 
@@ -173,6 +175,8 @@ python scripts/test/simulate_compra.py --cantidad 10 --precio 150 --factor 60
 python scripts/test/simulate_compra.py --cantidad 10 --lotes 3 --lotes-pct 50,30,20
 python scripts/test/simulate_compra.py --cantidad 5 --lotes 5 --flush
 python scripts/test/simulate_venta.py --codigo FF10000021 --cantidad 3 --flush
+python scripts/test/simulate_venta.py --codigo FF00592 --cantidad 3
+python scripts/test/simulate_venta.py --codigo FF00592 --cantidad 3 --sin-lotes
 python scripts/test/simulate_venta.py --fecha 2026-06-15 --codigo FF10000021 --cantidad 2
 python scripts/test/simulate_kardex_ajuste.py --fecha 2026-05-20 --direccion salida
 ```
