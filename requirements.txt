@@ -7,3 +7,4 @@ httpx>=0.27.0
 pymysql>=1.1.0
 huey>=2.5.0
 uuid6>=2024.7.10
+tzdata>=2024.1

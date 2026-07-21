@@ -20,7 +20,7 @@ def store_timezone() -> ZoneInfo | timezone:
     tz_name = (os.environ.get("NODO_STORE_TZ") or "America/Caracas").strip()
     try:
         return ZoneInfo(tz_name)
-    except ZoneInfoNotFoundError:
+    except (ZoneInfoNotFoundError, ModuleNotFoundError):
         fallback = _FIXED_TZ_FALLBACK.get(tz_name)
         if fallback is not None:
             logger.warning(

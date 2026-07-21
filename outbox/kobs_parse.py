@@ -6,10 +6,8 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
 from typing import Any
-from zoneinfo import ZoneInfo
 
-# Nodos Multishop en Venezuela (sin DST; Caracas = UTC−4).
-DEFAULT_NODE_TZ = ZoneInfo("America/Caracas")
+from core.store_datetime import store_timezone
 
 # Normaliza "a. m." / "a.m." / NBSP / "AM".
 _AMPM_RE = re.compile(r"([ap])\.?\s*m\.?", re.IGNORECASE)
@@ -121,13 +119,14 @@ def build_movement_timestamp(
     fecha: object,
     local_time: time | None,
     *,
-    tz: ZoneInfo = DEFAULT_NODE_TZ,
+    tz: timezone | None = None,
 ) -> str | None:
     """fecha kardex + hora local del nodo → ISO UTC (`…Z`)."""
     day = parse_fecha_value(fecha)
     if day is None:
         return None
     wall = local_time or time(0, 0, 0)
+    resolved = tz if tz is not None else store_timezone()
     local_dt = datetime(
         day.year,
         day.month,
@@ -135,7 +134,7 @@ def build_movement_timestamp(
         wall.hour,
         wall.minute,
         wall.second,
-        tzinfo=tz,
+        tzinfo=resolved,
     )
     return local_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 

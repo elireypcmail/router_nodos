@@ -9,11 +9,10 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Literal
-from zoneinfo import ZoneInfo
 
+from core.store_datetime import store_timezone
 from db.product_price_formula import price_ex_tax_from_inc_tax
 
-STORE_TZ = ZoneInfo("America/Caracas")
 PAYMENT_TOLERANCE = Decimal("0.01")
 MONEY_Q = Decimal("0.01")
 
@@ -23,7 +22,7 @@ def _money(value: float | Decimal | int | str) -> Decimal:
 
 
 def _now_store() -> datetime:
-    return datetime.now(STORE_TZ)
+    return datetime.now(store_timezone())
 
 
 @dataclass(frozen=True)
