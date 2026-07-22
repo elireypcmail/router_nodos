@@ -678,3 +678,283 @@ def create_orden(
             "payments": payment_out,
             "message": "orden creada",
         }
+
+
+def status_from_confirma(confirma: Any) -> str:
+    if str(confirma or "").strip().upper() == "E":
+        return "confirmed"
+    return "pending"
+
+
+def _fecha_iso(value: Any) -> str:
+    if value is None:
+        return ""
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)[:10]
+
+
+def _f(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def list_ordenes(
+    conn,
+    *,
+    search: str = "",
+    fecha_desde: str = "",
+    fecha_hasta: str = "",
+    status: str = "",
+    page: int = 1,
+    limit: int = 50,
+) -> tuple[list[dict[str, Any]], int]:
+    """Lista preventas online (nordene no vacío)."""
+    q = (search or "").strip()
+    fd = (fecha_desde or "").strip()[:10]
+    fh = (fecha_hasta or "").strip()[:10]
+    st = (status or "").strip().lower()
+    page = max(1, int(page or 1))
+    limit = max(1, min(int(limit or 50), 500))
+    offset = (page - 1) * limit
+
+    where = ["TRIM(IFNULL(d.nordene, '')) <> ''"]
+    params: list[Any] = []
+
+    if q:
+        like = f"%{q}%"
+        where.append(
+            "(TRIM(d.nordene) LIKE %s OR TRIM(d.cod_cli) LIKE %s "
+            "OR TRIM(IFNULL(d.numero, '')) LIKE %s)"
+        )
+        params.extend([like, like, like])
+    if fd:
+        where.append("d.fecha >= %s")
+        params.append(fd)
+    if fh:
+        where.append("d.fecha <= %s")
+        params.append(fh)
+    if st == "pending":
+        where.append(
+            "(d.confirma IS NULL OR TRIM(d.confirma) = '' "
+            "OR UPPER(TRIM(d.confirma)) = 'N')"
+        )
+    elif st == "confirmed":
+        where.append("UPPER(TRIM(d.confirma)) = 'E'")
+
+    where_sql = " AND ".join(where)
+    with conn.cursor(dictionary=True) as cur:
+        cur.execute(
+            f"SELECT COUNT(*) AS cnt FROM diariov d WHERE {where_sql}",
+            tuple(params),
+        )
+        total = int((cur.fetchone() or {}).get("cnt") or 0)
+        cur.execute(
+            f"""
+            SELECT
+              TRIM(d.nordene) AS nordene,
+              TRIM(d.cod_cli) AS cod_cli,
+              d.fecha,
+              COALESCE(d.total, 0) AS total,
+              COALESCE(d.base1, 0) AS base1,
+              COALESCE(d.base2, 0) AS base2,
+              COALESCE(d.base3, 0) AS base3,
+              COALESCE(d.exento, 0) AS exento,
+              COALESCE(d.iva1, 0) AS iva1,
+              COALESCE(d.iva2, 0) AS iva2,
+              COALESCE(d.iva3, 0) AS iva3,
+              d.confirma,
+              TRIM(IFNULL(d.numero, '')) AS numero,
+              TRIM(d.ccaja) AS ccaja,
+              (
+                SELECT COUNT(*)
+                FROM diariovi i
+                WHERE TRIM(i.ccaja) = TRIM(d.ccaja)
+              ) AS line_count
+            FROM diariov d
+            WHERE {where_sql}
+            ORDER BY d.fecha DESC, d.nordene DESC
+            LIMIT %s OFFSET %s
+            """,
+            (*params, limit, offset),
+        )
+        rows = list(cur.fetchall() or [])
+
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        base1 = _f(row.get("base1"))
+        base2 = _f(row.get("base2"))
+        base3 = _f(row.get("base3"))
+        exento = _f(row.get("exento"))
+        iva1 = _f(row.get("iva1"))
+        iva2 = _f(row.get("iva2"))
+        iva3 = _f(row.get("iva3"))
+        status_val = status_from_confirma(row.get("confirma"))
+        numero = str(row.get("numero") or "").strip() or None
+        items.append(
+            {
+                "nordene": str(row.get("nordene") or "").strip(),
+                "cod_cli": str(row.get("cod_cli") or "").strip(),
+                "fecha": _fecha_iso(row.get("fecha")),
+                "total": _f(row.get("total")),
+                "subtotal": base1 + base2 + base3 + exento,
+                "iva": iva1 + iva2 + iva3,
+                "status": status_val,
+                "numero": numero,
+                "line_count": int(row.get("line_count") or 0),
+            }
+        )
+    return items, total
+
+
+def _load_payments_for_ccaja(cur, ccaja: str) -> list[dict[str, Any]]:
+    ticket = (ccaja or "").strip()
+    out: list[dict[str, Any]] = []
+    cur.execute(
+        """
+        SELECT monto, ntarjeta, titular, cbanco
+        FROM tarjetas
+        WHERE TRIM(cajero) = %s
+        ORDER BY id ASC
+        """,
+        (ticket,),
+    )
+    for row in cur.fetchall() or []:
+        out.append(
+            {
+                "method": "card",
+                "amount": _f(row.get("monto")),
+                "card_number": str(row.get("ntarjeta") or "").strip(),
+                "holder_name": str(row.get("titular") or "").strip(),
+                "bank_code": str(row.get("cbanco") or "").strip(),
+            }
+        )
+    cur.execute(
+        """
+        SELECT monto, ndeposito, titular, cbanco
+        FROM depositos
+        WHERE TRIM(cajero) = %s
+        ORDER BY id ASC
+        """,
+        (ticket,),
+    )
+    for row in cur.fetchall() or []:
+        out.append(
+            {
+                "method": "deposit",
+                "amount": _f(row.get("monto")),
+                "confirmation_number": str(row.get("ndeposito") or "").strip(),
+                "holder_name": str(row.get("titular") or "").strip(),
+                "bank_code": str(row.get("cbanco") or "").strip(),
+            }
+        )
+    return out
+
+
+def get_orden_by_nordene(conn, nordene: str) -> dict[str, Any] | None:
+    """Detalle de preventa online por nordene (orderId)."""
+    key = (nordene or "").strip()
+    if not key:
+        return None
+
+    with conn.cursor(dictionary=True) as cur:
+        cur.execute(
+            """
+            SELECT
+              TRIM(nordene) AS nordene,
+              TRIM(cod_cli) AS cod_cli,
+              fecha,
+              COALESCE(total, 0) AS total,
+              COALESCE(base1, 0) AS base1,
+              COALESCE(base2, 0) AS base2,
+              COALESCE(base3, 0) AS base3,
+              COALESCE(exento, 0) AS exento,
+              COALESCE(iva1, 0) AS iva1,
+              COALESCE(iva2, 0) AS iva2,
+              COALESCE(iva3, 0) AS iva3,
+              confirma,
+              TRIM(IFNULL(numero, '')) AS numero,
+              TRIM(ccaja) AS ccaja
+            FROM diariov
+            WHERE TRIM(nordene) = %s
+            LIMIT 1
+            """,
+            (key,),
+        )
+        header = cur.fetchone()
+        if not header:
+            return None
+
+        ccaja = str(header.get("ccaja") or "").strip()
+        cur.execute(
+            """
+            SELECT
+              codigo, descrip, cantidad, costo, subtotal2, contador,
+              COALESCE(porvg, 0) AS porvg,
+              COALESCE(exento, 0) AS exento,
+              COALESCE(base1, 0) AS base1,
+              COALESCE(base2, 0) AS base2,
+              COALESCE(base3, 0) AS base3,
+              COALESCE(iva1, 0) AS iva1,
+              COALESCE(iva2, 0) AS iva2,
+              COALESCE(iva3, 0) AS iva3
+            FROM diariovi
+            WHERE TRIM(ccaja) = %s
+            ORDER BY contador ASC
+            """,
+            (ccaja,),
+        )
+        line_rows = list(cur.fetchall() or [])
+        payments = _load_payments_for_ccaja(cur, ccaja)
+
+    base1 = _f(header.get("base1"))
+    base2 = _f(header.get("base2"))
+    base3 = _f(header.get("base3"))
+    exento = _f(header.get("exento"))
+    iva1 = _f(header.get("iva1"))
+    iva2 = _f(header.get("iva2"))
+    iva3 = _f(header.get("iva3"))
+    status_val = status_from_confirma(header.get("confirma"))
+    numero = str(header.get("numero") or "").strip() or None
+
+    items: list[dict[str, Any]] = []
+    for row in line_rows:
+        line_base = _f(row.get("base1")) + _f(row.get("base2")) + _f(row.get("base3"))
+        line_iva = _f(row.get("iva1")) + _f(row.get("iva2")) + _f(row.get("iva3"))
+        items.append(
+            {
+                "codigo": str(row.get("codigo") or "").strip(),
+                "descrip": str(row.get("descrip") or "").strip(),
+                "cantidad": _f(row.get("cantidad")),
+                "costo": _f(row.get("costo")),
+                "subtotal2": _f(row.get("subtotal2")),
+                "porvg": _f(row.get("porvg")),
+                "base": line_base,
+                "iva": line_iva,
+                "exento": _f(row.get("exento")),
+                "contador": int(row.get("contador") or 0),
+            }
+        )
+
+    return {
+        "nordene": str(header.get("nordene") or "").strip(),
+        "cod_cli": str(header.get("cod_cli") or "").strip(),
+        "fecha": _fecha_iso(header.get("fecha")),
+        "subtotal": base1 + base2 + base3 + exento,
+        "base1": base1,
+        "iva1": iva1,
+        "base2": base2,
+        "iva2": iva2,
+        "base3": base3,
+        "iva3": iva3,
+        "exento": exento,
+        "iva": iva1 + iva2 + iva3,
+        "total": _f(header.get("total")),
+        "status": status_val,
+        "numero": numero,
+        "items": items,
+        "payments": payments,
+        "message": "ok",
+    }

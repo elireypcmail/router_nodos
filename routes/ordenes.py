@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 import anyio
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, model_validator
 
 from core.config import settings
@@ -16,6 +16,8 @@ from db.ordenes_store import (
     OrdenPaymentInput,
     OrdenesStoreError,
     create_orden,
+    get_orden_by_nordene,
+    list_ordenes,
 )
 from middleware.auth import verify_bearer
 
@@ -71,12 +73,15 @@ class OrdenCreateRequest(BaseModel):
     enforce_min_precio1: bool = False
 
 
-def _create_orden_sync(body: OrdenCreateRequest) -> dict:
+def _mysql_conn():
     mysql = MySqlClient()
     if not mysql.is_configured():
         raise RuntimeError("Node MySQL not configured (set MYSQL_* in env.txt/.env)")
+    return mysql.connect()
 
-    conn = mysql.connect()
+
+def _create_orden_sync(body: OrdenCreateRequest) -> dict:
+    conn = _mysql_conn()
     try:
         result = create_orden(
             conn,
@@ -132,6 +137,101 @@ def _create_orden_sync(body: OrdenCreateRequest) -> dict:
         raise
     finally:
         conn.close()
+
+
+def _list_ordenes_sync(
+    search: str,
+    fecha_desde: str,
+    fecha_hasta: str,
+    status: str,
+    page: int,
+    limit: int,
+) -> dict:
+    conn = _mysql_conn()
+    try:
+        items, total = list_ordenes(
+            conn,
+            search=search,
+            fecha_desde=fecha_desde,
+            fecha_hasta=fecha_hasta,
+            status=status,
+            page=page,
+            limit=limit,
+        )
+        total_pages = 0 if total == 0 else (total + limit - 1) // limit
+        return {
+            "search": search,
+            "fecha_desde": fecha_desde,
+            "fecha_hasta": fecha_hasta,
+            "status": status,
+            "nodo_id": settings.nodo_id,
+            "nombre": settings.nodo_nombre,
+            "items": items,
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "totalPages": total_pages,
+            "message": "ok",
+        }
+    finally:
+        conn.close()
+
+
+def _get_orden_sync(nordene: str) -> dict:
+    conn = _mysql_conn()
+    try:
+        result = get_orden_by_nordene(conn, nordene)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Order not found")
+        return {
+            "nodo_id": settings.nodo_id,
+            "nombre": settings.nodo_nombre,
+            **result,
+        }
+    finally:
+        conn.close()
+
+
+@router.get("/ordenes")
+async def list_ordenes_route(
+    search: str = Query("", description="Match orderId, customer or invoice number"),
+    fecha_desde: str = Query("", description="Start date (YYYY-MM-DD)"),
+    fecha_hasta: str = Query("", description="End date (YYYY-MM-DD)"),
+    status: str = Query(
+        "",
+        description="Filter: pending | confirmed",
+    ),
+    page: int = Query(1, ge=1, description="Page"),
+    limit: int = Query(50, ge=1, le=500, description="Rows per page"),
+    _: None = Depends(verify_bearer),
+):
+    status_norm = (status or "").strip().lower()
+    if status_norm and status_norm not in ("pending", "confirmed"):
+        raise HTTPException(
+            status_code=422,
+            detail="status must be pending or confirmed",
+        )
+    try:
+        return await anyio.to_thread.run_sync(
+            lambda: _list_ordenes_sync(
+                search, fecha_desde, fecha_hasta, status_norm, page, limit
+            )
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/ordenes/{nordene}")
+async def get_orden_route(
+    nordene: str,
+    _: None = Depends(verify_bearer),
+):
+    try:
+        return await anyio.to_thread.run_sync(_get_orden_sync, nordene)
+    except HTTPException:
+        raise
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.post("/ordenes")
