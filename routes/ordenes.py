@@ -66,6 +66,7 @@ class OrdenCreateRequest(BaseModel):
     deposito_ncuenta: str = Field(default="", max_length=25)
     tarjeta_npunto: str = Field(min_length=1, max_length=2)
     cod_ven: str = Field(min_length=1, max_length=10)
+    cajero_ccaja: str = Field(min_length=1, max_length=10)
     use_sinv_precio1: bool = False
     enforce_min_precio1: bool = False
 
@@ -110,6 +111,7 @@ def _create_orden_sync(body: OrdenCreateRequest) -> dict:
             deposito_ncuenta=body.deposito_ncuenta,
             tarjeta_npunto=body.tarjeta_npunto,
             cod_ven=body.cod_ven,
+            cajero_ccaja=body.cajero_ccaja,
             use_sinv_precio1=body.use_sinv_precio1,
             enforce_min_precio1=body.enforce_min_precio1,
         )

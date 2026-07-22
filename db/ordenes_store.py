@@ -1,6 +1,7 @@
 """Creación de preventas (órdenes por facturar): diariov + diariovi + pagos.
 
 No toca kardex, ventasi, detalle ni sinv.existencia.
+Antes de insertar, exige cantidad ≤ sinv.existencia por SKU.
 """
 
 from __future__ import annotations
@@ -8,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
+import secrets
 from typing import Any, Literal
 
 from core.store_datetime import store_timezone
@@ -23,6 +25,31 @@ def _money(value: float | Decimal | int | str) -> Decimal:
 
 def _now_store() -> datetime:
     return datetime.now(store_timezone())
+
+
+def generate_nordene(now: datetime | None = None) -> str:
+    """Código público de preventa (`diariov.nordene`, varchar(15)).
+
+    Formato: ``YYMMDDHHMMSS`` (12) + 3 hex aleatorios (15 total).
+    La semilla temporal reduce colisiones; el sufijo cubre ráfagas en el mismo segundo.
+    """
+    ts = (now or _now_store()).strftime("%y%m%d%H%M%S")
+    return f"{ts}{secrets.token_hex(2)[:3]}"
+
+
+def allocate_nordene(cur, *, max_attempts: int = 8) -> str:
+    """Genera ``nordene`` único comprobando que no exista en ``diariov``."""
+    for _ in range(max_attempts):
+        code = generate_nordene()
+        cur.execute(
+            "SELECT 1 FROM diariov WHERE TRIM(nordene)=%s LIMIT 1",
+            (code,),
+        )
+        if cur.fetchone() is None:
+            return code
+    raise OrdenesStoreError(
+        "could not allocate unique nordene after retries"
+    )
 
 
 @dataclass(frozen=True)
@@ -137,17 +164,45 @@ def ensure_scli(
     return cod_cli
 
 
-def next_ccaja(cur) -> str:
+def allocate_order_ccaja(cur, cajero_code: str) -> str:
+    """Compone ccaja = cajero.ccaja + faccaj y incrementa faccaj (+1).
+
+    Requiere fila en tabla ``cajero``. Misma transacción que la orden.
+    """
+    code = (cajero_code or "").strip()[:10]
+    if not code:
+        raise OrdenesStoreError(
+            "cajero_ccaja is required "
+            "(configure system parameter ordenes.cajero_ccaja in admin)"
+        )
     cur.execute(
         """
-        SELECT LPAD(IFNULL(MAX(CAST(ccaja AS UNSIGNED)), 0) + 1, 8, '0') AS next_ccaja
-        FROM diariov
-        WHERE ccaja REGEXP '^[0-9]+$'
-        """
+        SELECT TRIM(ccaja) AS ccaja, COALESCE(faccaj, 0) AS faccaj
+        FROM cajero
+        WHERE TRIM(ccaja) = %s
+        LIMIT 1
+        FOR UPDATE
+        """,
+        (code,),
     )
     row = cur.fetchone()
-    value = row["next_ccaja"] if isinstance(row, dict) else row[0]
-    return str(value)
+    if not row:
+        raise OrdenesStoreError(
+            f"cajero_ccaja {code!r} not found in cajero catalog"
+        )
+    station = str(row["ccaja"] if isinstance(row, dict) else row[0]).strip()
+    faccaj = int(row["faccaj"] if isinstance(row, dict) else row[1])
+    order_ccaja = f"{station}{faccaj}"
+    if len(order_ccaja) > 10:
+        raise OrdenesStoreError(
+            f"composed ccaja {order_ccaja!r} exceeds varchar(10); "
+            f"reset or archive faccaj for cajero {station!r}"
+        )
+    cur.execute(
+        "UPDATE cajero SET faccaj = faccaj + 1 WHERE TRIM(ccaja) = %s",
+        (station,),
+    )
+    return order_ccaja
 
 
 def next_contador(cur, count: int) -> list[int]:
@@ -164,7 +219,8 @@ def _load_product(cur, sku: str) -> dict[str, Any]:
                COALESCE(precio1, 0) AS precio1,
                COALESCE(costo, 0) AS costo,
                COALESCE(costoant, 0) AS costoant,
-               COALESCE(pg1, 0) AS pg1
+               COALESCE(pg1, 0) AS pg1,
+               COALESCE(existencia, 0) AS existencia
         FROM sinv
         WHERE codigo = %s
         LIMIT 1
@@ -183,6 +239,7 @@ def _load_product(cur, sku: str) -> dict[str, Any]:
             "costo": row[4],
             "costoant": row[5],
             "pg1": row[6],
+            "existencia": row[7],
         }
     return row
 
@@ -245,6 +302,7 @@ def create_orden(
     deposito_ncuenta: str,
     tarjeta_npunto: str,
     cod_ven: str,
+    cajero_ccaja: str,
     use_sinv_precio1: bool = False,
     enforce_min_precio1: bool = False,
 ) -> dict[str, Any]:
@@ -286,7 +344,8 @@ def create_orden(
             address_line2=customer.address_line2,
             address_line3=customer.address_line3,
         )
-        ccaja = next_ccaja(cur)
+        ccaja = allocate_order_ccaja(cur, cajero_ccaja)
+        nordene = allocate_nordene(cur)
         contadores = next_contador(cur, len(items))
 
         line_rows: list[dict[str, Any]] = []
@@ -298,12 +357,24 @@ def create_orden(
         tot_iva1 = Decimal("0.00")
         tot_iva2 = Decimal("0.00")
         tot_iva3 = Decimal("0.00")
+        # Stock restante por SKU (sinv.existencia); acumula líneas del mismo código.
+        stock_left: dict[str, Decimal] = {}
 
         for idx, item in enumerate(items):
             product = _load_product(cur, item.sku)
             qty = Decimal(str(item.quantity))
             if qty <= 0:
                 raise OrdenesStoreError(f"invalid quantity for sku {item.sku}")
+            sku_key = str(product["codigo"]).strip()
+            if sku_key not in stock_left:
+                stock_left[sku_key] = Decimal(str(product["existencia"] or 0))
+            available = stock_left[sku_key]
+            if qty > available:
+                raise OrdenesStoreError(
+                    f"insufficient stock for sku {sku_key}: "
+                    f"requested {qty}, available {available} (sinv.existencia)"
+                )
+            stock_left[sku_key] = available - qty
             porvg = _money(product["porvg"])
             catalog_price = _money(product["precio1"])
             # unitPrice API = con IVA. Default: sinv.precio1.
@@ -398,7 +469,7 @@ def create_orden(
               NULL, %s, %s, %s, %s, %s, %s,
               %s, %s, NULL, 0, %s, %s,
               '', '', 'FC', %s, 'N', '0',
-              %s, %s, 'NA', '', '', 0, '',
+              %s, %s, 'NA', '', %s, 0, '',
               0, %s, %s, '', 0, 0,
               0, 0
             )
@@ -417,6 +488,7 @@ def create_orden(
                 float(tot_iva),
                 ccaja,
                 vendor,
+                nordene,
                 float(tot_base3),
                 float(tot_iva3),
             ),
@@ -575,7 +647,7 @@ def create_orden(
                 raise OrdenesStoreError(f"unsupported payment method: {pay.method}")
 
         return {
-            "ccaja": ccaja,
+            "nordene": nordene,
             "cod_cli": cod_cli,
             "fecha": fecha.isoformat(),
             "subtotal": float(tot_neto),

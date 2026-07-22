@@ -8,6 +8,7 @@ from db.mysql import MySqlClient
 from outbox.erp_fetch import (
     fetch_detalle_lotes,
     fetch_detallepr_row,
+    fetch_diariov_by_ccaja,
     fetch_diariovi_line,
     fetch_kardex_obs,
     fetch_lotes_aggregated,
@@ -149,9 +150,18 @@ def enrich_sale_row(
 
     enriched = dict(row)
     enriched["diariovi"] = diariovi
+    # orderId público = diariov.nordene (ccaja de diariovi liga la preventa)
+    ticket = _strip_ccaja(diariovi) or ccaja
+    diariov = fetch_diariov_by_ccaja(mysql, ticket) if ticket else None
+    if diariov is not None:
+        enriched["diariov"] = diariov
     _attach_product_bundle(enriched, codigo, mysql)
     _attach_kobs_enrichment(enriched, mysql)
     return enriched
+
+
+def _strip_ccaja(diariovi: dict[str, Any]) -> str:
+    return str(diariovi.get("ccaja") or "").strip()
 
 
 def enrich_kardex_adjustment_row(

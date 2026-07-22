@@ -46,9 +46,10 @@ def test_enrich_purchase_row(*_mocks):
 @patch("outbox.movement_enrich.fetch_detalle_lotes", return_value=[{"cubica": "01"}])
 @patch("outbox.movement_enrich.fetch_detallepr_row", return_value={"precio1": 0.5})
 @patch("outbox.movement_enrich.fetch_sinv_row", return_value={"codigo": "FF09748"})
+@patch("outbox.movement_enrich.fetch_diariov_by_ccaja", return_value={"nordene": "a1b2c3d4e5f678", "ccaja": "02"})
 @patch("outbox.movement_enrich.fetch_diariovi_line")
 def test_enrich_sale_row(mock_diariovi, *_mocks):
-    mock_diariovi.return_value = {"subtotal2": 3111.35}
+    mock_diariovi.return_value = {"subtotal2": 3111.35, "ccaja": "02"}
     out = enrich_sale_row(
         {
             "numero": "0200229381",
@@ -64,6 +65,7 @@ def test_enrich_sale_row(mock_diariovi, *_mocks):
         MagicMock(),
     )
     assert out["diariovi"]["subtotal2"] == 3111.35
+    assert out["diariov"]["nordene"] == "a1b2c3d4e5f678"
     assert out["sinv"]["codigo"] == "FF09748"
     assert out["detallepr"]["precio1"] == 0.5
     assert out["lotes"][0]["calidad"] == "01"

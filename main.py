@@ -24,6 +24,7 @@ from core.partner_request_context import (
 )
 from routes import (
     bancos,
+    cajeros,
     categorias,
     compras,
     health,
@@ -126,6 +127,7 @@ app.include_router(proveedores.router)
 app.include_router(categorias.router)
 app.include_router(laboratorios.router)
 app.include_router(bancos.router)
+app.include_router(cajeros.router)
 app.include_router(lotes.router)
 app.include_router(compras.router)
 app.include_router(ventas.router)

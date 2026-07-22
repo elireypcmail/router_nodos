@@ -93,6 +93,32 @@ def fetch_diariovi_line(
         conn.close()
 
 
+def fetch_diariov_by_ccaja(
+    mysql: MySqlClient,
+    ccaja: str,
+) -> dict[str, Any] | None:
+    """Cabecera de preventa/venta por ccaja (para leer nordene público)."""
+    key = _strip(ccaja)
+    if not key:
+        return None
+    conn = mysql.connect()
+    try:
+        cur = conn.cursor(dictionary=True)
+        return _fetch_one(
+            cur,
+            """
+            SELECT nordene, ccaja, numero, cod_cli, fecha
+            FROM diariov
+            WHERE TRIM(ccaja)=%s
+            ORDER BY fecha DESC
+            LIMIT 1
+            """,
+            (key,),
+        )
+    finally:
+        conn.close()
+
+
 def fetch_detallepr_row(mysql: MySqlClient, codigo: str) -> dict[str, Any] | None:
     c = _strip(codigo)
     if not c:

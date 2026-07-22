@@ -55,6 +55,7 @@ Los triggers transaccionales encolan **`kardex`** solo desde la cabecera **`kard
 |--------|------------|--------------|
 | `simulate_compra.py` | **`scom`** + `kardex` + `kardexd` + `sinv` + `detalle` + `detallepr` + `historialc` + `historialp` | `kardex` → `purchase`; `historialp` → `price_change` (si trigger activo) |
 | `simulate_venta.py` | `kardex` + `kardexd` + `detalle` | `kardex` → `sale`; `detalle` → `inventory_lot` |
+| `simulate_confirmar_orden.py` | `diariov`/`diariovi` (UPDATE) + `kardex` + `kardexd` + `sinv`/`detalle` | `kardex` → `sale` con `orderId`=`nordene` |
 | `simulate_kardex_ajuste.py` | `kardex` (cabecera) | `kardex` → ajuste |
 | `simulate_kardex_devolucion.py` | `kardex` (cabecera) | `kardex` → devolución |
 
@@ -117,6 +118,7 @@ cd Multishop-nodo-API
 source venv/bin/activate
 python scripts/test/simulate_compra.py
 python scripts/test/simulate_venta.py --cantidad 2
+python scripts/test/simulate_confirmar_orden.py --nordene <orderId>
 ```
 
 Desde `scripts/test/` (también válido):
@@ -166,6 +168,22 @@ Solo `simulate_venta.py`:
 
 Con lotes: stock en `detalle` (p. ej. tras `simulate_compra.py --lotes`). Sin lotes: basta `sinv.existencia`. Con `--no-update-sinv` no toca `detalle` ni `sinv`. La línea **diariovi** (costo + subtotal2) es la que lleva precio al hub.
 
+Solo `simulate_confirmar_orden.py` (preventa → venta):
+
+Confirma una orden creada con `POST /api/v1/nodos/:nodoId/ordenes` (`orderId` = `diariov.nordene`):
+
+1. Exige `confirma='N'` y `numero` vacío
+2. `UPDATE diariov` → `confirma='E'`, `numero`, `fconfirma`/`hconfirma`
+3. `UPDATE diariovi` → mismo `numero` (no inserta líneas nuevas)
+4. Por cada línea: `kardex` + `kardexd` + descuento `sinv`/`detalle` (misma lógica que `simulate_venta`)
+
+El webhook `sale` enriquece `movementDetail.orderId` desde `diariov.nordene`.
+
+- `--nordene` / `--order-id` — **obligatorio**; `orderId` de la respuesta de `/ordenes`
+- `--numero` — factura (default: prefijo estación de `ccaja` + timestamp)
+- `--lote` / `--cubica` / `--sin-lotes` / `--require-lotes` — igual que venta
+- `--dry-run` / `--flush` / `--no-update-sinv` — comunes
+
 Ejemplos:
 
 ```bash
@@ -179,6 +197,10 @@ python scripts/test/simulate_venta.py --codigo FF00592 --cantidad 3
 python scripts/test/simulate_venta.py --codigo FF00592 --cantidad 3 --sin-lotes
 python scripts/test/simulate_venta.py --fecha 2026-06-15 --codigo FF10000021 --cantidad 2
 python scripts/test/simulate_kardex_ajuste.py --fecha 2026-05-20 --direccion salida
+
+# Tras POST /ordenes → orderId en la respuesta:
+python scripts/test/simulate_confirmar_orden.py --nordene 2607212228170b5 --dry-run
+python scripts/test/simulate_confirmar_orden.py --order-id 2607212228170b5 --sin-lotes --flush
 ```
 
 ## Verificación
