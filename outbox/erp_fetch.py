@@ -247,6 +247,28 @@ def fetch_sprv_row(mysql: MySqlClient, cod_prv: str) -> dict[str, Any] | None:
         conn.close()
 
 
+def fetch_scli_row(mysql: MySqlClient, cod_cli: str) -> dict[str, Any] | None:
+    """Cliente ERP por cod_cli (o rif_cli) para enriquecer webhooks de venta."""
+    code = _strip(cod_cli)
+    if not code:
+        return None
+    conn = mysql.connect()
+    try:
+        cur = conn.cursor(dictionary=True)
+        return _fetch_one(
+            cur,
+            """
+            SELECT *
+            FROM scli
+            WHERE TRIM(cod_cli)=%s OR TRIM(rif_cli)=%s
+            LIMIT 1
+            """,
+            (code, code),
+        )
+    finally:
+        conn.close()
+
+
 def fetch_kardex_obs(
     mysql: MySqlClient,
     indice: object,

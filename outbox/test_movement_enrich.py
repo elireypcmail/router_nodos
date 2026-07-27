@@ -12,6 +12,7 @@ def test_parse_sale_keys():
     assert parse_sale_keys(row, pk) == ("0200229381", "FF09748", 122695, "02")
 
 
+@patch("outbox.movement_enrich.fetch_scli_row", return_value=None)
 @patch("outbox.movement_enrich.fetch_sprv_row", return_value={"cod_prv": "101", "nom_prv": "NENA"})
 @patch("outbox.movement_enrich.fetch_kardex_obs", return_value=None)
 @patch("outbox.movement_enrich.fetch_lotes_aggregated", return_value=([], 0.0))
@@ -38,8 +39,14 @@ def test_enrich_purchase_row(*_mocks):
     assert out["kobs_parsed"]["local_time"] == "07:10:23"
     assert out["movement_timestamp"] == "2025-12-01T11:10:23.000Z"
     assert out["sprv"]["cod_prv"] == "101"
+    assert out["scli"] is None
+    assert out["cash_register_code"] is None
 
 
+@patch(
+    "outbox.movement_enrich.fetch_scli_row",
+    return_value={"cod_cli": "V27567145", "nom_cli": "ALFREDO JIMENEZ"},
+)
 @patch("outbox.movement_enrich.fetch_sprv_row", return_value=None)
 @patch("outbox.movement_enrich.fetch_kardex_obs", return_value=None)
 @patch("outbox.movement_enrich.fetch_lotes_aggregated", return_value=([{"calidad": "01"}], 5.0))
@@ -71,8 +78,13 @@ def test_enrich_sale_row(mock_diariovi, *_mocks):
     assert out["lotes"][0]["calidad"] == "01"
     assert out["movement_timestamp"] == "2025-12-01T05:21:00.000Z"
     assert out["sprv"] is None
+    assert out["kobs_parsed"]["client_code"] == "V27567145"
+    assert out["kobs_parsed"]["cash_register_code"] == "01"
+    assert out["cash_register_code"] == "01"
+    assert out["scli"]["cod_cli"] == "V27567145"
 
 
+@patch("outbox.movement_enrich.fetch_scli_row", return_value=None)
 @patch("outbox.movement_enrich.fetch_sprv_row", return_value=None)
 @patch("outbox.movement_enrich.fetch_kardex_obs", return_value=None)
 @patch("outbox.movement_enrich.fetch_lotes_aggregated", return_value=([], 0.0))

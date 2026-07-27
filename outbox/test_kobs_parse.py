@@ -4,6 +4,8 @@ from datetime import time
 
 from outbox.kobs_parse import (
     build_movement_timestamp,
+    parse_client_code,
+    parse_cash_register_code,
     parse_hora_column,
     parse_kobs,
     parse_kobs_time,
@@ -38,6 +40,15 @@ def test_parse_provider_compra_devoc():
     assert parse_provider_code(DEVOV) is None
 
 
+def test_parse_client_and_caja_venta():
+    assert parse_client_code(VENTA) == "V27567145"
+    assert parse_cash_register_code(VENTA) == "01"
+    assert parse_client_code(COMPRA) is None
+    assert parse_cash_register_code(COMPRA) is None
+    assert parse_client_code("Cliente: V112618313 Caja:01") == "V112618313"
+    assert parse_cash_register_code("Cliente: V112618313 Caja:01") == "01"
+
+
 def test_parse_times_from_samples():
     assert parse_kobs_time(COMPRA)[0] == time(7, 10, 23)
     assert parse_kobs_time(VENTA)[0] == time(1, 21, 0)
@@ -67,4 +78,12 @@ def test_movement_timestamp_caracas_to_utc():
 def test_parse_kobs_bundle():
     p = parse_kobs(COMPRA)
     assert p.provider_code == "101"
+    assert p.client_code is None
+    assert p.cash_register_code is None
     assert p.local_time == time(7, 10, 23)
+
+    v = parse_kobs(VENTA)
+    assert v.provider_code is None
+    assert v.client_code == "V27567145"
+    assert v.cash_register_code == "01"
+    assert v.local_time == time(1, 21, 0)

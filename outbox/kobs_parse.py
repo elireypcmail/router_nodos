@@ -20,11 +20,15 @@ _TIME_RE = re.compile(
 )
 
 _PROVEEDOR_RE = re.compile(r"Proveedor:\s*(\S+)", re.IGNORECASE)
+_CLIENTE_RE = re.compile(r"Cliente:\s*(\S+)", re.IGNORECASE)
+_CAJA_RE = re.compile(r"Caja:\s*(\S+)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
 class ParsedKobs:
     provider_code: str | None
+    client_code: str | None
+    cash_register_code: str | None
     local_time: time | None
     local_time_raw: str | None
 
@@ -88,13 +92,40 @@ def parse_provider_code(kobs: str) -> str | None:
     return code or None
 
 
+def parse_client_code(kobs: str) -> str | None:
+    """Código de cliente en kobs: «Cliente: V112618313 NOMBRE Caja:01 …»."""
+    text = _normalize_kobs(kobs)
+    if not text:
+        return None
+    match = _CLIENTE_RE.search(text)
+    if not match:
+        return None
+    code = match.group(1).strip()
+    return code or None
+
+
+def parse_cash_register_code(kobs: str) -> str | None:
+    """Caja en kobs: «Caja:01» → «01»."""
+    text = _normalize_kobs(kobs)
+    if not text:
+        return None
+    match = _CAJA_RE.search(text)
+    if not match:
+        return None
+    raw = match.group(1).strip()
+    code = re.sub(r"[^\dA-Za-z-]", "", raw)
+    return code or None
+
+
 def parse_kobs(kobs: object) -> ParsedKobs:
     text = _normalize_kobs(str(kobs or ""))
     if not text:
-        return ParsedKobs(None, None, None)
+        return ParsedKobs(None, None, None, None, None)
     provider = parse_provider_code(text)
+    client = parse_client_code(text)
+    caja = parse_cash_register_code(text)
     local_time, raw = parse_kobs_time(text)
-    return ParsedKobs(provider, local_time, raw)
+    return ParsedKobs(provider, client, caja, local_time, raw)
 
 
 def parse_fecha_value(value: object) -> date | None:
@@ -145,6 +176,8 @@ def kobs_parsed_dict(parsed: ParsedKobs) -> dict[str, Any]:
         local_iso = parsed.local_time.strftime("%H:%M:%S")
     return {
         "provider_code": parsed.provider_code,
+        "client_code": parsed.client_code,
+        "cash_register_code": parsed.cash_register_code,
         "local_time": local_iso,
         "local_time_raw": parsed.local_time_raw,
     }

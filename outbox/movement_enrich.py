@@ -12,6 +12,7 @@ from outbox.erp_fetch import (
     fetch_diariovi_line,
     fetch_kardex_obs,
     fetch_lotes_aggregated,
+    fetch_scli_row,
     fetch_scom_line,
     fetch_sinv_row,
     fetch_sprv_row,
@@ -60,13 +61,27 @@ def _ensure_kobs_and_hora(enriched: dict[str, Any], mysql: MySqlClient) -> None:
         enriched["fecha"] = obs["fecha"]
 
 
+def _client_code_fallback(enriched: dict[str, Any]) -> str:
+    """Si kobs no trae Cliente:, usar diariov.cod_cli (ventas)."""
+    diariov = enriched.get("diariov")
+    if isinstance(diariov, dict):
+        return str(diariov.get("cod_cli") or "").strip()
+    return ""
+
+
 def _attach_kobs_enrichment(enriched: dict[str, Any], mysql: MySqlClient) -> None:
+    """Lee kobs/hora del kardex si faltan y enriquece provider/cliente/caja."""
     _ensure_kobs_and_hora(enriched, mysql)
     parsed = parse_kobs(enriched.get("kobs"))
     local_time = parsed.local_time or parse_hora_column(enriched.get("hora"))
 
+    client_code = parsed.client_code or _client_code_fallback(enriched) or None
+    cash_register_code = parsed.cash_register_code
+
     enriched["kobs_parsed"] = {
         "provider_code": parsed.provider_code,
+        "client_code": client_code,
+        "cash_register_code": cash_register_code,
         "local_time": local_time.strftime("%H:%M:%S") if local_time else None,
         "local_time_raw": parsed.local_time_raw,
     }
@@ -74,11 +89,17 @@ def _attach_kobs_enrichment(enriched: dict[str, Any], mysql: MySqlClient) -> Non
         enriched.get("fecha"),
         local_time,
     )
+    enriched["cash_register_code"] = cash_register_code
 
     if parsed.provider_code:
         enriched["sprv"] = fetch_sprv_row(mysql, parsed.provider_code)
     else:
         enriched["sprv"] = None
+
+    if client_code:
+        enriched["scli"] = fetch_scli_row(mysql, client_code)
+    else:
+        enriched["scli"] = None
 
 
 def _attach_product_bundle(
