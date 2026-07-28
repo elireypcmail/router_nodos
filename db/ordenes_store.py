@@ -447,7 +447,7 @@ def create_orden(
 
         tot_iva = tot_iva1 + tot_iva2 + tot_iva3
         tot_total = tot_subtotal_incl
-        # Neto solo para la respuesta API; diariov.subtotal sigue = total (con IVA).
+        # Patrón Multishop (facturas): diariov.subtotal = neto; total = con IVA
         tot_neto = tot_base1 + tot_base2 + tot_base3 + tot_exento
 
         pay_sum = sum((_money(p.amount) for p in payments), Decimal("0.00"))
@@ -477,7 +477,7 @@ def create_orden(
             (
                 cod_cli,
                 fecha,
-                float(tot_total),
+                float(tot_neto),
                 float(tot_base1),
                 float(tot_base2),
                 float(tot_exento),
@@ -572,7 +572,7 @@ def create_orden(
                       cbanco, estado, numie, cod_cli, procesa, chequeo, npunto, indice
                     ) VALUES (
                       %s, %s, '', %s, %s, %s, %s,
-                      %s, 'R', NULL, '', 'N', '', %s, %s
+                      %s, 'R', NULL, %s, 'N', '', %s, %s
                     )
                     """,
                     (
@@ -583,6 +583,7 @@ def create_orden(
                         ntarjeta,
                         titular,
                         bank_code,
+                        cod_cli,
                         npunto,
                         indice,
                     ),
@@ -617,7 +618,7 @@ def create_orden(
                       cmoneda, nmoneda, nbanco, chequeo, ncuenta, cusuario
                     ) VALUES (
                       %s, %s, '', %s, %s, %s, %s,
-                      %s, 'R', NULL, %s, NULL, %s, 1,
+                      %s, 'R', NULL, %s, 'N', %s, 1,
                       %s, 'Bolivares', %s, '', %s, ''
                     )
                     """,
