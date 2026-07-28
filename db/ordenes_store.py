@@ -545,7 +545,9 @@ def create_orden(
                     ccaja,
                     vendor,
                     line["contador"],
-                    line["quantity"],
+                    # ucantidad debe ser 1 con uxb=1/UND; si = cantidad el ERP
+                    # multiplica al bajar kardex (qty^2).
+                    1.0,
                     base3,
                     iva3,
                 ),

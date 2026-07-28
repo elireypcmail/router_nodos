@@ -219,6 +219,8 @@ def _fetch_inventario(
     nombre: str,
     page: int,
     limit: int,
+    *,
+    con_existencia: bool | None = None,
 ) -> tuple[list[dict], int]:
     mysql = MySqlClient()
     if not mysql.is_configured():
@@ -241,7 +243,7 @@ def _fetch_inventario(
               AND (%s = '' OR codigo LIKE %s)
               AND (%s = '' OR descrip LIKE %s)
         """
-        params = (
+        params: list[object] = [
             q,
             like_search or "",
             like_search or "",
@@ -250,8 +252,17 @@ def _fetch_inventario(
             like_codigo or "",
             n,
             like_nombre or "",
-        )
-        cur.execute(f"SELECT COUNT(*) AS cnt FROM sinv {where}", params)
+        ]
+        if con_existencia is True:
+            where += " AND COALESCE(existencia, 0) > 0"
+            order_by = "ORDER BY existencia DESC, descrip ASC"
+        elif con_existencia is False:
+            where += " AND COALESCE(existencia, 0) <= 0"
+            order_by = "ORDER BY descrip ASC"
+        else:
+            order_by = "ORDER BY descrip ASC"
+
+        cur.execute(f"SELECT COUNT(*) AS cnt FROM sinv {where}", tuple(params))
         total_row = cur.fetchone() or {}
         total = int(total_row.get("cnt") or 0)
 
@@ -288,7 +299,7 @@ def _fetch_inventario(
               costoant
             FROM sinv
             {where}
-            ORDER BY descrip ASC
+            {order_by}
             LIMIT %s OFFSET %s
             """,
             (*params, int(limit), int(offset)),
@@ -454,18 +465,30 @@ async def inventario(
     search: str = Query("", description="Match code or description"),
     codigo: str = Query("", description="Filter by code (partial)"),
     nombre: str = Query("", description="Filter by description (partial)"),
+    con_existencia: bool | None = Query(
+        None,
+        description="true = solo con stock (>0); false = solo sin stock; omitir = todos",
+    ),
     page: int = Query(1, ge=1, description="Page"),
     limit: int = Query(25, ge=1, le=500, description="Rows per page"),
     _: None = Depends(verify_bearer),
 ):
     items, total = await anyio.to_thread.run_sync(
-        lambda: _fetch_inventario(search, codigo, nombre, page, limit)
+        lambda: _fetch_inventario(
+            search,
+            codigo,
+            nombre,
+            page,
+            limit,
+            con_existencia=con_existencia,
+        )
     )
     total_pages = 0 if total == 0 else (total + limit - 1) // limit
     return {
         "search": search,
         "codigo": codigo,
         "filtro_nombre": nombre,
+        "con_existencia": con_existencia,
         "nodo_id": settings.nodo_id,
         "nombre": settings.nodo_nombre,
         "items": items,
