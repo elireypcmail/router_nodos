@@ -13,7 +13,6 @@ import secrets
 from typing import Any, Literal
 
 from core.store_datetime import store_timezone
-from db.product_price_formula import price_ex_tax_from_inc_tax
 
 PAYMENT_TOLERANCE = Decimal("0.01")
 MONEY_Q = Decimal("0.01")
@@ -244,36 +243,6 @@ def _load_product(cur, sku: str) -> dict[str, Any]:
     return row
 
 
-def _pg1_for_line(
-    *,
-    unit_inc_tax: Decimal,
-    porvg: Decimal,
-    sinv_costo: Decimal,
-    sinv_pg1: Decimal,
-    from_catalog_price: bool,
-) -> float:
-    """
-    Margen de la línea en diariovi.pg1.
-
-    - Precio de lista (`sinv.precio1`, sin unitPrice o con use_sinv_precio1):
-      copia sinv.pg1.
-    - unitPrice explícito en la orden: quita IVA y calcula
-      pg = 100 - (sinv.costo / precio_sin_iva) × 100
-      (puede ser negativo si se vende bajo el costo).
-    """
-    if from_catalog_price:
-        return float(_money(sinv_pg1))
-
-    psi = price_ex_tax_from_inc_tax(float(unit_inc_tax), float(porvg))
-    if psi is None or psi <= 0:
-        return 0.0
-    costo = float(sinv_costo)
-    if costo <= 0:
-        return 0.0
-    pg = 100.0 - (costo / float(psi)) * 100.0
-    return round(pg, 4)
-
-
 def _lookup_banco(cur, cbanco: str) -> tuple[str, str]:
     """Devuelve (nbanco, cmoneda). Exige que cbanco exista en banco."""
     code = (cbanco or "").strip()[:10]
@@ -379,12 +348,10 @@ def create_orden(
             catalog_price = _money(product["precio1"])
             # unitPrice API = con IVA. Default: sinv.precio1.
             # use_sinv_precio1=true → siempre precio1 (ignora unitPrice del request).
-            used_custom_unit_price = False
             if use_sinv_precio1:
                 unit = catalog_price
             elif item.unit_price is not None and float(item.unit_price) > 0:
                 unit = _money(item.unit_price)
-                used_custom_unit_price = True
                 if enforce_min_precio1 and catalog_price > 0 and unit < catalog_price:
                     raise OrdenesStoreError(
                         f"unit price {unit} below sinv.precio1 {catalog_price} "
@@ -418,13 +385,7 @@ def create_orden(
 
             costo_ref = _money(product["costo"] or 0)
             costoant = _money(product["costoant"] or product["costo"] or 0)
-            pg1 = _pg1_for_line(
-                unit_inc_tax=unit,
-                porvg=porvg,
-                sinv_costo=costo_ref,
-                sinv_pg1=_money(product.get("pg1") or 0),
-                from_catalog_price=not used_custom_unit_price,
-            )
+            # Patrón ERP en ventas: diariovi.pg1 = 0 (margen queda en sinv).
             line_rows.append(
                 {
                     "sku": str(product["codigo"]),
@@ -440,7 +401,7 @@ def create_orden(
                     "contador": contadores[idx],
                     "costoant": float(costoant),
                     "nuevocosto": float(costo_ref),
-                    "pg1": float(pg1),
+                    "pg1": 0.0,
                     "bucket": bucket,
                 }
             )
