@@ -56,6 +56,7 @@ class OrdenLineInput:
     sku: str
     quantity: float
     unit_price: float | None = None
+    name: str = ""
 
 
 @dataclass(frozen=True)
@@ -211,7 +212,140 @@ def next_contador(cur, count: int) -> list[int]:
     return [start + i for i in range(1, count + 1)]
 
 
-def _load_product(cur, sku: str) -> dict[str, Any]:
+def _normalize_product_name(text: str) -> str:
+    import re
+    import unicodedata
+
+    folded = unicodedata.normalize("NFKD", text or "")
+    ascii_txt = "".join(c for c in folded if not unicodedata.combining(c))
+    ascii_txt = ascii_txt.upper()
+    ascii_txt = re.sub(r"[^A-Z0-9]+", " ", ascii_txt)
+    return " ".join(ascii_txt.split())
+
+
+def _score_descrip_match(descrip: str, name: str) -> int:
+    d = _normalize_product_name(descrip)
+    n = _normalize_product_name(name)
+    if not d or not n:
+        return 0
+    if d == n:
+        return 100
+    if n in d or d in n:
+        return 80
+    n_toks = set(n.split())
+    d_toks = set(d.split())
+    if not n_toks:
+        return 0
+    overlap = len(n_toks & d_toks)
+    if overlap == 0:
+        return 0
+    return int(40 * overlap / len(n_toks))
+
+
+def _pick_product_by_name(candidates: list[dict[str, Any]], name: str) -> dict[str, Any]:
+    if len(candidates) == 1:
+        return candidates[0]
+    name = (name or "").strip()
+    if not name:
+        codes = ", ".join(str(c.get("codigo") or "").strip() for c in candidates)
+        raise OrdenesStoreError(
+            f"multiple products in calternos ({codes}); name required to match sinv.descrip"
+        )
+    scored = [
+        (_score_descrip_match(str(c.get("descrip") or ""), name), c)
+        for c in candidates
+    ]
+    scored.sort(key=lambda x: -x[0])
+    best_score, best = scored[0]
+    if best_score <= 0:
+        codes = ", ".join(str(c.get("codigo") or "").strip() for c in candidates)
+        raise OrdenesStoreError(
+            f"multiple products in calternos ({codes}); none match name={name!r}"
+        )
+    ties = [c for s, c in scored if s == best_score]
+    if len(ties) > 1:
+        codes = ", ".join(str(c.get("codigo") or "").strip() for c in ties)
+        raise OrdenesStoreError(
+            f"multiple products tie on name={name!r}: {codes}"
+        )
+    return best
+
+
+def _row_to_product(row) -> dict[str, Any]:
+    if isinstance(row, dict):
+        return dict(row)
+    return {
+        "codigo": row[0],
+        "descrip": row[1],
+        "porvg": row[2],
+        "precio1": row[3],
+        "costo": row[4],
+        "costoant": row[5],
+        "pg1": row[6],
+        "existencia": row[7],
+    }
+
+
+def _load_product(cur, barcode: str, name: str = "") -> dict[str, Any]:
+    """Resuelve: sinv.barra → calternos.chijo/cpadre → sinv.codigo; legacy codigo."""
+    key = (barcode or "").strip()
+    if not key:
+        raise OrdenesStoreError("item missing barcode/sku")
+    cur.execute(
+        """
+        SELECT codigo, descrip, COALESCE(porvg, 0) AS porvg,
+               COALESCE(precio1, 0) AS precio1,
+               COALESCE(costo, 0) AS costo,
+               COALESCE(costoant, 0) AS costoant,
+               COALESCE(pg1, 0) AS pg1,
+               COALESCE(existencia, 0) AS existencia
+        FROM sinv
+        WHERE TRIM(barra) = %s
+        LIMIT 1
+        """,
+        (key,),
+    )
+    row = cur.fetchone()
+    if row:
+        return _row_to_product(row)
+
+    cur.execute(
+        """
+        SELECT DISTINCT TRIM(cpadre) AS cpadre
+        FROM calternos
+        WHERE TRIM(chijo) = %s
+          AND TRIM(IFNULL(cpadre, '')) <> ''
+        """,
+        (key,),
+    )
+    raw_padres = cur.fetchall() or []
+    padres: list[str] = []
+    for r in raw_padres:
+        if isinstance(r, dict):
+            p = str(r.get("cpadre") or "").strip()
+        else:
+            p = str(r[0] or "").strip()
+        if p:
+            padres.append(p)
+    if padres:
+        placeholders = ", ".join(["%s"] * len(padres))
+        cur.execute(
+            f"""
+            SELECT codigo, descrip, COALESCE(porvg, 0) AS porvg,
+                   COALESCE(precio1, 0) AS precio1,
+                   COALESCE(costo, 0) AS costo,
+                   COALESCE(costoant, 0) AS costoant,
+                   COALESCE(pg1, 0) AS pg1,
+                   COALESCE(existencia, 0) AS existencia
+            FROM sinv
+            WHERE TRIM(codigo) IN ({placeholders})
+            """,
+            tuple(padres),
+        )
+        candidates = [_row_to_product(r) for r in (cur.fetchall() or [])]
+        if candidates:
+            return _pick_product_by_name(candidates, name)
+
     cur.execute(
         """
         SELECT codigo, descrip, COALESCE(porvg, 0) AS porvg,
@@ -224,23 +358,12 @@ def _load_product(cur, sku: str) -> dict[str, Any]:
         WHERE codigo = %s
         LIMIT 1
         """,
-        (sku.strip(),),
+        (key,),
     )
     row = cur.fetchone()
     if not row:
-        raise OrdenesStoreError(f"product not found: {sku}")
-    if not isinstance(row, dict):
-        return {
-            "codigo": row[0],
-            "descrip": row[1],
-            "porvg": row[2],
-            "precio1": row[3],
-            "costo": row[4],
-            "costoant": row[5],
-            "pg1": row[6],
-            "existencia": row[7],
-        }
-    return row
+        raise OrdenesStoreError(f"product not found (barra/calternos/codigo={key})")
+    return _row_to_product(row)
 
 
 def _lookup_banco(cur, cbanco: str) -> tuple[str, str]:
@@ -330,7 +453,7 @@ def create_orden(
         stock_left: dict[str, Decimal] = {}
 
         for idx, item in enumerate(items):
-            product = _load_product(cur, item.sku)
+            product = _load_product(cur, item.sku, getattr(item, "name", "") or "")
             qty = Decimal(str(item.quantity))
             if qty <= 0:
                 raise OrdenesStoreError(f"invalid quantity for sku {item.sku}")

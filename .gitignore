@@ -26,6 +26,9 @@ logs/
 .vscode/
 .idea/
 
+# graphify (knowledge graph local)
+graphify-out/
+
 #WireGuard / provisioning
 #vpn/*.conf
 #vpn/wg0.conf

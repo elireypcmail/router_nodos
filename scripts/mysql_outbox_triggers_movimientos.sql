@@ -1,16 +1,20 @@
--- Outbox Multishop → hub (SOLO movimientos: compra, venta, kardex/ajustes).
+-- Outbox Multishop → router (movimientos + catálogo/precios/costo/existencia).
 -- Doc: docs/outbox-huey-movimientos.md (raíz del monorepo)
--- Instalación: cd Multishop-nodo-API && MS_SQL_FILE=scripts/mysql_outbox_triggers_movimientos.sql
+-- Instalación: cd router_nodos && MS_SQL_FILE=scripts/mysql_outbox_triggers_movimientos.sql
 --   python scripts/apply_mysql_outbox_triggers.py
 --
--- Fuente única transaccional: tabla kardex (trg_router_kardex_*).
+-- Movimientos: tabla kardex (trg_router_kardex_*).
 --   sync_outbox_router.table_name = kardex; entity_type en el hub según fila:
 --   compras  <> 0  → purchase | ventas <> 0 → sale | ajuste → kardex
+--
+-- Catálogo / precios / costo / existencia (solo I/U; allowlist de columnas):
+--   table_name → evento: sinv→product.change | sprv→provider.change | catego→category.change
+--     | general→laboratory.change | precios→precios.change | costo→costo.change | existencia→existencia.change
 --
 -- Convive con el proyecto hub (sync_outbox + trg_kardex_*): nombres router con prefijo.
 -- Migración router antiguo: si existían trg_kardex_* solo del router, elimínelos a mano una vez.
 -- MySQL 5.6: un solo trigger por (tabla, timing, evento); no pueden coexistir trg_kardex_ai y trg_router_kardex_ai.
--- NO incluye: sinv, sprv, catego, detalle (lotes), ventas, ventasd, catalog_push_digest.
+-- NO incluye: detalle (lotes), ventas, ventasd, catalog_push_digest, DELETE de catálogo.
 
 CREATE TABLE IF NOT EXISTS sync_outbox_router (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -301,6 +305,336 @@ BEGIN
       CONCAT('{','\"indice\":',ms_router_json_int(OLD.indice),',','\"kardex_indice\":',ms_router_json_int(OLD.indice),',','\"codigo\":',ms_router_json_str(OLD.codigo),',','\"fecha\":',ms_router_json_date(OLD.fecha),',','\"contador\":',ms_router_json_int(OLD.contador),',','\"ajustesp\":',ms_router_json_num(OLD.ajustesp),',','\"ajustesn\":',ms_router_json_num(OLD.ajustesn),',','\"compras\":',ms_router_json_num(OLD.compras),',','\"ventas\":',ms_router_json_num(OLD.ventas),',','\"devoc\":',ms_router_json_num(OLD.devoc),',','\"devov\":',ms_router_json_num(OLD.devov),',','\"kobs\":',ms_router_json_str(OLD.kobs),',','\"hora\":',ms_router_json_str(OLD.hora),',','\"outbox_op\":',ms_router_json_str('D'),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
       NOW(3)
     );
+  END IF;
+END$$
+DELIMITER ;
+
+-- ---------------------------------------------------------------------------
+-- Catálogo / precios / costo / existencia (I/U, allowlist)
+-- ---------------------------------------------------------------------------
+
+DROP TRIGGER IF EXISTS trg_router_sinv_ai;
+DROP TRIGGER IF EXISTS trg_router_sinv_au;
+DROP TRIGGER IF EXISTS trg_router_sprv_ai;
+DROP TRIGGER IF EXISTS trg_router_sprv_au;
+DROP TRIGGER IF EXISTS trg_router_catego_ai;
+DROP TRIGGER IF EXISTS trg_router_catego_au;
+DROP TRIGGER IF EXISTS trg_router_detallepr_ai;
+DROP TRIGGER IF EXISTS trg_router_detallepr_au;
+DROP TRIGGER IF EXISTS trg_router_calternos_ai;
+DROP TRIGGER IF EXISTS trg_router_calternos_au;
+DROP TRIGGER IF EXISTS trg_router_sinvimg_ai;
+DROP TRIGGER IF EXISTS trg_router_sinvimg_au;
+DROP TRIGGER IF EXISTS trg_router_general_ai;
+DROP TRIGGER IF EXISTS trg_router_general_au;
+
+DELIMITER $$
+CREATE TRIGGER trg_router_sinv_ai AFTER INSERT ON sinv FOR EACH ROW
+BEGIN
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'sinv',
+      'I',
+      CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),'}'),
+      CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+      NOW(3)
+    );
+    INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'precios',
+      'I',
+      CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),'}'),
+      CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+      NOW(3)
+    );
+    INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'costo',
+      'I',
+      CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),'}'),
+      CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+      NOW(3)
+    );
+    INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'existencia',
+      'I',
+      CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),'}'),
+      CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+      NOW(3)
+    );
+  END IF;
+END$$
+
+CREATE TRIGGER trg_router_sinv_au AFTER UPDATE ON sinv FOR EACH ROW
+BEGIN
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    IF NOT (NEW.codigo <=> OLD.codigo)
+       OR NOT (NEW.descrip <=> OLD.descrip)
+       OR NOT (NEW.ccate <=> OLD.ccate)
+       OR NOT (NEW.cod_prv <=> OLD.cod_prv)
+       OR NOT (NEW.pg1 <=> OLD.pg1)
+       OR NOT (NEW.barra <=> OLD.barra)
+       OR NOT (NEW.referencia <=> OLD.referencia)
+       OR NOT (NEW.componente <=> OLD.componente)
+       OR NOT (NEW.stockmin <=> OLD.stockmin)
+       OR NOT (NEW.stockmax <=> OLD.stockmax)
+       OR NOT (NEW.recipe <=> OLD.recipe)
+       OR NOT (NEW.cfrio <=> OLD.cfrio)
+       OR NOT (NEW.activo <=> OLD.activo)
+       OR NOT (NEW.porvg <=> OLD.porvg) THEN
+      INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+      VALUES (
+        'sinv',
+        'U',
+        CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),'}'),
+        CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+        NOW(3)
+      );
+    END IF;
+    IF NOT (NEW.precio1 <=> OLD.precio1) OR NOT (NEW.pg1 <=> OLD.pg1) THEN
+      INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+      VALUES (
+        'precios',
+        'U',
+        CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),'}'),
+        CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+        NOW(3)
+      );
+    END IF;
+    IF NOT (NEW.costo <=> OLD.costo) OR NOT (NEW.costopro <=> OLD.costopro) THEN
+      INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+      VALUES (
+        'costo',
+        'U',
+        CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),'}'),
+        CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+        NOW(3)
+      );
+    END IF;
+    IF NOT (NEW.existencia <=> OLD.existencia) THEN
+      INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+      VALUES (
+        'existencia',
+        'U',
+        CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),'}'),
+        CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+        NOW(3)
+      );
+    END IF;
+  END IF;
+END$$
+
+CREATE TRIGGER trg_router_detallepr_ai AFTER INSERT ON detallepr FOR EACH ROW
+BEGIN
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'precios',
+      'I',
+      CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),'}'),
+      CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+      NOW(3)
+    );
+    INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'costo',
+      'I',
+      CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),'}'),
+      CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+      NOW(3)
+    );
+  END IF;
+END$$
+
+CREATE TRIGGER trg_router_detallepr_au AFTER UPDATE ON detallepr FOR EACH ROW
+BEGIN
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    IF NOT (NEW.precio1 <=> OLD.precio1) OR NOT (NEW.pg1 <=> OLD.pg1) THEN
+      INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+      VALUES (
+        'precios',
+        'U',
+        CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),'}'),
+        CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+        NOW(3)
+      );
+    END IF;
+    IF NOT (NEW.costo <=> OLD.costo) OR NOT (NEW.costopro <=> OLD.costopro) THEN
+      INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+      VALUES (
+        'costo',
+        'U',
+        CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),'}'),
+        CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+        NOW(3)
+      );
+    END IF;
+  END IF;
+END$$
+
+CREATE TRIGGER trg_router_sprv_ai AFTER INSERT ON sprv FOR EACH ROW
+BEGIN
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'sprv',
+      'I',
+      CONCAT('{','\"cod_prv\":',ms_router_json_str(NEW.cod_prv),'}'),
+      CONCAT('{','\"cod_prv\":',ms_router_json_str(NEW.cod_prv),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+      NOW(3)
+    );
+  END IF;
+END$$
+
+CREATE TRIGGER trg_router_sprv_au AFTER UPDATE ON sprv FOR EACH ROW
+BEGIN
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    IF NOT (NEW.nom_prv <=> OLD.nom_prv)
+       OR NOT (NEW.rif_prv <=> OLD.rif_prv)
+       OR NOT (NEW.dir1_prv <=> OLD.dir1_prv)
+       OR NOT (NEW.dir2_prv <=> OLD.dir2_prv)
+       OR NOT (NEW.dir3_prv <=> OLD.dir3_prv)
+       OR NOT (NEW.tel_prv <=> OLD.tel_prv)
+       OR NOT (NEW.email1_prv <=> OLD.email1_prv)
+       OR NOT (NEW.email2_prv <=> OLD.email2_prv)
+       OR NOT (NEW.rep_prv <=> OLD.rep_prv)
+       OR NOT (NEW.especial <=> OLD.especial)
+       OR NOT (NEW.numcuenta <=> OLD.numcuenta) THEN
+      INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+      VALUES (
+        'sprv',
+        'U',
+        CONCAT('{','\"cod_prv\":',ms_router_json_str(NEW.cod_prv),'}'),
+        CONCAT('{','\"cod_prv\":',ms_router_json_str(NEW.cod_prv),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+        NOW(3)
+      );
+    END IF;
+  END IF;
+END$$
+
+CREATE TRIGGER trg_router_catego_ai AFTER INSERT ON catego FOR EACH ROW
+BEGIN
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'catego',
+      'I',
+      CONCAT('{','\"ccate\":',ms_router_json_str(NEW.ccate),'}'),
+      CONCAT('{','\"ccate\":',ms_router_json_str(NEW.ccate),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+      NOW(3)
+    );
+  END IF;
+END$$
+
+CREATE TRIGGER trg_router_catego_au AFTER UPDATE ON catego FOR EACH ROW
+BEGIN
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    IF NOT (NEW.ccate <=> OLD.ccate)
+       OR NOT (NEW.ncate <=> OLD.ncate)
+       OR NOT (NEW.pganancia <=> OLD.pganancia)
+       OR NOT (NEW.pdescu <=> OLD.pdescu) THEN
+      INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+      VALUES (
+        'catego',
+        'U',
+        CONCAT('{','\"ccate\":',ms_router_json_str(NEW.ccate),'}'),
+        CONCAT('{','\"ccate\":',ms_router_json_str(NEW.ccate),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+        NOW(3)
+      );
+    END IF;
+  END IF;
+END$$
+
+CREATE TRIGGER trg_router_calternos_ai AFTER INSERT ON calternos FOR EACH ROW
+BEGIN
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'sinv',
+      'I',
+      CONCAT('{','\"codigo\":',ms_router_json_str(NEW.cpadre),'}'),
+      CONCAT('{','\"codigo\":',ms_router_json_str(NEW.cpadre),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+      NOW(3)
+    );
+  END IF;
+END$$
+
+CREATE TRIGGER trg_router_calternos_au AFTER UPDATE ON calternos FOR EACH ROW
+BEGIN
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    IF NOT (NEW.cpadre <=> OLD.cpadre) OR NOT (NEW.chijo <=> OLD.chijo) THEN
+      INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+      VALUES (
+        'sinv',
+        'U',
+        CONCAT('{','\"codigo\":',ms_router_json_str(NEW.cpadre),'}'),
+        CONCAT('{','\"codigo\":',ms_router_json_str(NEW.cpadre),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+        NOW(3)
+      );
+    END IF;
+  END IF;
+END$$
+
+CREATE TRIGGER trg_router_sinvimg_ai AFTER INSERT ON sinvimg FOR EACH ROW
+BEGIN
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'sinv',
+      'I',
+      CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),'}'),
+      CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+      NOW(3)
+    );
+  END IF;
+END$$
+
+CREATE TRIGGER trg_router_sinvimg_au AFTER UPDATE ON sinvimg FOR EACH ROW
+BEGIN
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    IF NOT (NEW.imagen <=> OLD.imagen) OR NOT (NEW.codigo <=> OLD.codigo) THEN
+      INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+      VALUES (
+        'sinv',
+        'U',
+        CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),'}'),
+        CONCAT('{','\"codigo\":',ms_router_json_str(NEW.codigo),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+        NOW(3)
+      );
+    END IF;
+  END IF;
+END$$
+
+-- `general` es palabra reservada en MySQL: siempre usar backticks.
+CREATE TRIGGER trg_router_general_ai AFTER INSERT ON `general` FOR EACH ROW
+BEGIN
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+    VALUES (
+      'general',
+      'I',
+      CONCAT('{','\"cgeneral\":',ms_router_json_str(NEW.cgeneral),'}'),
+      CONCAT('{','\"cgeneral\":',ms_router_json_str(NEW.cgeneral),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+      NOW(3)
+    );
+  END IF;
+END$$
+
+CREATE TRIGGER trg_router_general_au AFTER UPDATE ON `general` FOR EACH ROW
+BEGIN
+  IF IFNULL(@ms_skip_outbox, 0) = 0 THEN
+    IF NOT (NEW.cgeneral <=> OLD.cgeneral) OR NOT (NEW.ngeneral <=> OLD.ngeneral) THEN
+      INSERT INTO sync_outbox_router(table_name, op, pk_json, row_json, created_at)
+      VALUES (
+        'general',
+        'U',
+        CONCAT('{','\"cgeneral\":',ms_router_json_str(NEW.cgeneral),'}'),
+        CONCAT('{','\"cgeneral\":',ms_router_json_str(NEW.cgeneral),',','\"outbox_enqueued_at\":',ms_router_json_datetime(NOW(3)),'}'),
+        NOW(3)
+      );
+    END IF;
   END IF;
 END$$
 DELIMITER ;

@@ -14,7 +14,7 @@ def fetch_laboratorio_by_code(cur, cgeneral: str) -> dict | None:
     cur.execute(
         """
         SELECT cgeneral, ngeneral
-        FROM general
+        FROM `general`
         WHERE cgeneral = %s
         LIMIT 1
         """,
@@ -30,7 +30,7 @@ def fetch_laboratorio_by_name(cur, ngeneral: str) -> dict | None:
     cur.execute(
         """
         SELECT cgeneral, ngeneral
-        FROM general
+        FROM `general`
         WHERE ngeneral = %s
         LIMIT 1
         """,
@@ -61,7 +61,7 @@ def attach_laboratory_to_items(cur, rows: list[dict]) -> None:
         cur.execute(
             f"""
             SELECT cgeneral, ngeneral
-            FROM general
+            FROM `general`
             WHERE cgeneral IN ({placeholders})
             """,
             tuple(codes),

@@ -40,6 +40,7 @@ class OrdenItemRequest(BaseModel):
     sku: str = Field(min_length=1, max_length=50)
     quantity: float = Field(gt=0)
     unit_price: float | None = Field(default=None, gt=0)
+    name: str = Field(default="", max_length=240)
 
 
 class OrdenPaymentRequest(BaseModel):
@@ -98,6 +99,7 @@ def _create_orden_sync(body: OrdenCreateRequest) -> dict:
                     sku=item.sku,
                     quantity=item.quantity,
                     unit_price=item.unit_price,
+                    name=item.name,
                 )
                 for item in body.items
             ],

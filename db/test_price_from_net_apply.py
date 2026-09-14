@@ -25,10 +25,26 @@ class TestPriceFromNetMode(unittest.TestCase):
             _resolve_mode(price_ex_tax_usd=None, porvg_request=8.0),
             "solo_impuesto",
         )
+        self.assertEqual(
+            _resolve_mode(
+                price_ex_tax_usd=None,
+                price_inc_tax_usd=1.16,
+                porvg_request=None,
+            ),
+            "solo_precio",
+        )
 
     def test_resolve_requires_one_field(self):
         with self.assertRaises(PriceFromNetError):
             _resolve_mode(price_ex_tax_usd=None, porvg_request=None)
+
+    def test_resolve_rejects_both_prices(self):
+        with self.assertRaises(PriceFromNetError):
+            _resolve_mode(
+                price_ex_tax_usd=1.0,
+                price_inc_tax_usd=1.16,
+                porvg_request=None,
+            )
 
     def test_cpp_vs_price_validation(self):
         with self.assertRaises(PriceFromNetError):
@@ -78,6 +94,49 @@ class TestApplyPriceFromNetSoloImpuesto(unittest.TestCase):
         sinv_update = next(sql for sql in update_sqls if "UPDATE sinv" in sql)
         self.assertIn("porvg", sinv_update)
         self.assertNotIn("pg1", sinv_update)
+        mock_hist.assert_called_once()
+
+
+class TestApplyPriceFromNetIncTax(unittest.TestCase):
+    @patch("db.price_from_net_apply.log_precio_referencial_changes")
+    @patch("db.price_from_net_apply.ensure_detallepr_for_create")
+    @patch("db.price_from_net_apply.fetch_detallepr_cost_row")
+    @patch("db.price_from_net_apply._fetch_sinv_pricing_row")
+    def test_inc_tax_strips_iva_and_writes_prices(
+        self,
+        mock_sinv_fetch,
+        mock_det_fetch,
+        mock_ensure,
+        mock_hist,
+    ):
+        mock_sinv_fetch.return_value = {
+            "costopro": 200.0,
+            "porvg": 16.0,
+            "precio1": 400.0,
+            "precio1div": 1.0,
+            "pg1": 40.0,
+            "pg1div": 40.0,
+        }
+        mock_det_fetch.return_value = {
+            "costopro": 0.5,
+            "precio1": 1.0,
+            "pg1": 40.0,
+        }
+        cur = MagicMock()
+
+        out = apply_price_from_net(
+            cur,
+            "SKU1",
+            price_inc_tax_usd=1.16,
+            exchange_rate=400.0,
+        )
+
+        self.assertEqual(out["modo"], "solo_precio")
+        self.assertEqual(out["porvg"], 16.0)
+        self.assertEqual(out["precio_con_iva_usd"], 1.16)
+        self.assertAlmostEqual(out["precio_sin_iva_usd"], 1.16 / 1.16, places=5)
+        self.assertGreater(out["pg_usd"], 0)
+        self.assertGreater(out["pg_bs"], 0)
         mock_hist.assert_called_once()
 
 

@@ -1,4 +1,4 @@
-"""Aplicar precio sin IVA USD → margen (pg) y precio con IVA en sinv/detallepr."""
+"""Aplicar precio USD (neto o con IVA) → margen (pg) y precio con IVA en sinv/detallepr."""
 
 from __future__ import annotations
 
@@ -74,13 +74,18 @@ def _fetch_sinv_pricing_row(cur, codigo: str) -> dict[str, Any] | None:
 def _resolve_mode(
     *,
     price_ex_tax_usd: float | None,
+    price_inc_tax_usd: float | None = None,
     porvg_request: float | None,
 ) -> PriceFromNetMode:
-    has_price = price_ex_tax_usd is not None
+    if price_ex_tax_usd is not None and price_inc_tax_usd is not None:
+        raise PriceFromNetError(
+            "precio_sin_iva_usd and precio_con_iva_usd are mutually exclusive",
+        )
+    has_price = price_ex_tax_usd is not None or price_inc_tax_usd is not None
     has_tax = porvg_request is not None
     if not has_price and not has_tax:
         raise PriceFromNetError(
-            "precio_sin_iva_usd or porvg is required",
+            "precio_sin_iva_usd, precio_con_iva_usd or porvg is required",
         )
     if has_price and has_tax:
         return "completo"
@@ -140,6 +145,7 @@ def apply_price_from_net(
     codigo: str,
     *,
     price_ex_tax_usd: float | None = None,
+    price_inc_tax_usd: float | None = None,
     exchange_rate: float | None = None,
     porvg: float | None = None,
 ) -> dict[str, Any]:
@@ -173,16 +179,27 @@ def apply_price_from_net(
     porvg_request = validate_porvg(porvg) if porvg is not None else None
     mode = _resolve_mode(
         price_ex_tax_usd=price_ex_tax_usd,
+        price_inc_tax_usd=price_inc_tax_usd,
         porvg_request=porvg_request,
     )
 
     if mode in ("solo_precio", "completo"):
         if exchange_rate is None or float(exchange_rate) <= 0:
             raise PriceFromNetError(
-                "tasa (exchangeRate) is required and must be > 0 when precio_sin_iva_usd is sent",
+                "tasa (exchangeRate) is required and must be > 0 when a USD price is sent",
             )
-        psi_usd = price_ui_round_usd(float(price_ex_tax_usd))
-        psi_bs = price_ui_round_bs(float(price_ex_tax_usd) * float(exchange_rate))
+        tax_pct = float(porvg_request) if mode == "completo" else porvg_actual
+        if price_inc_tax_usd is not None:
+            pci_in = price_ui_round_usd(float(price_inc_tax_usd))
+            psi_from_inc = price_ex_tax_from_inc_tax(
+                pci_in, tax_pct, round_fn=price_ui_round_usd
+            )
+            if psi_from_inc is None:
+                raise PriceFromNetError("could not derive price ex tax from priceIncTaxUsd")
+            psi_usd = psi_from_inc
+        else:
+            psi_usd = price_ui_round_usd(float(price_ex_tax_usd))
+        psi_bs = price_ui_round_bs(psi_usd * float(exchange_rate))
         _validate_cpp_vs_price(
             price_ex_tax_usd=psi_usd,
             price_ex_tax_bs=psi_bs,
@@ -194,10 +211,12 @@ def apply_price_from_net(
         if pg_usd_val is None or pg_bs_val is None:
             raise PriceFromNetError("could not derive markup percent from price and cpp")
 
-        tax_pct = float(porvg_request) if mode == "completo" else porvg_actual
-        pci_usd = price_inc_tax_from_ex_tax(
-            psi_usd, tax_pct, round_fn=price_ui_round_usd
-        )
+        if price_inc_tax_usd is not None:
+            pci_usd = price_ui_round_usd(float(price_inc_tax_usd))
+        else:
+            pci_usd = price_inc_tax_from_ex_tax(
+                psi_usd, tax_pct, round_fn=price_ui_round_usd
+            )
         pci_bs = price_inc_tax_from_ex_tax(
             psi_bs, tax_pct, round_fn=price_ui_round_bs
         )

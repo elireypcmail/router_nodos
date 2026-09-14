@@ -10,7 +10,14 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from core.config import settings
+from core.json_util import json_safe
 from db.mysql import MySqlClient
+from outbox.catalog_enrich import enrich_catalog_row
+from outbox.catalog_tables import (
+    CATALOG_OUTBOX_TABLES,
+    catalog_entity_type,
+    catalog_event_name,
+)
 from outbox.movement_tables import (
     ALL_MOVEMENT_OUTBOX_TABLES,
     normalize_source_table,
@@ -25,8 +32,25 @@ logger = logging.getLogger(__name__)
 
 def build_router_event_payload(event: OutboxEvent) -> dict[str, Any]:
     row = event.row if isinstance(event.row, dict) else None
-    entity_type = resolve_entity_type(event.table_name, row)
     occurred_at = event.created_at or datetime.now(timezone.utc).isoformat()
+
+    if event.table_name in CATALOG_OUTBOX_TABLES:
+        event_name = catalog_event_name(event.table_name)
+        if not event_name:
+            raise ValueError(f"unknown catalog table={event.table_name!r}")
+        return {
+            "event": event_name,
+            "occurredAt": occurred_at,
+            "eventId": event.event_id,
+            "entityType": catalog_entity_type(event.table_name),
+            "sourceTable": event.table_name,
+            "operation": event.op,
+            "primaryKey": event.pk,
+            "row": event.row,
+            "outboxId": event.id,
+        }
+
+    entity_type = resolve_entity_type(event.table_name, row)
     return {
         "event": "kardex.change",
         "occurredAt": occurred_at,
@@ -45,7 +69,7 @@ def post_event_to_router(payload: dict[str, Any]) -> None:
     if not base:
         raise RuntimeError("ROUTER_EVENTS_URL no configurada")
     url = f"{base}/internal/nodos/events"
-    body = json.dumps(payload).encode("utf-8")
+    body = json.dumps(json_safe(payload)).encode("utf-8")
     token = (settings.nodo_api_token or "").strip()
     req = Request(
         url,
@@ -70,19 +94,32 @@ def send_outbox_batch(events: list[OutboxEvent]) -> OutboxSendResult:
     mysql = MySqlClient()
 
     for event in events:
-        if event.table_name not in ALL_MOVEMENT_OUTBOX_TABLES:
+        is_movement = event.table_name in ALL_MOVEMENT_OUTBOX_TABLES
+        is_catalog = event.table_name in CATALOG_OUTBOX_TABLES
+        if not is_movement and not is_catalog:
+            ignored_ids.append(event.id)
+            continue
+        if is_catalog and event.op == "D":
             ignored_ids.append(event.id)
             continue
         try:
             payload = build_router_event_payload(event)
             row = payload.get("row")
-            if isinstance(row, dict):
-                payload["row"] = enrich_movement_row(
-                    event.table_name,
-                    row,
-                    event.pk,
-                    mysql,
-                )
+            if isinstance(row, dict) or row is None:
+                if is_catalog:
+                    payload["row"] = enrich_catalog_row(
+                        event.table_name,
+                        row if isinstance(row, dict) else None,
+                        event.pk if isinstance(event.pk, dict) else None,
+                        mysql,
+                    )
+                elif isinstance(row, dict):
+                    payload["row"] = enrich_movement_row(
+                        event.table_name,
+                        row,
+                        event.pk,
+                        mysql,
+                    )
             post_event_to_router(payload)
             sent_ids.append(event.id)
         except MovementEnrichmentError as exc:
@@ -98,6 +135,5 @@ def send_outbox_batch(events: list[OutboxEvent]) -> OutboxSendResult:
         sent_ids=sent_ids,
         ignored_ids=ignored_ids,
         failed_ids=failed_ids,
-        attempted_ids=[e.id for e in events],
         failed_messages=failed_messages,
     )

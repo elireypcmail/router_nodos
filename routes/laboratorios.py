@@ -52,14 +52,14 @@ def _fetch_laboratorios(
             n,
             like_nombre or "",
         )
-        cur.execute(f"SELECT COUNT(*) AS cnt FROM general {where}", params)
+        cur.execute(f"SELECT COUNT(*) AS cnt FROM `general` {where}", params)
         total_row = cur.fetchone() or {}
         total = int(total_row.get("cnt") or 0)
 
         cur.execute(
             f"""
             SELECT cgeneral, ngeneral
-            FROM general
+            FROM `general`
             {where}
             ORDER BY ngeneral ASC
             LIMIT %s OFFSET %s
@@ -94,7 +94,7 @@ def _create_laboratorio(body: LaboratorioCreateRequest) -> None:
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO general (cgeneral, ngeneral)
+            INSERT INTO `general` (cgeneral, ngeneral)
             VALUES (%s, %s)
             """,
             (body.cgeneral.strip(), body.ngeneral.strip()),
@@ -142,7 +142,7 @@ def _patch_laboratorio(cgeneral: str, patch: dict) -> int:
 
         cur.execute(
             f"""
-            UPDATE general
+            UPDATE `general`
             SET {", ".join(sets)}
             WHERE cgeneral = %s
             """,
