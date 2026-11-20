@@ -868,8 +868,9 @@ function Test-VenvIsHealthyForSystemAutostart {
         [string]$VenvPythonExe
     )
     if (-not (Test-Path -LiteralPath $VenvPythonExe)) { return $false }
-    $home = Get-VenvPyvenvHome -VenvDir $VenvDir
-    if ($home -and -not (Test-PythonPathIsMachineWide -Path $home)) {
+    # No usar $home: en PowerShell es la variable automatica de solo lectura $HOME.
+    $venvHome = Get-VenvPyvenvHome -VenvDir $VenvDir
+    if ($venvHome -and -not (Test-PythonPathIsMachineWide -Path $venvHome)) {
         return $false
     }
     if (-not (Test-VenvPythonHasPip -VenvPythonExe $VenvPythonExe)) {
